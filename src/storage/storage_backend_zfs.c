@@ -127,16 +127,17 @@ virStorageBackendZFSSetActive(virStoragePoolObjPtr pool,
 
 static int
 virStorageBackendZFSMakeVol(virStoragePoolObjPtr pool,
-                                char **const groups,
-                                void *data)
+                            char **const groups,
+                            void *data)
 {
     virStorageVolDefPtr vol = NULL;
-    unsigned long long offset, size, length;
+    const char *pool_name;
+    size_t pool_name_len;
 
     /* See if we're only looking for a specific volume */
     if (data != NULL) {
         vol = data;
-        if (STRNEQ(vol->name, groups[0]))
+        if (STRNEQ(vol->key, groups[0]))
             return 0;
     }
 
@@ -153,8 +154,24 @@ virStorageBackendZFSMakeVol(virStoragePoolObjPtr pool,
 
         vol->type = VIR_STORAGE_VOL_BLOCK;
 
-        if ((vol->name = strdup(groups[0])) == NULL) {
+	/* key = POOL/sub/vol */
+        if ((vol->key = strdup(groups[0])) == NULL) {
             virReportOOMError();
+            virStorageVolDefFree(vol);
+            return -1;
+        }
+
+        /* assuming key = POOL/sub/vol:
+         *   if pool_name == POOL     then name = sub/vol
+         *   if pool_name == POOL/sub then name = vol
+         */
+        pool_name = pool->def->source.name;
+        pool_name_len = strlen(pool_name);
+        if (strncmp(pool_name, groups[0], pool_name_len) != 0) {
+            virStorageVolDefFree(vol);
+            return -1;
+        }
+        if ((vol->name = strdup(groups[0] + pool_name_len + 1)) == NULL) {
             virStorageVolDefFree(vol);
             return -1;
         }
@@ -169,15 +186,16 @@ virStorageBackendZFSMakeVol(virStoragePoolObjPtr pool,
     }
 
     if (vol->target.path == NULL) {
-        if (virAsprintf(&vol->target.path, "%s/%s",
-                        pool->def->target.path, vol->name) < 0) {
+        if (virAsprintf(&vol->target.path, "/dev/zvol/%s", vol->key) < 0) {
             virReportOOMError();
             virStorageVolDefFree(vol);
             return -1;
         }
     }
 
+#if 0
     if (groups[1] && !STREQ(groups[1], "")) {
+        // TODO
         if (virAsprintf(&vol->backingStore.path, "%s/%s",
                         pool->def->target.path, groups[1]) < 0) {
             virReportOOMError();
@@ -187,49 +205,10 @@ virStorageBackendZFSMakeVol(virStoragePoolObjPtr pool,
 
         vol->backingStore.format = VIR_STORAGE_POOL_LOGICAL_LVM2;
     }
-
-    if (vol->key == NULL &&
-        (vol->key = strdup(groups[2])) == NULL) {
-        virReportOOMError();
-        return -1;
-    }
+#endif
 
     if (virStorageBackendUpdateVolInfo(vol, 1) < 0)
         return -1;
-
-
-    /* Finally fill in extents information */
-    if (VIR_REALLOC_N(vol->source.extents,
-                      vol->source.nextent + 1) < 0) {
-        virReportOOMError();
-        return -1;
-    }
-
-    if ((vol->source.extents[vol->source.nextent].path =
-         strdup(groups[3])) == NULL) {
-        virReportOOMError();
-        return -1;
-    }
-
-    if (virStrToLong_ull(groups[4], NULL, 10, &offset) < 0) {
-        virStorageReportError(VIR_ERR_INTERNAL_ERROR,
-                              "%s", _("malformed volume extent offset value"));
-        return -1;
-    }
-    if (virStrToLong_ull(groups[5], NULL, 10, &length) < 0) {
-        virStorageReportError(VIR_ERR_INTERNAL_ERROR,
-                              "%s", _("malformed volume extent length value"));
-        return -1;
-    }
-    if (virStrToLong_ull(groups[6], NULL, 10, &size) < 0) {
-        virStorageReportError(VIR_ERR_INTERNAL_ERROR,
-                              "%s", _("malformed volume extent size value"));
-        return -1;
-    }
-
-    vol->source.extents[vol->source.nextent].start = offset * size;
-    vol->source.extents[vol->source.nextent].end = (offset * size) + length;
-    vol->source.nextent++;
 
     return 0;
 }
