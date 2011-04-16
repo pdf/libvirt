@@ -412,80 +412,6 @@ virStorageBackendZFSStartPool(virConnectPtr conn ATTRIBUTE_UNUSED,
 
 
 static int
-virStorageBackendZFSBuildPool(virConnectPtr conn ATTRIBUTE_UNUSED,
-                                  virStoragePoolObjPtr pool,
-                                  unsigned int flags ATTRIBUTE_UNUSED)
-{
-    const char **vgargv;
-    const char *pvargv[3];
-    int n = 0, i, fd;
-    char zeros[512];
-
-    memset(zeros, 0, sizeof(zeros));
-
-    if (VIR_ALLOC_N(vgargv, 3 + pool->def->source.ndevice) < 0) {
-        virReportOOMError();
-        return -1;
-    }
-
-    vgargv[n++] = VGCREATE;
-    vgargv[n++] = pool->def->source.name;
-
-    pvargv[0] = PVCREATE;
-    pvargv[2] = NULL;
-    for (i = 0 ; i < pool->def->source.ndevice ; i++) {
-        /*
-         * LVM requires that the first sector is blanked if using
-         * a whole disk as a PV. So we just blank them out regardless
-         * rather than trying to figure out if we're a disk or partition
-         */
-        if ((fd = open(pool->def->source.devices[i].path, O_WRONLY)) < 0) {
-            virReportSystemError(errno,
-                                 _("cannot open device '%s'"),
-                                 pool->def->source.devices[i].path);
-            goto cleanup;
-        }
-        if (safewrite(fd, zeros, sizeof(zeros)) < 0) {
-            virReportSystemError(errno,
-                                 _("cannot clear device header of '%s'"),
-                                 pool->def->source.devices[i].path);
-            VIR_FORCE_CLOSE(fd);
-            goto cleanup;
-        }
-        if (VIR_CLOSE(fd) < 0) {
-            virReportSystemError(errno,
-                                 _("cannot close device '%s'"),
-                                 pool->def->source.devices[i].path);
-            goto cleanup;
-        }
-
-        /*
-         * Initialize the physical volume because vgcreate is not
-         * clever enough todo this for us :-(
-         */
-        vgargv[n++] = pool->def->source.devices[i].path;
-        pvargv[1] = pool->def->source.devices[i].path;
-        if (virRun(pvargv, NULL) < 0)
-            goto cleanup;
-    }
-
-    vgargv[n] = NULL;
-
-    /* Now create the volume group itself */
-    if (virRun(vgargv, NULL) < 0)
-        goto cleanup;
-
-    VIR_FREE(vgargv);
-
-    return 0;
-
- cleanup:
-    VIR_FREE(vgargv);
-    return -1;
-}
-
-
-static int
 virStorageBackendZFSRefreshPool(virConnectPtr conn ATTRIBUTE_UNUSED,
                                 virStoragePoolObjPtr pool)
 {
@@ -709,7 +635,6 @@ virStorageBackend virStorageBackendZFS = {
     .findPoolSources = virStorageBackendZFSFindPoolSources,
     .checkPool = virStorageBackendZFSCheckPool,
     .startPool = virStorageBackendZFSStartPool,
-//    .buildPool = virStorageBackendZFSBuildPool,
     .refreshPool = virStorageBackendZFSRefreshPool,
     .stopPool = virStorageBackendZFSStopPool,
     .deletePool = virStorageBackendZFSDeletePool,
