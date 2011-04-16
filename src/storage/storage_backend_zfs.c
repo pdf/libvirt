@@ -56,7 +56,7 @@ virStorageBackendZFSCheckPool(virConnectPtr conn ATTRIBUTE_UNUSED,
     char *pool_name = NULL;
     int status;
 
-    if ((slash = (const char *)strstr(name, "/")) != NULL) {
+    if ((slash = (const char *)strchr(name, '/')) != NULL) {
         pool_name = strdup(name);
         if (pool_name == NULL) {
             virReportOOMError();
@@ -91,7 +91,7 @@ virStorageBackendZFSSetActive(virStoragePoolObjPtr pool,
     char *pool_name = NULL;
     int status;
 
-    if ((slash = (const char *)strstr(name, "/")) != NULL) {
+    if ((slash = (const char *)strchr(name, '/')) != NULL) {
         pool_name = strdup(name);
         if (pool_name == NULL) {
             virReportOOMError();
