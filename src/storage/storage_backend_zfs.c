@@ -304,6 +304,7 @@ virStorageBackendZFSFindPoolSourcesFunc(virStoragePoolObjPtr pool ATTRIBUTE_UNUS
     virStoragePoolSourceListPtr sourceList = data;
     char *name;
     char *slash;
+    int format;
     int i;
     virStoragePoolSource *thisSource;
 
@@ -314,8 +315,11 @@ virStorageBackendZFSFindPoolSourcesFunc(virStoragePoolObjPtr pool ATTRIBUTE_UNUS
     }
 
     /* Truncate to the last slash. */
-    if ((slash = strrchr(name, '/')) != NULL)
+    if ((slash = strrchr(name, '/')) != NULL) {
+        format = VIR_STORAGE_POOL_ZFS_ZPL;
         *slash = '\0';
+    } else
+        format = VIR_STORAGE_POOL_ZFS_ZPOOL;
 
     /* If this pool/dataset has already been found, exit. */
     for (i = 0 ; i < sourceList->nsources; i++) {
@@ -332,7 +336,7 @@ virStorageBackendZFSFindPoolSourcesFunc(virStoragePoolObjPtr pool ATTRIBUTE_UNUS
     }
 
     thisSource->name = name;
-    thisSource->format = VIR_STORAGE_POOL_ZFS_ZVOL;
+    thisSource->format = format;
 
     return 0;
 }
