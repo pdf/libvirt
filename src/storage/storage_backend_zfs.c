@@ -319,38 +319,43 @@ virStorageBackendZFSFindPoolSourcesFunc(virStoragePoolObjPtr pool ATTRIBUTE_UNUS
                                         void *data)
 {
     virStoragePoolSourceListPtr sourceList = data;
-    char *name = NULL;
+    char *name;
+    char *slash;
+    int i;
     virStoragePoolSource *thisSource;
 
     name = strdup(groups[0]);
-
     if (name == NULL) {
         virReportOOMError();
-        goto err_no_memory;
+        return -1;
     }
 
-    if (!(thisSource = virStoragePoolSourceListNewSource(sourceList)))
-        goto err_no_memory;
+    /* Truncate to the last slash. */
+    if ((slash = strrchr(name, '/')) != NULL)
+        *slash = '\0';
+
+    /* If this pool/dataset has already been found, exit. */
+    for (i = 0 ; i < sourceList->nsources; i++) {
+        if (STREQ(sourceList->sources[i].name, name)) {
+            VIR_FREE(name);
+            return 0;
+        }
+    }
+
+    if (!(thisSource = virStoragePoolSourceListNewSource(sourceList))) {
+        virReportOOMError();
+        VIR_FREE(name);
+        return -1;
+    }
+
     thisSource->name = name;
     thisSource->format = VIR_STORAGE_POOL_ZFS_ZVOL;
 
     return 0;
-
- err_no_memory:
-    VIR_FREE(name);
-
-    return -1;
 }
 
-/* We're only going to discover actual pools.  If we list datasets, we could
- * end up with a massive list.
- * TODO: See if "zfs get -Hp type," returns a sorted list.  If so, we could
- * TODO: easily truncate to the last /, compare to the previous result, and
- * TODO: add it to the list if new.  Then we could go through all the pools
- * TODO: (top-level only) and make sure they're in the list (adding any that
- * TODO: are missing).
- *
- * TODO: Is this really supposed to return pools, or something else (disks)?
+/* Find all pools and also datasets that currently have one or more volumes as
+ * direct children.
  */
 static char *
 virStorageBackendZFSFindPoolSources(virConnectPtr conn ATTRIBUTE_UNUSED,
@@ -358,16 +363,23 @@ virStorageBackendZFSFindPoolSources(virConnectPtr conn ATTRIBUTE_UNUSED,
                                     unsigned int flags ATTRIBUTE_UNUSED)
 {
     /*
+     * # zfs get -Hp type
+     * POOL	type	filesystem	-
+     * POOL/vol	type	volume	-
+     * POOL/sub/vol	type	volume	-
+     * POOL/sub/fs	type	filesystem	-
+     *
      * # zpool list -H -o name
-     * tank
+     * POOL
      */
     const char *regexes[] = {
-        "^(.+)$"
+        "^(\\S+)	type	volume"
     };
     int vars[] = {
         1
     };
-    const char *const prog[] = { ZPOOL, "list", "-H", "-o", "name", NULL };
+    const char *const zfsargv[] = { ZFS, "get", "-Hp", "type", NULL };
+    const char *const zpoolargv[] = { ZPOOL, "list", "-Ho", "name", NULL };
     int exitstatus;
     char *retval = NULL;
     virStoragePoolSourceList sourceList;
@@ -376,12 +388,20 @@ virStorageBackendZFSFindPoolSources(virConnectPtr conn ATTRIBUTE_UNUSED,
     memset(&sourceList, 0, sizeof(sourceList));
     sourceList.type = VIR_STORAGE_POOL_ZFS;
 
-    if (virStorageBackendRunProgRegex(NULL, prog, 1, regexes, vars,
+    /* Find all volumes.  The callback will grab their parent pool/dataset. */
+    if (virStorageBackendRunProgRegex(NULL, zfsargv, 1, regexes, vars,
                                       virStorageBackendZFSFindPoolSourcesFunc,
-                                      &sourceList, &exitstatus) < 0)
-    {
-        return NULL;
-    }
+                                      &sourceList,
+                                      &exitstatus) < 0 || exitstatus != 0)
+        goto cleanup;
+
+    /* Find all pools. */
+    regexes[0] = "^(\\S+)";
+    if (virStorageBackendRunProgRegex(NULL, zpoolargv, 1, regexes, vars,
+                                      virStorageBackendZFSFindPoolSourcesFunc,
+                                      &sourceList,
+                                      &exitstatus) < 0 || exitstatus != 0)
+        goto cleanup;
 
     retval = virStoragePoolSourceListFormat(&sourceList);
     if (retval == NULL) {
