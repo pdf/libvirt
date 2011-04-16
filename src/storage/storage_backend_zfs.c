@@ -288,7 +288,7 @@ virStorageBackendZFSRefreshPoolFunc(virStoragePoolObjPtr pool ATTRIBUTE_UNUSED,
     if (STREQ(groups[0], "available")) {
         if (virStrToLong_ull(groups[1], NULL, 10, &pool->def->available) < 0)
             return -1;
-        /* We asked for used,available, so this is the second line. */
+        /* We asked for "used,available", so this is the second line. */
         pool->def->capacity = pool->def->allocation + pool->def->available;
     }
 
