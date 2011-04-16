@@ -235,57 +235,40 @@ virStorageBackendZFSMakeVol(virStoragePoolObjPtr pool,
 }
 
 static int
-virStorageBackendZFSFindLVs(virStoragePoolObjPtr pool,
+virStorageBackendZFSFindVolumes(virStoragePoolObjPtr pool,
                                 virStorageVolDefPtr vol)
 {
     /*
-     *  # lvs --separator , --noheadings --units b --unbuffered --nosuffix --options "lv_name,origin,uuid,devices,seg_size,vg_extent_size" VGNAME
-     *  RootLV,,06UgP5-2rhb-w3Bo-3mdR-WeoL-pytO-SAa2ky,/dev/hda2(0),5234491392,33554432
-     *  SwapLV,,oHviCK-8Ik0-paqS-V20c-nkhY-Bm1e-zgzU0M,/dev/hda2(156),1040187392,33554432
-     *  Test2,,3pg3he-mQsA-5Sui-h0i6-HNmc-Cz7W-QSndcR,/dev/hda2(219),1073741824,33554432
-     *  Test3,,UB5hFw-kmlm-LSoX-EI1t-ioVd-h7GL-M0W8Ht,/dev/hda2(251),2181038080,33554432
-     *  Test3,Test2,UB5hFw-kmlm-LSoX-EI1t-ioVd-h7GL-M0W8Ht,/dev/hda2(187),1040187392,33554432
-     *
-     * Pull out name, origin, & uuid, device, device extent start #, segment size, extent size.
-     *
-     * NB can be multiple rows per volume if they have many extents
-     *
-     * NB lvs from some distros (e.g. SLES10 SP2) outputs trailing "," on each line
-     *
-     * NB Encrypted logical volumes can print ':' in their name, so it is
-     *    not a suitable separator (rhbz 470693).
+     * # zfs get -rHp type POOL
+     * POOL	type	filesystem	-
+     * POOL/vol	type	volume	-
+     * POOL/sub/vol	type	volume	-
+     * POOL/sub/fs	type	filesystem	-
      */
     const char *regexes[] = {
-        "^\\s*(\\S+),(\\S*),(\\S+),(\\S+)\\((\\S+)\\),(\\S+),([0-9]+),?\\s*$"
+        "^(\\S+)	type	volume"
     };
     int vars[] = {
-        7
+        1
     };
-    const char *prog[] = {
-        LVS, "--separator", ",", "--noheadings", "--units", "b",
-        "--unbuffered", "--nosuffix", "--options",
-        "lv_name,origin,uuid,devices,seg_size,vg_extent_size",
+    const char *const prog[] = {
+        ZFS, "get", "-rHp", "type",
         pool->def->source.name, NULL
     };
-
     int exitstatus;
 
-    if (virStorageBackendRunProgRegex(pool,
-                                      prog,
-                                      1,
-                                      regexes,
-                                      vars,
+    if (virStorageBackendRunProgRegex(pool, prog, 1, regexes, vars,
                                       virStorageBackendZFSMakeVol,
-                                      vol,
-                                      &exitstatus) < 0) {
+                                      vol, &exitstatus) < 0) {
+        // TODO: Do we need this here? If so, add it elsewhere?
         virStorageReportError(VIR_ERR_INTERNAL_ERROR,
-                              "%s", _("lvs command failed"));
-                              return -1;
+                              "%s", _("zfs command failed"));
+        return -1;
     }
 
     if (exitstatus != 0) {
         virStorageReportError(VIR_ERR_INTERNAL_ERROR,
-                              _("lvs command failed with exitstatus %d"),
+                              _("zfs command failed with exitstatus %d"),
                               exitstatus);
         return -1;
     }
@@ -456,10 +439,10 @@ virStorageBackendZFSRefreshPool(virConnectPtr conn ATTRIBUTE_UNUSED,
     virFileWaitForDevices();
 
     /* Get list of all logical volumes */
-//    if (virStorageBackendZFSFindLVs(pool, NULL) < 0) {
-//        virStoragePoolObjClearVols(pool);
-//        return -1;
-//    }
+    if (virStorageBackendZFSFindVolumes(pool, NULL) < 0) {
+        virStoragePoolObjClearVols(pool);
+        return -1;
+    }
 
     if (virStorageBackendRunProgRegex(pool, prog, 1, regexes, vars,
                                       virStorageBackendZFSRefreshPoolFunc,
