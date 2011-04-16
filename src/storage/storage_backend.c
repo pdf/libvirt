@@ -61,6 +61,9 @@
 #if WITH_STORAGE_LVM
 # include "storage_backend_logical.h"
 #endif
+#if WITH_STORAGE_ZFS
+# include "storage_backend_zfs.h"
+#endif
 #if WITH_STORAGE_ISCSI
 # include "storage_backend_iscsi.h"
 #endif
@@ -89,6 +92,9 @@ static virStorageBackendPtr backends[] = {
 #endif
 #if WITH_STORAGE_LVM
     &virStorageBackendLogical,
+#endif
+#if WITH_STORAGE_ZFS
+    &virStorageBackendZFS,
 #endif
 #if WITH_STORAGE_ISCSI
     &virStorageBackendISCSI,

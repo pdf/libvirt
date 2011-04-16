@@ -52,7 +52,7 @@ VIR_ENUM_IMPL(virStoragePool,
               VIR_STORAGE_POOL_LAST,
               "dir", "fs", "netfs",
               "logical", "disk", "iscsi",
-              "scsi", "mpath")
+              "scsi", "mpath", "zfs")
 
 VIR_ENUM_IMPL(virStoragePoolFormatFileSystem,
               VIR_STORAGE_POOL_FS_LAST,
@@ -73,6 +73,9 @@ VIR_ENUM_IMPL(virStoragePoolFormatLogical,
               VIR_STORAGE_POOL_LOGICAL_LAST,
               "unknown", "lvm2")
 
+VIR_ENUM_IMPL(virStoragePoolFormatZFS,
+              VIR_STORAGE_POOL_ZFS_LAST,
+              "zpool", "zpl")
 
 VIR_ENUM_IMPL(virStorageVolFormatDisk,
               VIR_STORAGE_VOL_DISK_LAST,
@@ -140,6 +143,15 @@ static virStoragePoolTypeInfo poolTypeInfo[] = {
             .defaultFormat = VIR_STORAGE_POOL_LOGICAL_LVM2,
             .formatFromString = virStoragePoolFormatLogicalTypeFromString,
             .formatToString = virStoragePoolFormatLogicalTypeToString,
+        },
+    },
+    { .poolType = VIR_STORAGE_POOL_ZFS,
+      .poolOptions = {
+            .flags = (VIR_STORAGE_POOL_SOURCE_NAME |
+                      VIR_STORAGE_POOL_SOURCE_DEVICE),
+            .defaultFormat = VIR_STORAGE_POOL_ZFS_ZPOOL,
+            .formatFromString = virStoragePoolFormatZFSTypeFromString,
+            .formatToString = virStoragePoolFormatZFSTypeToString,
         },
     },
     { .poolType = VIR_STORAGE_POOL_DIR,

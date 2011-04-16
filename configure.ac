@@ -1548,6 +1548,8 @@ AC_ARG_WITH([storage-fs],
   AC_HELP_STRING([--with-storage-fs], [with FileSystem backend for the storage driver @<:@default=check@:>@]),[],[with_storage_fs=check])
 AC_ARG_WITH([storage-lvm],
   AC_HELP_STRING([--with-storage-lvm], [with LVM backend for the storage driver @<:@default=check@:>@]),[],[with_storage_lvm=check])
+AC_ARG_WITH([storage-zfs],
+  AC_HELP_STRING([--with-storage-zfs], [with ZFS backend for the storage driver @<:@default=check@:>@]),[],[with_storage_zfs=check])
 AC_ARG_WITH([storage-iscsi],
   AC_HELP_STRING([--with-storage-iscsi], [with iSCSI backend for the storage driver @<:@default=check@:>@]),[],[with_storage_iscsi=check])
 AC_ARG_WITH([storage-scsi],
@@ -1562,6 +1564,7 @@ if test "$with_libvirtd" = "no"; then
   with_storage_dir=no
   with_storage_fs=no
   with_storage_lvm=no
+  with_storage_zfs=no
   with_storage_iscsi=no
   with_storage_scsi=no
   with_storage_mpath=no
@@ -1676,7 +1679,33 @@ if test "$with_storage_lvm" = "yes" || test "$with_storage_lvm" = "check"; then
 fi
 AM_CONDITIONAL([WITH_STORAGE_LVM], [test "$with_storage_lvm" = "yes"])
 
+if test "$with_storage_zfs" = "yes" || test "$with_storage_zfs" = "check"; then
+  AC_PATH_PROG([ZFS], [zfs], [], [$PATH:/sbin:/usr/sbin])
+  AC_PATH_PROG([ZPOOL], [zpool], [], [$PATH:/sbin:/usr/sbin])
 
+  if test "$with_storage_zfs" = "yes" ; then
+    if test -z "$ZFS" ; then AC_MSG_ERROR([We need zfs for ZFS storage driver]) ; fi
+    if test -z "$ZPOOL" ; then AC_MSG_ERROR([We need zpool for ZFS storage driver]) ; fi
+  else
+    if test -z "$ZFS" ; then with_storage_lvm=no ; fi
+    if test -z "$ZPOOL" ; then with_storage_lvm=no ; fi
+
+    if test "$with_storage_zfs" = "check" ; then with_storage_zfs=yes ; fi
+  fi
+
+  if test "$with_storage_zfs" = "yes" ; then
+    AC_DEFINE_UNQUOTED([WITH_STORAGE_ZFS], 1, [whether ZFS backend for storage driver is enabled])
+    AC_DEFINE_UNQUOTED([ZFS],["$ZFS"],[Location of zfs program])
+    AC_DEFINE_UNQUOTED([ZPOOL],["$ZPOOL"],[Location of zpool program])
+
+    ZVOL_DEV="/dev/zvol"
+    case "$host_os" in
+      solaris*) ZVOL_DEV="/dev/zvol/dsk" ;;
+    esac
+    AC_DEFINE_UNQUOTED([ZVOL_DEV],["$ZVOL_DEV"],[Location of zvol block devices])
+  fi
+fi
+AM_CONDITIONAL([WITH_STORAGE_ZFS], [test "$with_storage_zfs" = "yes"])
 
 if test "$with_storage_iscsi" = "yes" || test "$with_storage_iscsi" = "check"; then
   AC_PATH_PROG([ISCSIADM], [iscsiadm], [], [$PATH:/sbin:/usr/sbin])

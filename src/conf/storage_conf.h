@@ -120,6 +120,7 @@ enum virStoragePoolType {
     VIR_STORAGE_POOL_ISCSI,    /* iSCSI targets */
     VIR_STORAGE_POOL_SCSI,     /* SCSI HBA */
     VIR_STORAGE_POOL_MPATH,    /* Multipath devices */
+    VIR_STORAGE_POOL_ZFS,      /* ZFS volumes */
 
     VIR_STORAGE_POOL_LAST,
 };
@@ -440,6 +441,13 @@ enum virStoragePoolFormatLogical {
     VIR_STORAGE_POOL_LOGICAL_LAST,
 };
 VIR_ENUM_DECL(virStoragePoolFormatLogical)
+
+enum virStoragePoolFormatZFS {
+    VIR_STORAGE_POOL_ZFS_ZPOOL,
+    VIR_STORAGE_POOL_ZFS_ZPL,
+    VIR_STORAGE_POOL_ZFS_LAST,
+};
+VIR_ENUM_DECL(virStoragePoolFormatZFS)
 
 /*
  * XXX these are basically partition types.

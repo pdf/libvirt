@@ -363,6 +363,9 @@ STORAGE_DRIVER_LVM_SOURCES =					\
 		storage/storage_backend_logical.h			\
 		storage/storage_backend_logical.c
 
+STORAGE_DRIVER_ZFS_SOURCES =					\
+		storage/storage_backend_zfs.h storage/storage_backend_zfs.c
+
 STORAGE_DRIVER_ISCSI_SOURCES =					\
 		storage/storage_backend_iscsi.h storage/storage_backend_iscsi.c
 
@@ -910,6 +913,10 @@ if WITH_STORAGE_LVM
 libvirt_driver_storage_la_SOURCES += $(STORAGE_DRIVER_LVM_SOURCES)
 endif
 
+if WITH_STORAGE_ZFS
+libvirt_driver_storage_la_SOURCES += $(STORAGE_DRIVER_ZFS_SOURCES)
+endif
+
 if WITH_STORAGE_ISCSI
 libvirt_driver_storage_la_SOURCES += $(STORAGE_DRIVER_ISCSI_SOURCES)
 endif
@@ -1018,6 +1025,7 @@ EXTRA_DIST +=							\
 		$(STORAGE_DRIVER_SOURCES)			\
 		$(STORAGE_DRIVER_FS_SOURCES)			\
 		$(STORAGE_DRIVER_LVM_SOURCES)			\
+		$(STORAGE_DRIVER_ZFS_SOURCES)			\
 		$(STORAGE_DRIVER_ISCSI_SOURCES)			\
 		$(STORAGE_DRIVER_SCSI_SOURCES)			\
 		$(STORAGE_DRIVER_MPATH_SOURCES)			\
