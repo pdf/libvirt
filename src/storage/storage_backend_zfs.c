@@ -504,20 +504,21 @@ virStorageBackendZFSDeleteVol(virConnectPtr conn ATTRIBUTE_UNUSED,
 
 static int
 virStorageBackendZFSCreateVol(virConnectPtr conn,
-                                  virStoragePoolObjPtr pool,
-                                  virStorageVolDefPtr vol)
+                              virStoragePoolObjPtr pool,
+                              virStorageVolDefPtr vol)
 {
-    int fdret, fd = -1;
     char size[100];
+    char reservation[117];
     const char *cmdargvnew[] = {
-        LVCREATE, "--name", vol->name, "-L", size,
-        pool->def->target.path, NULL
+        ZFS, "create", "-V", size, NULL, NULL, NULL
     };
+    // TODO: snapshots
     const char *cmdargvsnap[] = {
         LVCREATE, "--name", vol->name, "-L", size,
         "-s", vol->backingStore.path, NULL
     };
-    const char **cmdargv = cmdargvnew;
+    const char **cmdargv;
+    int fdret, fd = -1;
 
     if (vol->target.encryption != NULL) {
         virStorageReportError(VIR_ERR_NO_SUPPORT,
@@ -526,12 +527,39 @@ virStorageBackendZFSCreateVol(virConnectPtr conn,
         return -1;
     }
 
-    if (vol->backingStore.path) {
-        cmdargv = cmdargvsnap;
-    }
-
+    /* This came from the LVM backend, but it's helpful in ZFS as it provides
+     * a guarantee that the requested size is a multiple of the volblocksize,
+     * which ZFS requires.
+     */
     snprintf(size, sizeof(size)-1, "%lluK", VIR_DIV_UP(vol->capacity, 1024));
     size[sizeof(size)-1] = '\0';
+
+    if (vol->backingStore.path) {
+        // TODO: snapshots
+        virStorageReportError(VIR_ERR_NO_SUPPORT,
+                              "%s", _("storage pool does not support snapshots yet"));
+        cmdargv = cmdargvsnap;
+    } else {
+        // TODO: zfs create each component of vol->name, ignoring errors.
+        if (virAsprintf(&vol->key, "%s/%s", pool->def->source.name,
+                        vol->name) == -1) {
+            virReportOOMError();
+            return -1;
+        }
+        cmdargvnew[4] = vol->key;
+
+        /* If the allocation and capacity are equal, we let ZFS create the
+         * reservation, as ZFS properly accounts for overhead.
+         */
+        if (vol->allocation != vol->capacity) {
+            snprintf(reservation, sizeof(reservation)-1,
+                     "-orefreservation=%lluK",
+                     VIR_DIV_UP(vol->allocation, 1024));
+            reservation[sizeof(reservation)-1] = '\0';
+            cmdargvnew[5] = reservation;
+        }
+        cmdargv = cmdargvnew;
+    }
 
     vol->type = VIR_STORAGE_VOL_BLOCK;
 
@@ -552,6 +580,8 @@ virStorageBackendZFSCreateVol(virConnectPtr conn,
         goto cleanup;
     fd = fdret;
 
+    // TODO: Either we can't support these, or we need to reset them on the
+    // TODO: volumes when we open/discover them.
     /* We can only chown/grp if root */
     if (getuid() == 0) {
         if (fchown(fd, vol->target.perms.uid, vol->target.perms.gid) < 0) {
@@ -577,7 +607,7 @@ virStorageBackendZFSCreateVol(virConnectPtr conn,
     fd = -1;
 
     /* Fill in data about this new vol */
-    if (virStorageBackendZFSFindLVs(pool, vol) < 0) {
+    if (virStorageBackendZFSFindVolumes(pool, vol) < 0) {
         virReportSystemError(errno,
                              _("cannot find newly created volume '%s'"),
                              vol->target.path);
@@ -620,6 +650,6 @@ virStorageBackend virStorageBackendZFS = {
     .deletePool = virStorageBackendZFSDeletePool,
 //    .buildVol = NULL,
 //    .buildVolFrom = virStorageBackendZFSBuildVolFrom,
-//    .createVol = virStorageBackendZFSCreateVol,
+    .createVol = virStorageBackendZFSCreateVol,
     .deleteVol = virStorageBackendZFSDeleteVol,
 };
