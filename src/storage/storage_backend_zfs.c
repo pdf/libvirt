@@ -186,7 +186,7 @@ virStorageBackendZFSMakeVol(virStoragePoolObjPtr pool,
     }
 
     if (vol->target.path == NULL) {
-        if (virAsprintf(&vol->target.path, "/dev/zvol/%s", vol->key) < 0) {
+        if (virAsprintf(&vol->target.path, ZVOL_DEV "/%s", vol->key) < 0) {
             virReportOOMError();
             virStorageVolDefFree(vol);
             return -1;
@@ -528,9 +528,7 @@ virStorageBackendZFSCreateVol(virConnectPtr conn,
         VIR_FREE(vol->target.path);
     }
 
-    if (virAsprintf(&vol->target.path, "%s/%s",
-                    pool->def->target.path,
-                    vol->name) == -1) {
+    if (virAsprintf(&vol->target.path, ZVOL_DEV "/%s", vol->key) == -1) {
         virReportOOMError();
         return -1;
     }
