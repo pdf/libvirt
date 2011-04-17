@@ -54,7 +54,7 @@ virStorageBackendZFSCheckPool(virConnectPtr conn ATTRIBUTE_UNUSED,
     };
     const char *slash;
     char *pool_name = NULL;
-    int status;
+    int exitstatus;
 
     if ((slash = (const char *)strchr(name, '/')) != NULL) {
         pool_name = strndup(name, slash - name);
@@ -65,11 +65,11 @@ virStorageBackendZFSCheckPool(virConnectPtr conn ATTRIBUTE_UNUSED,
         cmdargv[2] = pool_name;
     }
 
-    if (virRun(cmdargv, &status) < 0)
+    if (virRun(cmdargv, &exitstatus) < 0)
         goto cleanup;
     VIR_FREE(pool_name);
 
-    *isActive = (status == 0);
+    *isActive = (exitstatus == 0);
     return 0;
 
  cleanup:
@@ -88,7 +88,7 @@ virStorageBackendZFSSetActive(virStoragePoolObjPtr pool,
     };
     const char *slash;
     char *pool_name = NULL;
-    int status;
+    int exitstatus;
 
     if ((slash = (const char *)strchr(name, '/')) != NULL) {
         pool_name = strndup(name, slash - name);
@@ -99,13 +99,13 @@ virStorageBackendZFSSetActive(virStoragePoolObjPtr pool,
         cmdargv[2] = pool_name;
     }
 
-    if (virRun(cmdargv, &status) < 0)
+    if (virRun(cmdargv, &exitstatus) < 0)
         goto cleanup;
 
     /* If the pool is already in the correct state, exit.  Otherwise, the
      * import or export will fail.
      */
-    if ((status == 0) == (on != 0))
+    if ((exitstatus == 0) == (on != 0))
         goto success;
 
     cmdargv[1] = on ? "import" : "export";
@@ -191,9 +191,9 @@ virStorageBackendZFSMakeVol(virStoragePoolObjPtr pool,
         }
     }
 
+// TODO: Is this needed? What should we do here?
 #if 0
     if (groups[1] && !STREQ(groups[1], "")) {
-        // TODO
         if (virAsprintf(&vol->backingStore.path, "%s/%s",
                         pool->def->target.path, groups[1]) < 0) {
             virReportOOMError();
@@ -232,23 +232,11 @@ virStorageBackendZFSFindVolumes(virStoragePoolObjPtr pool,
         ZFS, "get", "-rHp", "type",
         pool->def->source.name, NULL
     };
-    int exitstatus;
 
     if (virStorageBackendRunProgRegex(pool, prog, 1, regexes, vars,
                                       virStorageBackendZFSMakeVol,
-                                      vol, &exitstatus) < 0) {
-        // TODO: Do we need this here? If so, add it elsewhere?
-        virStorageReportError(VIR_ERR_INTERNAL_ERROR,
-                              "%s", _("zfs command failed"));
+                                      vol, NULL) < 0)
         return -1;
-    }
-
-    if (exitstatus != 0) {
-        virStorageReportError(VIR_ERR_INTERNAL_ERROR,
-                              _("zfs command failed with exitstatus %d"),
-                              exitstatus);
-        return -1;
-    }
 
     return 0;
 }
@@ -344,7 +332,6 @@ virStorageBackendZFSFindPoolSources(virConnectPtr conn ATTRIBUTE_UNUSED,
     };
     const char *const zfsargv[] = { ZFS, "get", "-Hp", "type", NULL };
     const char *const zpoolargv[] = { ZPOOL, "list", "-Ho", "name", NULL };
-    int exitstatus;
     char *retval = NULL;
     virStoragePoolSourceList sourceList;
     int i;
@@ -355,16 +342,14 @@ virStorageBackendZFSFindPoolSources(virConnectPtr conn ATTRIBUTE_UNUSED,
     /* Find all volumes.  The callback will grab their parent pool/dataset. */
     if (virStorageBackendRunProgRegex(NULL, zfsargv, 1, regexes, vars,
                                       virStorageBackendZFSFindPoolSourcesFunc,
-                                      &sourceList,
-                                      &exitstatus) < 0 || exitstatus != 0)
+                                      &sourceList, NULL) < 0)
         goto cleanup;
 
     /* Find all pools. */
     regexes[0] = "^(\\S+)";
     if (virStorageBackendRunProgRegex(NULL, zpoolargv, 1, regexes, vars,
                                       virStorageBackendZFSFindPoolSourcesFunc,
-                                      &sourceList,
-                                      &exitstatus) < 0 || exitstatus != 0)
+                                      &sourceList, NULL) < 0)
         goto cleanup;
 
     retval = virStoragePoolSourceListFormat(&sourceList);
@@ -414,7 +399,6 @@ virStorageBackendZFSRefreshPool(virConnectPtr conn ATTRIBUTE_UNUSED,
         ZFS, "get", "-Hp", "used,available",
         pool->def->source.name, NULL
     };
-    int exitstatus;
 
     /* I'm not sure if this is necessary for ZFS. */
     virFileWaitForDevices();
@@ -427,8 +411,7 @@ virStorageBackendZFSRefreshPool(virConnectPtr conn ATTRIBUTE_UNUSED,
 
     if (virStorageBackendRunProgRegex(pool, prog, 1, regexes, vars,
                                       virStorageBackendZFSRefreshPoolFunc,
-                                      NULL,
-                                      &exitstatus) < 0 || exitstatus != 0) {
+                                      NULL, NULL) < 0) {
         virStoragePoolObjClearVols(pool);
         return -1;
     }
@@ -492,6 +475,7 @@ virStorageBackendZFSDeleteVol(virConnectPtr conn ATTRIBUTE_UNUSED,
     const char *cmdargv[] = {
         ZFS, "destroy", vol->key, NULL
     };
+    int exitstatus;
 
     if (virRun(cmdargv, NULL) < 0)
         return -1;
