@@ -484,22 +484,53 @@ virStorageBackendZFSDeleteVol(virConnectPtr conn ATTRIBUTE_UNUSED,
 }
 
 
+#define ZFS_CREATE_PARENT_DATASET(pool_name, parent, slash) \
+    do { \
+        if ((tmp = strndup(parent, slash - parent)) == NULL) { \
+            virReportOOMError(); \
+            VIR_FREE(parent); \
+            return -1; \
+        }; \
+        if (virAsprintf(&dataset_name, "%s/%s", pool_name, tmp) == -1) { \
+            virReportOOMError(); \
+            VIR_FREE(parent); \
+            VIR_FREE(tmp); \
+            return -1; \
+        }; \
+        VIR_FREE(tmp); \
+        cmdargv_parent[2] = dataset_name; \
+        /* Ignore errors, as this fails when the dataset already exists. */ \
+        if (virRun(cmdargv_parent, &exitstatus) < 0) { exitstatus = 0; }; \
+    } while (0)
+
 static int
 virStorageBackendZFSCreateVol(virConnectPtr conn,
                               virStoragePoolObjPtr pool,
                               virStorageVolDefPtr vol)
 {
+    const char *cmdargv_parent[] = {
+        ZFS, "create", NULL, NULL
+    };
     char size[100];
     char reservation[117];
-    const char *cmdargvnew[] = {
+    const char *cmdargv_new[] = {
         ZFS, "create", "-V", size, NULL, NULL, NULL
     };
     // TODO: snapshots
-    const char *cmdargvsnap[] = {
+    const char *cmdargv_snapshot[] = {
         LVCREATE, "--name", vol->name, "-L", size,
         "-s", vol->backingStore.path, NULL
     };
     const char **cmdargv;
+    const char *pool_name = pool->def->source.name;
+    const char *vol_name = vol->name;
+    const char *slash;
+    char *parent;
+    const char *remaining;
+    char *tmp;
+    char *dataset_name;
+    int exitstatus;
+
     int fdret, fd = -1;
 
     if (vol->target.encryption != NULL) {
@@ -520,15 +551,30 @@ virStorageBackendZFSCreateVol(virConnectPtr conn,
         // TODO: snapshots
         virStorageReportError(VIR_ERR_NO_SUPPORT,
                               "%s", _("storage pool does not support snapshots yet"));
-        cmdargv = cmdargvsnap;
+        cmdargv = cmdargv_snapshot;
     } else {
-        // TODO: zfs create each component of vol->name, ignoring errors.
-        if (virAsprintf(&vol->key, "%s/%s", pool->def->source.name,
-                        vol->name) == -1) {
+        /* Recursively create the parent datasets. */
+        if ((slash = strrchr(vol_name, '/')) != NULL) {
+            if ((parent = strndup(vol_name, slash - vol_name)) == NULL) {
+                virReportOOMError();
+                return -1;
+            }
+
+            remaining = parent;
+            while ((slash = strchr(remaining, '/')) != NULL) {
+                ZFS_CREATE_PARENT_DATASET(pool_name, parent, slash);
+                remaining = slash + 1;
+            }
+            ZFS_CREATE_PARENT_DATASET(pool_name, parent, slash);
+            VIR_FREE(parent);
+        }
+
+        if (virAsprintf(&vol->key, "%s/%s", pool_name,
+                        vol_name) == -1) {
             virReportOOMError();
             return -1;
         }
-        cmdargvnew[4] = vol->key;
+        cmdargv_new[4] = vol->key;
 
         /* If the allocation and capacity are equal, we let ZFS create the
          * reservation, as ZFS properly accounts for overhead.
@@ -538,9 +584,9 @@ virStorageBackendZFSCreateVol(virConnectPtr conn,
                      "-orefreservation=%lluK",
                      VIR_DIV_UP(vol->allocation, 1024));
             reservation[sizeof(reservation)-1] = '\0';
-            cmdargvnew[5] = reservation;
+            cmdargv_new[5] = reservation;
         }
-        cmdargv = cmdargvnew;
+        cmdargv = cmdargv_new;
     }
 
     vol->type = VIR_STORAGE_VOL_BLOCK;
