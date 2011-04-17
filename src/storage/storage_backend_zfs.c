@@ -165,7 +165,7 @@ virStorageBackendZFSMakeVol(virStoragePoolObjPtr pool,
          */
         pool_name = pool->def->source.name;
         pool_name_len = strlen(pool_name);
-        if (STREQLEN(pool_name, groups[0], pool_name_len) != 0) {
+        if (STRNEQLEN(pool_name, groups[0], pool_name_len)) {
             virStorageVolDefFree(vol);
             return -1;
         }
