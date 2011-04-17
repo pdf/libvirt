@@ -165,7 +165,7 @@ virStorageBackendZFSMakeVol(virStoragePoolObjPtr pool,
          */
         pool_name = pool->def->source.name;
         pool_name_len = strlen(pool_name);
-        if (strncmp(pool_name, groups[0], pool_name_len) != 0) {
+        if (STREQLEN(pool_name, groups[0], pool_name_len) != 0) {
             virStorageVolDefFree(vol);
             return -1;
         }
@@ -283,8 +283,9 @@ virStorageBackendZFSFindPoolSourcesFunc(virStoragePoolObjPtr pool ATTRIBUTE_UNUS
     if ((slash = strrchr(name, '/')) != NULL) {
         format = VIR_STORAGE_POOL_ZFS_ZPL;
         *slash = '\0';
-    } else
+    } else {
         format = VIR_STORAGE_POOL_ZFS_ZPOOL;
+    }
 
     /* If this pool/dataset has already been found, exit. */
     for (i = 0 ; i < sourceList->nsources; i++) {
@@ -446,9 +447,9 @@ virStorageBackendZFSDeletePool(virConnectPtr conn ATTRIBUTE_UNUSED,
         NULL, "destroy", name, NULL
     };
 
-    if (strchr(name, '/') != NULL)
+    if (strchr(name, '/') != NULL) {
         cmdargv[0] = ZFS;
-    else {
+    } else {
         cmdargv[0] = ZPOOL;
         /* zpools must be imported to be destroyed.  However, the libvirt API
          * requires pools to be inactive before it'll call deletePool.  So, we
