@@ -483,11 +483,23 @@ virStorageBackendZFSDeletePool(virConnectPtr conn ATTRIBUTE_UNUSED,
 }
 
 
+/* TODO: At some point, there should be an easy way to handle clone promotion
+ * TODO: so the original volume can be deleted. */
 static int
-virStorageBackendZFSDeleteVol(virConnectPtr conn,
-                                  virStoragePoolObjPtr pool,
-                                  virStorageVolDefPtr vol,
-                                  unsigned int flags);
+virStorageBackendZFSDeleteVol(virConnectPtr conn ATTRIBUTE_UNUSED,
+                              virStoragePoolObjPtr pool ATTRIBUTE_UNUSED,
+                              virStorageVolDefPtr vol,
+                              unsigned int flags ATTRIBUTE_UNUSED)
+{
+    const char *cmdargv[] = {
+        ZFS, "destroy", vol->key, NULL
+    };
+
+    if (virRun(cmdargv, NULL) < 0)
+        return -1;
+
+    return 0;
+}
 
 
 static int
@@ -596,22 +608,6 @@ virStorageBackendZFSBuildVolFrom(virConnectPtr conn,
     return build_func(conn, pool, vol, inputvol, flags);
 }
 
-static int
-virStorageBackendZFSDeleteVol(virConnectPtr conn ATTRIBUTE_UNUSED,
-                                  virStoragePoolObjPtr pool ATTRIBUTE_UNUSED,
-                                  virStorageVolDefPtr vol,
-                                  unsigned int flags ATTRIBUTE_UNUSED)
-{
-    const char *cmdargv[] = {
-        LVREMOVE, "-f", vol->target.path, NULL
-    };
-
-    if (virRun(cmdargv, NULL) < 0)
-        return -1;
-
-    return 0;
-}
-
 
 virStorageBackend virStorageBackendZFS = {
     .type = VIR_STORAGE_POOL_ZFS,
@@ -625,5 +621,5 @@ virStorageBackend virStorageBackendZFS = {
 //    .buildVol = NULL,
 //    .buildVolFrom = virStorageBackendZFSBuildVolFrom,
 //    .createVol = virStorageBackendZFSCreateVol,
-//    .deleteVol = virStorageBackendZFSDeleteVol,
+    .deleteVol = virStorageBackendZFSDeleteVol,
 };
