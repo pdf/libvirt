@@ -55,18 +55,19 @@ struct __lxc_driver {
     int log_libvirtd;
     int have_netns;
 
-    /* An array of callbacks */
-    virDomainEventCallbackListPtr domainEventCallbacks;
-    virDomainEventQueuePtr domainEventQueue;
-    int domainEventTimer;
-    int domainEventDispatching;
+    virDomainEventStatePtr domainEventState;
+
+    /* Mapping of 'char *uuidstr' -> virConnectPtr
+     * of guests which will be automatically killed
+     * when the virConnectPtr is closed*/
+    virHashTablePtr autodestroy;
 };
 
 int lxcLoadDriverConfig(lxc_driver_t *driver);
 virCapsPtr lxcCapsInit(void);
 
 # define lxcError(code, ...)                                             \
-    virReportErrorHelper(NULL, VIR_FROM_LXC, code, __FILE__,            \
+    virReportErrorHelper(VIR_FROM_LXC, code, __FILE__,                   \
                          __FUNCTION__, __LINE__, __VA_ARGS__)
 
 #endif /* LXC_CONF_H */

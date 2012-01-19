@@ -23,13 +23,21 @@
 # define __QEMU_PROCESS_H__
 
 # include "qemu_conf.h"
+# include "qemu_domain.h"
 
 int qemuProcessPrepareMonitorChr(struct qemud_driver *driver,
                                  virDomainChrSourceDefPtr monConfig,
                                  const char *vm);
 
-int qemuProcessStartCPUs(struct qemud_driver *driver, virDomainObjPtr vm, virConnectPtr conn);
-int qemuProcessStopCPUs(struct qemud_driver *driver, virDomainObjPtr vm);
+int qemuProcessStartCPUs(struct qemud_driver *driver,
+                         virDomainObjPtr vm,
+                         virConnectPtr conn,
+                         virDomainRunningReason reason,
+                         enum qemuDomainAsyncJob asyncJob);
+int qemuProcessStopCPUs(struct qemud_driver *driver,
+                        virDomainObjPtr vm,
+                        virDomainPausedReason reason,
+                        enum qemuDomainAsyncJob asyncJob);
 
 void qemuProcessAutostartAll(struct qemud_driver *driver);
 void qemuProcessReconnectAll(virConnectPtr conn, struct qemud_driver *driver);
@@ -41,12 +49,37 @@ int qemuProcessStart(virConnectPtr conn,
                      virDomainObjPtr vm,
                      const char *migrateFrom,
                      bool start_paused,
+                     bool autodestroy,
                      int stdin_fd,
                      const char *stdin_path,
-                     enum virVMOperationType vmop);
+                     virDomainSnapshotObjPtr snapshot,
+                     enum virNetDevVPortProfileOp vmop);
 
 void qemuProcessStop(struct qemud_driver *driver,
                      virDomainObjPtr vm,
-                     int migrated);
+                     int migrated,
+                     virDomainShutoffReason reason);
+
+int qemuProcessAttach(virConnectPtr conn,
+                      struct qemud_driver *driver,
+                      virDomainObjPtr vm,
+                      int pid,
+                      const char *pidfile,
+                      virDomainChrSourceDefPtr monConfig,
+                      bool monJSON);
+
+void qemuProcessKill(virDomainObjPtr vm, bool gracefully);
+
+int qemuProcessAutoDestroyInit(struct qemud_driver *driver);
+void qemuProcessAutoDestroyRun(struct qemud_driver *driver,
+                               virConnectPtr conn);
+void qemuProcessAutoDestroyShutdown(struct qemud_driver *driver);
+int qemuProcessAutoDestroyAdd(struct qemud_driver *driver,
+                              virDomainObjPtr vm,
+                              virConnectPtr conn);
+int qemuProcessAutoDestroyRemove(struct qemud_driver *driver,
+                                 virDomainObjPtr vm);
+bool qemuProcessAutoDestroyActive(struct qemud_driver *driver,
+                                  virDomainObjPtr vm);
 
 #endif /* __QEMU_PROCESS_H__ */

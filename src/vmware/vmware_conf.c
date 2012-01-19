@@ -29,7 +29,7 @@
 #include "dirname.h"
 #include "memory.h"
 #include "nodeinfo.h"
-#include "files.h"
+#include "virfile.h"
 #include "uuid.h"
 #include "virterror_internal.h"
 #include "vmx.h"
@@ -48,6 +48,13 @@ vmwareFreeDriver(struct vmware_driver *driver)
     virCapabilitiesFree(driver->caps);
     VIR_FREE(driver);
 }
+
+
+static int vmwareDefaultConsoleType(const char *ostype ATTRIBUTE_UNUSED)
+{
+    return VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_SERIAL;
+}
+
 
 virCapsPtr
 vmwareCapsInit(void)
@@ -117,6 +124,8 @@ vmwareCapsInit(void)
             goto error;
     }
 
+    caps->defaultConsoleTargetType = vmwareDefaultConsoleType;
+
 cleanup:
     virCPUDefFree(cpu);
     cpuDataFree(utsname.machine, data);
@@ -185,7 +194,8 @@ vmwareLoadDomains(struct vmware_driver *driver)
         if ((vm->def->id = vmwareExtractPid(vmxPath)) < 0)
             goto cleanup;
         /* vmrun list only reports running vms */
-        vm->state = VIR_DOMAIN_RUNNING;
+        virDomainObjSetState(vm, VIR_DOMAIN_RUNNING,
+                             VIR_DOMAIN_RUNNING_UNKNOWN);
         vm->persistent = 1;
 
         virDomainObjUnlock(vm);
@@ -247,7 +257,7 @@ vmwareExtractVersion(struct vmware_driver *driver)
         goto cleanup;
     }
 
-    if (virParseVersionString(tmp, &version) < 0) {
+    if (virParseVersionString(tmp, &version, false) < 0) {
         vmwareError(VIR_ERR_INTERNAL_ERROR, "%s",
                     _("version parsing error"));
         goto cleanup;

@@ -32,7 +32,7 @@
 #define VIR_FROM_THIS VIR_FROM_NONE
 
 #define virLibConnError(code, ...)                                \
-    virReportErrorHelper(NULL, VIR_FROM_THIS, code, __FILE__,     \
+    virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,           \
                          __FUNCTION__, __LINE__, __VA_ARGS__)
 
 /************************************************************************
@@ -738,10 +738,10 @@ virGetStorageVol(virConnectPtr conn, const char *pool, const char *name,
         virReportOOMError();
         goto error;
     }
-    if (virStrcpyStatic(ret->key, key) == NULL) {
+    ret->key = strdup(key);
+    if (ret->key == NULL) {
         virMutexUnlock(&conn->lock);
-        virLibConnError(VIR_ERR_INTERNAL_ERROR,
-                        _("Volume key %s too large for destination"), key);
+        virReportOOMError();
         goto error;
     }
     ret->magic = VIR_STORAGE_VOL_MAGIC;
@@ -754,6 +754,7 @@ virGetStorageVol(virConnectPtr conn, const char *pool, const char *name,
 
 error:
     if (ret != NULL) {
+        VIR_FREE(ret->key);
         VIR_FREE(ret->name);
         VIR_FREE(ret->pool);
         VIR_FREE(ret);
@@ -780,6 +781,7 @@ virReleaseStorageVol(virStorageVolPtr vol) {
     VIR_DEBUG("release vol %p %s", vol, vol->name);
 
     vol->magic = -1;
+    VIR_FREE(vol->key);
     VIR_FREE(vol->name);
     VIR_FREE(vol->pool);
     VIR_FREE(vol);

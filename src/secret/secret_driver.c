@@ -1,7 +1,7 @@
 /*
  * secret_driver.c: local driver for secret manipulation API
  *
- * Copyright (C) 2009-2010 Red Hat, Inc.
+ * Copyright (C) 2009-2011 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -40,7 +40,7 @@
 #include "util.h"
 #include "uuid.h"
 #include "virterror_internal.h"
-#include "files.h"
+#include "virfile.h"
 #include "configmake.h"
 
 #define VIR_FROM_THIS VIR_FROM_SECRET
@@ -142,6 +142,11 @@ secretFindByUsage(virSecretDriverStatePtr driver, int usageType, const char *usa
 
         case VIR_SECRET_USAGE_TYPE_VOLUME:
             if (STREQ(s->def->usage.volume, usageID))
+                return s;
+            break;
+
+        case VIR_SECRET_USAGE_TYPE_CEPH:
+            if (STREQ(s->def->usage.ceph, usageID))
                 return s;
             break;
         }
@@ -516,12 +521,6 @@ loadSecrets(virSecretDriverStatePtr driver,
     ret = 0;
 
 cleanup:
-    while (list != NULL) {
-        virSecretEntryPtr s;
-
-        s = listUnlink(&list);
-        secretFree(s);
-    }
     if (dir != NULL)
         closedir(dir);
     return ret;
@@ -531,7 +530,10 @@ cleanup:
 
 static virDrvOpenStatus
 secretOpen(virConnectPtr conn, virConnectAuthPtr auth ATTRIBUTE_UNUSED,
-           int flags ATTRIBUTE_UNUSED) {
+           unsigned int flags)
+{
+    virCheckFlags(VIR_CONNECT_RO, VIR_DRV_OPEN_ERROR);
+
     if (driverState == NULL)
         return VIR_DRV_OPEN_DECLINED;
 
@@ -610,6 +612,9 @@ secretUsageIDForDef(virSecretDefPtr def)
     case VIR_SECRET_USAGE_TYPE_VOLUME:
         return def->usage.volume;
 
+    case VIR_SECRET_USAGE_TYPE_CEPH:
+        return def->usage.ceph;
+
     default:
         return NULL;
     }
@@ -673,13 +678,15 @@ cleanup:
 
 static virSecretPtr
 secretDefineXML(virConnectPtr conn, const char *xml,
-                unsigned int flags ATTRIBUTE_UNUSED)
+                unsigned int flags)
 {
     virSecretDriverStatePtr driver = conn->secretPrivateData;
     virSecretPtr ret = NULL;
     virSecretEntryPtr secret;
     virSecretDefPtr backup = NULL;
     virSecretDefPtr new_attrs;
+
+    virCheckFlags(0, NULL);
 
     new_attrs = virSecretDefParseString(xml);
     if (new_attrs == NULL)
@@ -784,11 +791,13 @@ cleanup:
 }
 
 static char *
-secretGetXMLDesc(virSecretPtr obj, unsigned int flags ATTRIBUTE_UNUSED)
+secretGetXMLDesc(virSecretPtr obj, unsigned int flags)
 {
     virSecretDriverStatePtr driver = obj->conn->secretPrivateData;
     char *ret = NULL;
     virSecretEntryPtr secret;
+
+    virCheckFlags(0, NULL);
 
     secretDriverLock(driver);
 
@@ -811,13 +820,15 @@ cleanup:
 
 static int
 secretSetValue(virSecretPtr obj, const unsigned char *value,
-               size_t value_size, unsigned int flags ATTRIBUTE_UNUSED)
+               size_t value_size, unsigned int flags)
 {
     virSecretDriverStatePtr driver = obj->conn->secretPrivateData;
     int ret = -1;
     unsigned char *old_value, *new_value;
     size_t old_value_size;
     virSecretEntryPtr secret;
+
+    virCheckFlags(0, -1);
 
     if (VIR_ALLOC_N(new_value, value_size) < 0) {
         virReportOOMError();
@@ -870,11 +881,14 @@ cleanup:
 }
 
 static unsigned char *
-secretGetValue(virSecretPtr obj, size_t *value_size, unsigned int flags)
+secretGetValue(virSecretPtr obj, size_t *value_size, unsigned int flags,
+               unsigned int internalFlags)
 {
     virSecretDriverStatePtr driver = obj->conn->secretPrivateData;
     unsigned char *ret = NULL;
     virSecretEntryPtr secret;
+
+    virCheckFlags(0, NULL);
 
     secretDriverLock(driver);
 
@@ -895,7 +909,7 @@ secretGetValue(virSecretPtr obj, size_t *value_size, unsigned int flags)
         goto cleanup;
     }
 
-    if ((flags & VIR_SECRET_GET_VALUE_INTERNAL_CALL) == 0 &&
+    if ((internalFlags & VIR_SECRET_GET_VALUE_INTERNAL_CALL) == 0 &&
         secret->def->private) {
         virSecretReportError(VIR_ERR_OPERATION_DENIED, "%s",
                              _("secret is private"));
@@ -1021,7 +1035,7 @@ secretDriverStartup(int privileged)
     return 0;
 
  out_of_memory:
-    VIR_ERROR0(_("Out of memory initializing secrets"));
+    VIR_ERROR(_("Out of memory initializing secrets"));
  error:
     VIR_FREE(base);
     secretDriverUnlock(driverState);
@@ -1062,17 +1076,17 @@ secretDriverReload(void)
 
 static virSecretDriver secretDriver = {
     .name = "secret",
-    .open = secretOpen,
-    .close = secretClose,
-    .numOfSecrets = secretNumOfSecrets,
-    .listSecrets = secretListSecrets,
-    .lookupByUUID = secretLookupByUUID,
-    .lookupByUsage = secretLookupByUsage,
-    .defineXML = secretDefineXML,
-    .getXMLDesc = secretGetXMLDesc,
-    .setValue = secretSetValue,
-    .getValue = secretGetValue,
-    .undefine = secretUndefine
+    .open = secretOpen, /* 0.7.1 */
+    .close = secretClose, /* 0.7.1 */
+    .numOfSecrets = secretNumOfSecrets, /* 0.7.1 */
+    .listSecrets = secretListSecrets, /* 0.7.1 */
+    .lookupByUUID = secretLookupByUUID, /* 0.7.1 */
+    .lookupByUsage = secretLookupByUsage, /* 0.7.1 */
+    .defineXML = secretDefineXML, /* 0.7.1 */
+    .getXMLDesc = secretGetXMLDesc, /* 0.7.1 */
+    .setValue = secretSetValue, /* 0.7.1 */
+    .getValue = secretGetValue, /* 0.7.1 */
+    .undefine = secretUndefine, /* 0.7.1 */
 };
 
 static virStateDriver stateDriver = {

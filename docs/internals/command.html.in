@@ -445,7 +445,7 @@
       <strong>Note:</strong> if the command has been daemonized
       this will only block &amp; wait for the intermediate process,
       not the real command. <code>virCommandRun</code> will
-      report on any errors that have occured upon this point
+      report on any errors that have occurred upon this point
       with all previous API calls. If the command fails to
       run, or exits with non-zero status an error will be
       reported via normal libvirt error infrastructure. If a
@@ -497,6 +497,23 @@
       error if not.
     </p>
 
+    <p>
+      There are two approaches to child process cleanup, determined by
+      how long you want to keep the virCommand object in scope.
+    </p>
+
+    <p>1. If the virCommand object will outlast the child process,
+      then pass NULL for the pid argument, and the child process will
+      automatically be reaped at virCommandFree, unless you reap it
+      sooner via virCommandWait or virCommandAbort.
+    </p>
+
+    <p>2. If the child process must exist on at least one code path
+      after virCommandFree, then pass a pointer for the pid argument.
+      Later, to clean up the child, call virPidWait or virPidAbort.
+      Before virCommandFree, you can still use virCommandWait or
+      virCommandAbort to reap the process.
+    </p>
 
     <h3><a name="release">Releasing resources</a></h3>
 

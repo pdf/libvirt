@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009-2011 Red Hat, Inc.
+ * Copyright (C) 2009-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -32,12 +32,13 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 #include "logging.h"
 #include "memory.h"
-#include "util.h"
+#include "command.h"
 #include "virterror_internal.h"
-#include "files.h"
+#include "virfile.h"
 
 /* avoid compilation breakage on some systems */
 #ifndef MODPROBE
@@ -48,6 +49,10 @@
 #define PCI_ID_LEN 10   /* "XXXX XXXX" */
 #define PCI_ADDR_LEN 13 /* "XXXX:XX:XX.X" */
 
+#define SRIOV_FOUND 0
+#define SRIOV_NOT_FOUND 1
+#define SRIOV_ERROR -1
+
 struct _pciDevice {
     unsigned      domain;
     unsigned      bus;
@@ -56,7 +61,8 @@ struct _pciDevice {
 
     char          name[PCI_ADDR_LEN]; /* domain:bus:slot.function */
     char          id[PCI_ID_LEN];     /* product vendor */
-    char          path[PATH_MAX];
+    char          *path;
+    const char    *used_by;           /* The domain which uses the device */
     int           fd;
 
     unsigned      initted;
@@ -82,7 +88,7 @@ struct _pciDeviceList {
 #define VIR_FROM_THIS VIR_FROM_NONE
 
 #define pciReportError(code, ...)                              \
-    virReportErrorHelper(NULL, VIR_FROM_NONE, code, __FILE__,  \
+    virReportErrorHelper(VIR_FROM_NONE, code, __FILE__,        \
                          __FUNCTION__, __LINE__, __VA_ARGS__)
 
 /* Specifications referenced in comments:
@@ -293,7 +299,7 @@ pciIterDevices(pciIterPredicate predicate,
 
     dir = opendir(PCI_SYSFS "devices");
     if (!dir) {
-        VIR_WARN0("Failed to open " PCI_SYSFS "devices");
+        VIR_WARN("Failed to open " PCI_SYSFS "devices");
         return -1;
     }
 
@@ -614,7 +620,7 @@ pciTrySecondaryBusReset(pciDevice *dev,
      * are not in use by the host or other guests.
      */
     if ((conflict = pciBusContainsActiveDevices(dev, inactiveDevs))) {
-        pciReportError(VIR_ERR_NO_SUPPORT,
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Active %s devices on bus with %s, not doing bus reset"),
                        conflict->name, dev->name);
         return -1;
@@ -624,7 +630,7 @@ pciTrySecondaryBusReset(pciDevice *dev,
     if (pciGetParentDevice(dev, &parent) < 0)
         return -1;
     if (!parent) {
-        pciReportError(VIR_ERR_NO_SUPPORT,
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Failed to find parent device for %s"),
                        dev->name);
         return -1;
@@ -637,7 +643,7 @@ pciTrySecondaryBusReset(pciDevice *dev,
      * are multiple devices/functions
      */
     if (pciRead(dev, 0, config_space, PCI_CONF_LEN) < 0) {
-        pciReportError(VIR_ERR_NO_SUPPORT,
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Failed to read PCI config space for %s"),
                        dev->name);
         goto out;
@@ -657,7 +663,7 @@ pciTrySecondaryBusReset(pciDevice *dev,
     usleep(200 * 1000); /* sleep 200ms */
 
     if (pciWrite(dev, 0, config_space, PCI_CONF_LEN) < 0) {
-        pciReportError(VIR_ERR_NO_SUPPORT,
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Failed to restore PCI config space for %s"),
                        dev->name);
         goto out;
@@ -683,7 +689,7 @@ pciTryPowerManagementReset(pciDevice *dev)
 
     /* Save and restore the device's config space. */
     if (pciRead(dev, 0, &config_space[0], PCI_CONF_LEN) < 0) {
-        pciReportError(VIR_ERR_NO_SUPPORT,
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Failed to read PCI config space for %s"),
                        dev->name);
         return -1;
@@ -703,7 +709,7 @@ pciTryPowerManagementReset(pciDevice *dev)
     usleep(10 * 1000); /* sleep 10ms */
 
     if (pciWrite(dev, 0, &config_space[0], PCI_CONF_LEN) < 0) {
-        pciReportError(VIR_ERR_NO_SUPPORT,
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Failed to restore PCI config space for %s"),
                        dev->name);
         return -1;
@@ -770,7 +776,7 @@ pciResetDevice(pciDevice *dev,
 
     if (ret < 0) {
         virErrorPtr err = virGetLastError();
-        pciReportError(VIR_ERR_NO_SUPPORT,
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Unable to reset PCI device %s: %s"),
                        dev->name,
                        err ? err->message : _("no FLR, PM reset or bus reset available"));
@@ -879,15 +885,16 @@ pciUnbindDeviceFromStub(pciDevice *dev, const char *driver)
     char *drvdir = NULL;
     char *path = NULL;
 
+    if (pciDriverDir(&drvdir, driver) < 0)
+        goto cleanup;
+
     if (!dev->unbind_from_stub)
         goto remove_slot;
 
     /* If the device is bound to stub, unbind it.
      */
-    if (pciDriverDir(&drvdir, driver) < 0 ||
-        pciDeviceFile(&path, dev->name, "driver") < 0) {
+    if (pciDeviceFile(&path, dev->name, "driver") < 0)
         goto cleanup;
-    }
 
     if (virFileExists(drvdir) && virFileLinkPointsTo(path, drvdir)) {
         if (pciDriverFile(&path, driver, "unbind") < 0) {
@@ -1110,7 +1117,9 @@ cleanup:
 }
 
 int
-pciDettachDevice(pciDevice *dev, pciDeviceList *activeDevs)
+pciDettachDevice(pciDevice *dev,
+                 pciDeviceList *activeDevs,
+                 pciDeviceList *inactiveDevs)
 {
     const char *driver = pciFindStubDriver();
     if (!driver) {
@@ -1125,11 +1134,22 @@ pciDettachDevice(pciDevice *dev, pciDeviceList *activeDevs)
         return -1;
     }
 
-    return pciBindDeviceToStub(dev, driver);
+    if (pciBindDeviceToStub(dev, driver) < 0)
+        return -1;
+
+    /* Add the dev into list inactiveDevs */
+    if (inactiveDevs && !pciDeviceListFind(inactiveDevs, dev)) {
+        if (pciDeviceListAdd(inactiveDevs, dev) < 0)
+            return -1;
+    }
+
+    return 0;
 }
 
 int
-pciReAttachDevice(pciDevice *dev, pciDeviceList *activeDevs)
+pciReAttachDevice(pciDevice *dev,
+                  pciDeviceList *activeDevs,
+                  pciDeviceList *inactiveDevs)
 {
     const char *driver = pciFindStubDriver();
     if (!driver) {
@@ -1144,7 +1164,14 @@ pciReAttachDevice(pciDevice *dev, pciDeviceList *activeDevs)
         return -1;
     }
 
-    return pciUnbindDeviceFromStub(dev, driver);
+    if (pciUnbindDeviceFromStub(dev, driver) < 0)
+        return -1;
+
+    /* Steal the dev from list inactiveDevs */
+    if (inactiveDevs)
+        pciDeviceListSteal(inactiveDevs, dev);
+
+    return 0;
 }
 
 /* Certain hypervisors (like qemu/kvm) map the PCI bar(s) on
@@ -1194,7 +1221,7 @@ pciWaitForDeviceCleanup(pciDevice *dev, const char *matcher)
          * unbind might succeed anyway, and besides, it's very likely we have
          * no way to report the error
          */
-        VIR_DEBUG0("Failed to open /proc/iomem, trying to continue anyway");
+        VIR_DEBUG("Failed to open /proc/iomem, trying to continue anyway");
         return 0;
     }
 
@@ -1286,6 +1313,30 @@ pciReadDeviceID(pciDevice *dev, const char *id_name)
     return id_str;
 }
 
+int
+pciGetDeviceAddrString(unsigned domain,
+                       unsigned bus,
+                       unsigned slot,
+                       unsigned function,
+                       char **pciConfigAddr)
+{
+    pciDevice *dev = NULL;
+    int ret = -1;
+
+    dev = pciGetDevice(domain, bus, slot, function);
+    if (dev != NULL) {
+        if ((*pciConfigAddr = strdup(dev->name)) == NULL) {
+            virReportOOMError();
+            goto cleanup;
+        }
+        ret = 0;
+    }
+
+cleanup:
+    pciFreeDevice(dev);
+    return ret;
+}
+
 pciDevice *
 pciGetDevice(unsigned domain,
              unsigned bus,
@@ -1293,7 +1344,8 @@ pciGetDevice(unsigned domain,
              unsigned function)
 {
     pciDevice *dev;
-    char *vendor, *product;
+    char *vendor = NULL;
+    char *product = NULL;
 
     if (VIR_ALLOC(dev) < 0) {
         virReportOOMError();
@@ -1306,41 +1358,57 @@ pciGetDevice(unsigned domain,
     dev->slot     = slot;
     dev->function = function;
 
-    snprintf(dev->name, sizeof(dev->name), "%.4x:%.2x:%.2x.%.1x",
-             dev->domain, dev->bus, dev->slot, dev->function);
-    snprintf(dev->path, sizeof(dev->path),
-             PCI_SYSFS "devices/%s/config", dev->name);
+    if (snprintf(dev->name, sizeof(dev->name), "%.4x:%.2x:%.2x.%.1x",
+                 dev->domain, dev->bus, dev->slot,
+                 dev->function) >= sizeof(dev->name)) {
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("dev->name buffer overflow: %.4x:%.2x:%.2x.%.1x"),
+                       dev->domain, dev->bus, dev->slot, dev->function);
+        goto error;
+    }
+    if (virAsprintf(&dev->path, PCI_SYSFS "devices/%s/config",
+                    dev->name) < 0) {
+        virReportOOMError();
+        goto error;
+    }
 
     if (access(dev->path, F_OK) != 0) {
         virReportSystemError(errno,
                              _("Device %s not found: could not access %s"),
                              dev->name, dev->path);
-        pciFreeDevice(dev);
-        return NULL;
+        goto error;
     }
 
     vendor  = pciReadDeviceID(dev, "vendor");
     product = pciReadDeviceID(dev, "device");
 
     if (!vendor || !product) {
-        pciReportError(VIR_ERR_NO_SUPPORT,
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Failed to read product/vendor ID for %s"),
                        dev->name);
-        VIR_FREE(product);
-        VIR_FREE(vendor);
-        pciFreeDevice(dev);
-        return NULL;
+        goto error;
     }
 
     /* strings contain '0x' prefix */
-    snprintf(dev->id, sizeof(dev->id), "%s %s", &vendor[2], &product[2]);
-
-    VIR_FREE(product);
-    VIR_FREE(vendor);
+    if (snprintf(dev->id, sizeof(dev->id), "%s %s", &vendor[2],
+                 &product[2]) >= sizeof(dev->id)) {
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("dev->id buffer overflow: %s %s"),
+                       &vendor[2], &product[2]);
+        goto error;
+    }
 
     VIR_DEBUG("%s %s: initialized", dev->id, dev->name);
 
+cleanup:
+    VIR_FREE(product);
+    VIR_FREE(vendor);
     return dev;
+
+error:
+    pciFreeDevice(dev);
+    dev = NULL;
+    goto cleanup;
 }
 
 void
@@ -1350,7 +1418,14 @@ pciFreeDevice(pciDevice *dev)
         return;
     VIR_DEBUG("%s %s: freeing", dev->id, dev->name);
     pciCloseConfig(dev);
+    VIR_FREE(dev->path);
     VIR_FREE(dev);
+}
+
+const char *
+pciDeviceGetName(pciDevice *dev)
+{
+    return dev->name;
 }
 
 void pciDeviceSetManaged(pciDevice *dev, unsigned managed)
@@ -1362,6 +1437,62 @@ unsigned pciDeviceGetManaged(pciDevice *dev)
 {
     return dev->managed;
 }
+
+unsigned
+pciDeviceGetUnbindFromStub(pciDevice *dev)
+{
+    return dev->unbind_from_stub;
+}
+
+void
+pciDeviceSetUnbindFromStub(pciDevice *dev, unsigned unbind)
+{
+    dev->unbind_from_stub = !!unbind;
+}
+
+unsigned
+pciDeviceGetRemoveSlot(pciDevice *dev)
+{
+    return dev->remove_slot;
+}
+
+void
+pciDeviceSetRemoveSlot(pciDevice *dev, unsigned remove_slot)
+{
+    dev->remove_slot = !!remove_slot;
+}
+
+unsigned
+pciDeviceGetReprobe(pciDevice *dev)
+{
+    return dev->reprobe;
+}
+
+void
+pciDeviceSetReprobe(pciDevice *dev, unsigned reprobe)
+{
+    dev->reprobe = !!reprobe;
+}
+
+void
+pciDeviceSetUsedBy(pciDevice *dev, const char *name)
+{
+    dev->used_by = name;
+}
+
+const char *
+pciDeviceGetUsedBy(pciDevice *dev)
+{
+    return dev->used_by;
+}
+
+void pciDeviceReAttachInit(pciDevice *pci)
+{
+    pci->unbind_from_stub = 1;
+    pci->remove_slot = 1;
+    pci->reprobe = 1;
+}
+
 
 pciDeviceList *
 pciDeviceListNew(void)
@@ -1587,7 +1718,7 @@ pciDeviceIsBehindSwitchLackingACS(pciDevice *dev)
         if (dev->bus == 0)
             return 0;
         else {
-            pciReportError(VIR_ERR_NO_SUPPORT,
+            pciReportError(VIR_ERR_INTERNAL_ERROR,
                            _("Failed to find parent device for %s"),
                            dev->name);
             return -1;
@@ -1642,7 +1773,7 @@ int pciDeviceIsAssignable(pciDevice *dev,
             VIR_DEBUG("%s %s: strict ACS check disabled; device assignment allowed",
                       dev->id, dev->name);
         } else {
-            pciReportError(VIR_ERR_NO_SUPPORT,
+            pciReportError(VIR_ERR_INTERNAL_ERROR,
                            _("Device %s is behind a switch lacking ACS and "
                              "cannot be assigned"),
                            dev->name);
@@ -1652,3 +1783,396 @@ int pciDeviceIsAssignable(pciDevice *dev,
 
     return 1;
 }
+
+#ifdef __linux__
+
+/*
+ * returns true if equal
+ */
+static bool
+pciConfigAddressEqual(struct pci_config_address *bdf1,
+                      struct pci_config_address *bdf2)
+{
+    return ((bdf1->domain == bdf2->domain) &&
+            (bdf1->bus == bdf2->bus) &&
+            (bdf1->slot == bdf2->slot) &&
+            (bdf1->function == bdf2->function));
+}
+
+static int
+logStrToLong_ui(char const *s,
+                char **end_ptr,
+                int base,
+                unsigned int *result)
+{
+    int ret = 0;
+
+    ret = virStrToLong_ui(s, end_ptr, base, result);
+    if (ret != 0) {
+        VIR_ERROR(_("Failed to convert '%s' to unsigned int"), s);
+    } else {
+        VIR_DEBUG("Converted '%s' to unsigned int %u", s, *result);
+    }
+
+    return ret;
+}
+
+static int
+pciParsePciConfigAddress(char *address,
+                         struct pci_config_address *bdf)
+{
+    char *p = NULL;
+    int ret = -1;
+
+    if ((address == NULL) || (logStrToLong_ui(address, &p, 16,
+                                              &bdf->domain) == -1)) {
+        goto out;
+    }
+
+    if ((p == NULL) || (logStrToLong_ui(p+1, &p, 16,
+                                        &bdf->bus) == -1)) {
+        goto out;
+    }
+
+    if ((p == NULL) || (logStrToLong_ui(p+1, &p, 16,
+                                        &bdf->slot) == -1)) {
+        goto out;
+    }
+
+    if ((p == NULL) || (logStrToLong_ui(p+1, &p, 16,
+                                        &bdf->function) == -1)) {
+        goto out;
+    }
+
+    ret = 0;
+
+out:
+    return ret;
+}
+
+static int
+pciGetPciConfigAddressFromSysfsDeviceLink(const char *device_link,
+                                          struct pci_config_address **bdf)
+{
+    char *config_address = NULL;
+    char *device_path = NULL;
+    char errbuf[64];
+    int ret = -1;
+
+    VIR_DEBUG("Attempting to resolve device path from device link '%s'",
+              device_link);
+
+    if (!virFileExists(device_link)) {
+        VIR_DEBUG("sysfs_path '%s' does not exist", device_link);
+        return ret;
+    }
+
+    device_path = canonicalize_file_name (device_link);
+    if (device_path == NULL) {
+        memset(errbuf, '\0', sizeof(errbuf));
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Failed to resolve device link '%s': '%s'"),
+                       device_link, virStrerror(errno, errbuf,
+                       sizeof(errbuf)));
+        return ret;
+    }
+
+    config_address = basename(device_path);
+    if (VIR_ALLOC(*bdf) != 0) {
+        virReportOOMError();
+        goto out;
+    }
+
+    if (pciParsePciConfigAddress(config_address, *bdf) != 0) {
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Failed to parse PCI config address '%s'"),
+                       config_address);
+        VIR_FREE(*bdf);
+        goto out;
+    }
+
+    VIR_DEBUG("pci_config_address %.4x:%.2x:%.2x.%.1x",
+              (*bdf)->domain,
+              (*bdf)->bus,
+              (*bdf)->slot,
+              (*bdf)->function);
+
+    ret = 0;
+
+out:
+    VIR_FREE(device_path);
+
+    return ret;
+}
+
+/*
+ * Returns Physical function given a virtual function
+ */
+int
+pciGetPhysicalFunction(const char *vf_sysfs_path,
+                       struct pci_config_address **physical_function)
+{
+    int ret = -1;
+    char *device_link = NULL;
+
+    VIR_DEBUG("Attempting to get SR IOV physical function for device "
+              "with sysfs path '%s'", vf_sysfs_path);
+
+    if (virBuildPath(&device_link, vf_sysfs_path, "physfn") == -1) {
+        virReportOOMError();
+        return ret;
+    } else {
+        ret = pciGetPciConfigAddressFromSysfsDeviceLink(device_link,
+                                                        physical_function);
+    }
+
+    VIR_FREE(device_link);
+
+    return ret;
+}
+
+/*
+ * Returns virtual functions of a physical function
+ */
+int
+pciGetVirtualFunctions(const char *sysfs_path,
+                       struct pci_config_address ***virtual_functions,
+                       unsigned int *num_virtual_functions)
+{
+    int ret = -1;
+    DIR *dir = NULL;
+    struct dirent *entry = NULL;
+    char *device_link = NULL;
+    char errbuf[64];
+
+    VIR_DEBUG("Attempting to get SR IOV virtual functions for device"
+              "with sysfs path '%s'", sysfs_path);
+
+    dir = opendir(sysfs_path);
+    if (dir == NULL) {
+        memset(errbuf, '\0', sizeof(errbuf));
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Failed to open dir '%s': '%s'"),
+                       sysfs_path, virStrerror(errno, errbuf,
+                       sizeof(errbuf)));
+        return ret;
+    }
+
+    *virtual_functions = NULL;
+    *num_virtual_functions = 0;
+    while ((entry = readdir(dir))) {
+        if (STRPREFIX(entry->d_name, "virtfn")) {
+
+            if (virBuildPath(&device_link, sysfs_path, entry->d_name) == -1) {
+                virReportOOMError();
+                goto out;
+            }
+
+            VIR_DEBUG("Number of virtual functions: %d",
+                      *num_virtual_functions);
+            if (VIR_REALLOC_N(*virtual_functions,
+                (*num_virtual_functions) + 1) != 0) {
+                virReportOOMError();
+                VIR_FREE(device_link);
+                goto out;
+            }
+
+            if (pciGetPciConfigAddressFromSysfsDeviceLink(device_link,
+                &((*virtual_functions)[*num_virtual_functions])) !=
+                SRIOV_FOUND) {
+                /* We should not get back SRIOV_NOT_FOUND in this
+                 * case, so if we do, it's an error. */
+                pciReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("Failed to get SR IOV function from device "
+                               "link '%s'"), device_link);
+                VIR_FREE(device_link);
+                goto out;
+            } else {
+                (*num_virtual_functions)++;
+            }
+            VIR_FREE(device_link);
+        }
+    }
+
+    ret = 0;
+
+out:
+    if (dir)
+        closedir(dir);
+
+    return ret;
+}
+
+/*
+ * Returns 1 if vf device is a virtual function, 0 if not, -1 on error
+ */
+int
+pciDeviceIsVirtualFunction(const char *vf_sysfs_device_link)
+{
+    char *vf_sysfs_physfn_link = NULL;
+    int ret = -1;
+
+    if (virAsprintf(&vf_sysfs_physfn_link, "%s/physfn",
+        vf_sysfs_device_link) < 0) {
+        virReportOOMError();
+        return ret;
+    }
+
+    ret = virFileExists(vf_sysfs_physfn_link);
+
+    VIR_FREE(vf_sysfs_physfn_link);
+
+    return ret;
+}
+
+/*
+ * Returns the sriov virtual function index of vf given its pf
+ */
+int
+pciGetVirtualFunctionIndex(const char *pf_sysfs_device_link,
+                           const char *vf_sysfs_device_link,
+                           int *vf_index)
+{
+    int ret = -1, i;
+    unsigned int num_virt_fns = 0;
+    struct pci_config_address *vf_bdf = NULL;
+    struct pci_config_address **virt_fns = NULL;
+
+    if (pciGetPciConfigAddressFromSysfsDeviceLink(vf_sysfs_device_link,
+        &vf_bdf) < 0)
+        return ret;
+
+    if (pciGetVirtualFunctions(pf_sysfs_device_link, &virt_fns,
+        &num_virt_fns) < 0) {
+        pciReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Error getting physical function's '%s' "
+                      "virtual_functions"), pf_sysfs_device_link);
+        goto out;
+    }
+
+    for (i = 0; i < num_virt_fns; i++) {
+         if (pciConfigAddressEqual(vf_bdf, virt_fns[i])) {
+             *vf_index = i;
+             ret = 0;
+             break;
+         }
+    }
+
+out:
+
+    /* free virtual functions */
+    for (i = 0; i < num_virt_fns; i++)
+         VIR_FREE(virt_fns[i]);
+
+    VIR_FREE(virt_fns);
+    VIR_FREE(vf_bdf);
+
+    return ret;
+}
+
+/*
+ * Returns a path to the PCI sysfs file given the BDF of the PCI function
+ */
+
+int
+pciSysfsFile(char *pciDeviceName, char **pci_sysfs_device_link)
+{
+    if (virAsprintf(pci_sysfs_device_link, PCI_SYSFS "devices/%s",
+                    pciDeviceName) < 0) {
+        virReportOOMError();
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
+ * Returns the network device name of a pci device
+ */
+int
+pciDeviceNetName(char *device_link_sysfs_path, char **netname)
+{
+     char *pcidev_sysfs_net_path = NULL;
+     int ret = -1;
+     DIR *dir = NULL;
+     struct dirent *entry = NULL;
+
+     if (virBuildPath(&pcidev_sysfs_net_path, device_link_sysfs_path,
+         "net") == -1) {
+         virReportOOMError();
+         return -1;
+     }
+
+     dir = opendir(pcidev_sysfs_net_path);
+     if (dir == NULL)
+         goto out;
+
+     while ((entry = readdir(dir))) {
+            if (STREQ(entry->d_name, ".") ||
+                STREQ(entry->d_name, ".."))
+                continue;
+
+            /* Assume a single directory entry */
+            *netname = strdup(entry->d_name);
+            if (!*netname)
+                virReportOOMError();
+            else
+                ret = 0;
+            break;
+     }
+
+     closedir(dir);
+
+out:
+     VIR_FREE(pcidev_sysfs_net_path);
+
+     return ret;
+}
+#else
+int
+pciGetPhysicalFunction(const char *vf_sysfs_path ATTRIBUTE_UNUSED,
+              struct pci_config_address **physical_function ATTRIBUTE_UNUSED)
+{
+    pciReportError(VIR_ERR_INTERNAL_ERROR, _("pciGetPhysicalFunction is not "
+                   "supported on non-linux platforms"));
+    return -1;
+}
+
+int
+pciGetVirtualFunctions(const char *sysfs_path ATTRIBUTE_UNUSED,
+             struct pci_config_address ***virtual_functions ATTRIBUTE_UNUSED,
+             unsigned int *num_virtual_functions ATTRIBUTE_UNUSED)
+{
+    pciReportError(VIR_ERR_INTERNAL_ERROR, _("pciGetVirtualFunctions is not "
+                   "supported on non-linux platforms"));
+    return -1;
+}
+
+int
+pciDeviceIsVirtualFunction(const char *vf_sysfs_device_link ATTRIBUTE_UNUSED)
+{
+    pciReportError(VIR_ERR_INTERNAL_ERROR, _("pciDeviceIsVirtualFunction is "
+                   "not supported on non-linux platforms"));
+    return -1;
+}
+
+int
+pciGetVirtualFunctionIndex(const char *pf_sysfs_device_link ATTRIBUTE_UNUSED,
+                           const char *vf_sysfs_device_link ATTRIBUTE_UNUSED,
+                           int *vf_index ATTRIBUTE_UNUSED)
+{
+    pciReportError(VIR_ERR_INTERNAL_ERROR, _("pciGetVirtualFunctionIndex is "
+                   "not supported on non-linux platforms"));
+    return -1;
+
+}
+
+int
+pciDeviceNetName(char *device_link_sysfs_path ATTRIBUTE_UNUSED,
+                 char **netname ATTRIBUTE_UNUSED)
+{
+    pciReportError(VIR_ERR_INTERNAL_ERROR, _("pciDeviceNetName is not "
+                   "supported on non-linux platforms"));
+    return -1;
+}
+#endif /* __linux__ */

@@ -40,6 +40,11 @@ int virCgroupForDomain(virCgroupPtr driver,
                        virCgroupPtr *group,
                        int create);
 
+int virCgroupForVcpu(virCgroupPtr driver,
+                     int vcpuid,
+                     virCgroupPtr *group,
+                     int create);
+
 int virCgroupPathOfController(virCgroupPtr group,
                               int controller,
                               const char *key,
@@ -49,6 +54,10 @@ int virCgroupAddTask(virCgroupPtr group, pid_t pid);
 
 int virCgroupSetBlkioWeight(virCgroupPtr group, unsigned int weight);
 int virCgroupGetBlkioWeight(virCgroupPtr group, unsigned int *weight);
+
+int virCgroupSetBlkioDeviceWeight(virCgroupPtr group,
+                                  const char *path,
+                                  unsigned int weight);
 
 int virCgroupSetMemory(virCgroupPtr group, unsigned long long kb);
 int virCgroupGetMemoryUsage(virCgroupPtr group, unsigned long *kb);
@@ -99,10 +108,19 @@ int virCgroupDenyDevicePath(virCgroupPtr group,
 int virCgroupSetCpuShares(virCgroupPtr group, unsigned long long shares);
 int virCgroupGetCpuShares(virCgroupPtr group, unsigned long long *shares);
 
+int virCgroupSetCpuCfsPeriod(virCgroupPtr group, unsigned long long cfs_period);
+int virCgroupGetCpuCfsPeriod(virCgroupPtr group, unsigned long long *cfs_period);
+
+int virCgroupSetCpuCfsQuota(virCgroupPtr group, long long cfs_quota);
+int virCgroupGetCpuCfsQuota(virCgroupPtr group, long long *cfs_quota);
+
 int virCgroupGetCpuacctUsage(virCgroupPtr group, unsigned long long *usage);
 
 int virCgroupSetFreezerState(virCgroupPtr group, const char *state);
 int virCgroupGetFreezerState(virCgroupPtr group, char **state);
+
+int virCgroupSetCpusetMems(virCgroupPtr group, const char *mems);
+int virCgroupGetCpusetMems(virCgroupPtr group, char **mems);
 
 int virCgroupRemove(virCgroupPtr group);
 

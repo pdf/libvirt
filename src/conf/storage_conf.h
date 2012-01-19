@@ -1,7 +1,7 @@
 /*
  * storage_conf.h: config handling for storage driver
  *
- * Copyright (C) 2006-2008, 2010 Red Hat, Inc.
+ * Copyright (C) 2006-2008, 2010-2011 Red Hat, Inc.
  * Copyright (C) 2006-2008 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -325,7 +325,7 @@ static inline int virStoragePoolObjIsActive(virStoragePoolObjPtr pool) {
 }
 
 # define virStorageReportError(code, ...)                                \
-    virReportErrorHelper(NULL, VIR_FROM_STORAGE, code, __FILE__,        \
+    virReportErrorHelper(VIR_FROM_STORAGE, code, __FILE__,               \
                          __FUNCTION__, __LINE__, __VA_ARGS__)
 
 int virStoragePoolLoadAllConfigs(virStoragePoolObjListPtr pools,
@@ -336,6 +336,8 @@ virStoragePoolObjPtr virStoragePoolObjFindByUUID(virStoragePoolObjListPtr pools,
                                                  const unsigned char *uuid);
 virStoragePoolObjPtr virStoragePoolObjFindByName(virStoragePoolObjListPtr pools,
                                                  const char *name);
+virStoragePoolObjPtr virStoragePoolSourceFindDuplicateDevices(virStoragePoolObjPtr pool,
+                                                              virStoragePoolDefPtr def);
 
 virStorageVolDefPtr virStorageVolDefFindByKey(virStoragePoolObjPtr pool,
                                               const char *key);
@@ -371,6 +373,7 @@ int virStoragePoolObjSaveDef(virStorageDriverStatePtr driver,
 int virStoragePoolObjDeleteDef(virStoragePoolObjPtr pool);
 
 void virStorageVolDefFree(virStorageVolDefPtr def);
+void virStoragePoolSourceClear(virStoragePoolSourcePtr source);
 void virStoragePoolSourceFree(virStoragePoolSourcePtr source);
 void virStoragePoolDefFree(virStoragePoolDefPtr def);
 void virStoragePoolObjFree(virStoragePoolObjPtr pool);
@@ -388,6 +391,9 @@ char *virStoragePoolSourceListFormat(virStoragePoolSourceListPtr def);
 int virStoragePoolObjIsDuplicate(virStoragePoolObjListPtr pools,
                                  virStoragePoolDefPtr def,
                                  unsigned int check_active);
+
+int virStoragePoolSourceFindDuplicate(virStoragePoolObjListPtr pools,
+                                      virStoragePoolDefPtr def);
 
 void virStoragePoolObjLock(virStoragePoolObjPtr obj);
 void virStoragePoolObjUnlock(virStoragePoolObjPtr obj);

@@ -1,5 +1,8 @@
 ## Process this file with automake to produce Makefile.in
 
+## Copyright (C) 2005-2011 Red Hat, Inc.
+## See COPYING.LIB for the License of this software
+
 LCOV = lcov
 GENHTML = genhtml
 
@@ -18,7 +21,7 @@ EXTRA_DIST = \
   ChangeLog-old \
   libvirt.spec libvirt.spec.in \
   mingw32-libvirt.spec.in \
-  libvirt.pc libvirt.pc.in \
+  libvirt.pc.in \
   autobuild.sh \
   Makefile.nonreentrant \
   autogen.sh \

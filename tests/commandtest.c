@@ -34,33 +34,26 @@
 #include "util.h"
 #include "memory.h"
 #include "command.h"
-#include "files.h"
+#include "virfile.h"
+#include "virpidfile.h"
 
 #ifdef WIN32
 
-static int
-mymain(int argc ATTRIBUTE_UNUSED, char **argv ATTRIBUTE_UNUSED)
+int
+main(void)
 {
-    exit (EXIT_AM_SKIP);
+    return EXIT_AM_SKIP;
 }
 
 #else
 
-static char *progname;
-static char *abs_srcdir;
-
-
 static int checkoutput(const char *testname)
 {
     int ret = -1;
-    char cwd[1024];
     char *expectname = NULL;
     char *expectlog = NULL;
     char *actualname = NULL;
     char *actuallog = NULL;
-
-    if (!getcwd(cwd, sizeof(cwd)))
-        return -1;
 
     if (virAsprintf(&expectname, "%s/commanddata/%s.log", abs_srcdir,
                     testname) < 0)
@@ -86,7 +79,8 @@ static int checkoutput(const char *testname)
     ret = 0;
 
 cleanup:
-    unlink(actualname);
+    if (actualname)
+        unlink(actualname);
     VIR_FREE(actuallog);
     VIR_FREE(actualname);
     VIR_FREE(expectlog);
@@ -221,7 +215,7 @@ cleanup:
 static int test4(const void *unused ATTRIBUTE_UNUSED)
 {
     virCommandPtr cmd = virCommandNew(abs_builddir "/commandhelper");
-    char *pidfile = virFilePid(abs_builddir, "commandhelper");
+    char *pidfile = virPidFileBuildPath(abs_builddir, "commandhelper");
     pid_t pid;
     int ret = -1;
 
@@ -237,7 +231,7 @@ static int test4(const void *unused ATTRIBUTE_UNUSED)
         goto cleanup;
     }
 
-    if (virFileReadPid(abs_builddir, "commandhelper", &pid) != 0) {
+    if (virPidFileRead(abs_builddir, "commandhelper", &pid) < 0) {
         printf("cannot read pidfile\n");
         goto cleanup;
     }
@@ -248,7 +242,8 @@ static int test4(const void *unused ATTRIBUTE_UNUSED)
 
 cleanup:
     virCommandFree(cmd);
-    unlink(pidfile);
+    if (pidfile)
+        unlink(pidfile);
     VIR_FREE(pidfile);
     return ret;
 }
@@ -357,11 +352,22 @@ static int test9(const void *unused ATTRIBUTE_UNUSED)
 {
     virCommandPtr cmd = virCommandNew(abs_builddir "/commandhelper");
     const char* const args[] = { "arg1", "arg2", NULL };
+    virBuffer buf = VIR_BUFFER_INITIALIZER;
 
     virCommandAddArg(cmd, "-version");
     virCommandAddArgPair(cmd, "-log", "bar.log");
     virCommandAddArgSet(cmd, args);
-    virCommandAddArgList(cmd, "arg3", "arg4", NULL);
+    virCommandAddArgBuffer(cmd, &buf);
+    virBufferAddLit(&buf, "arg4");
+    virCommandAddArgBuffer(cmd, &buf);
+    virCommandAddArgList(cmd, "arg5", "arg6", NULL);
+
+    if (virBufferUse(&buf)) {
+        printf("Buffer not transferred\n");
+        virBufferFreeAndReset(&buf);
+        virCommandFree(cmd);
+        return -1;
+    }
 
     if (virCommandRun(cmd, NULL) < 0) {
         virErrorPtr err = virGetLastError();
@@ -572,9 +578,9 @@ cleanup:
  */
 static int test16(const void *unused ATTRIBUTE_UNUSED)
 {
-    virCommandPtr cmd = virCommandNew("/bin/true");
+    virCommandPtr cmd = virCommandNew("true");
     char *outactual = NULL;
-    const char *outexpect = "A=B /bin/true C";
+    const char *outexpect = "A=B true C";
     int ret = -1;
     int fd = -1;
 
@@ -616,7 +622,7 @@ cleanup:
  */
 static int test17(const void *unused ATTRIBUTE_UNUSED)
 {
-    virCommandPtr cmd = virCommandNew("/bin/true");
+    virCommandPtr cmd = virCommandNew("true");
     int ret = -1;
     char *outbuf;
     char *errbuf;
@@ -674,7 +680,7 @@ cleanup:
 static int test18(const void *unused ATTRIBUTE_UNUSED)
 {
     virCommandPtr cmd = virCommandNewArgList("sleep", "100", NULL);
-    char *pidfile = virFilePid(abs_builddir, "commandhelper");
+    char *pidfile = virPidFileBuildPath(abs_builddir, "commandhelper");
     pid_t pid;
     int ret = -1;
 
@@ -692,7 +698,7 @@ static int test18(const void *unused ATTRIBUTE_UNUSED)
     }
     alarm(0);
 
-    if (virFileReadPid(abs_builddir, "commandhelper", &pid) != 0) {
+    if (virPidFileRead(abs_builddir, "commandhelper", &pid) < 0) {
         printf("cannot read pidfile\n");
         goto cleanup;
     }
@@ -711,7 +717,8 @@ static int test18(const void *unused ATTRIBUTE_UNUSED)
 
 cleanup:
     virCommandFree(cmd);
-    unlink(pidfile);
+    if (pidfile)
+        unlink(pidfile);
     VIR_FREE(pidfile);
     return ret;
 }
@@ -753,23 +760,23 @@ cleanup:
     return ret;
 }
 
+static const char *const newenv[] = {
+    "PATH=/usr/bin:/bin",
+    "HOSTNAME=test",
+    "LANG=C",
+    "HOME=/home/test",
+    "USER=test",
+    "LOGNAME=test"
+    "TMPDIR=/tmp",
+    "DISPLAY=:0.0",
+    NULL
+};
+
 static int
-mymain(int argc, char **argv)
+mymain(void)
 {
     int ret = 0;
-    char cwd[PATH_MAX];
     int fd;
-
-    abs_srcdir = getenv("abs_srcdir");
-    if (!abs_srcdir)
-        abs_srcdir = getcwd(cwd, sizeof(cwd));
-
-    progname = argv[0];
-
-    if (argc > 1) {
-        fprintf(stderr, "Usage: %s\n", progname);
-        return(EXIT_FAILURE);
-    }
 
     if (chdir("/tmp") < 0)
         return(EXIT_FAILURE);
@@ -777,8 +784,31 @@ mymain(int argc, char **argv)
     setpgid(0, 0);
     setsid();
 
-    /* Kill off any inherited fds that might interfere with our
-     * testing.  */
+    /* Our test expects particular fd values; to get that, we must not
+     * leak fds that we inherited from a lazy parent.  At the same
+     * time, virInitialize may open some fds (perhaps via third-party
+     * libraries that it uses), and we must not kill off an fd that
+     * this process opens as it might break expectations of a
+     * pthread_atfork handler, as well as interfering with our tests
+     * trying to ensure we aren't leaking to our children.  The
+     * solution is to do things in two phases - reserve the fds we
+     * want by overwriting any externally inherited fds, then
+     * initialize, then clear the slots for testing.  */
+    if ((fd = open("/dev/null", O_RDONLY)) < 0 ||
+        dup2(fd, 3) < 0 ||
+        dup2(fd, 4) < 0 ||
+        dup2(fd, 5) < 0 ||
+        (fd > 5 && VIR_CLOSE(fd) < 0))
+        return EXIT_FAILURE;
+
+    /* Prime the debug/verbose settings from the env vars,
+     * since we're about to reset 'environ' */
+    virTestGetDebug();
+    virTestGetVerbose();
+
+    virInitialize();
+
+    /* Phase two of killing interfering fds; see above.  */
     fd = 3;
     VIR_FORCE_CLOSE(fd);
     fd = 4;
@@ -786,19 +816,6 @@ mymain(int argc, char **argv)
     fd = 5;
     VIR_FORCE_CLOSE(fd);
 
-    virInitialize();
-
-    const char *const newenv[] = {
-        "PATH=/usr/bin:/bin",
-        "HOSTNAME=test",
-        "LANG=C",
-        "HOME=/home/test",
-        "USER=test",
-        "LOGNAME=test"
-        "TMPDIR=/tmp",
-        "DISPLAY=:0.0",
-        NULL
-    };
     environ = (char **)newenv;
 
 # define DO_TEST(NAME)                                                \
@@ -830,6 +847,6 @@ mymain(int argc, char **argv)
     return(ret==0 ? EXIT_SUCCESS : EXIT_FAILURE);
 }
 
-#endif /* !WIN32 */
-
 VIRT_TEST_MAIN(mymain)
+
+#endif /* !WIN32 */

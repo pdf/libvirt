@@ -24,6 +24,7 @@
 #include <config.h>
 #include "storage_file.h"
 
+#include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
 #ifdef __linux__
@@ -36,7 +37,7 @@
 #include "memory.h"
 #include "virterror_internal.h"
 #include "logging.h"
-#include "files.h"
+#include "virfile.h"
 
 #define VIR_FROM_THIS VIR_FROM_STORAGE
 
@@ -273,7 +274,7 @@ qcowXGetBackingStore(char **res,
                      bool isQCow2)
 {
     unsigned long long offset;
-    unsigned long size;
+    unsigned int size;
 
     *res = NULL;
     if (format)
@@ -332,7 +333,7 @@ qcowXGetBackingStore(char **res,
      * between the end of the header (QCOW2_HDR_TOTAL_SIZE)
      * and the start of the backingStoreName (offset)
      */
-    if (isQCow2)
+    if (isQCow2 && format)
         qcow2GetBackingStoreFormat(format, buf, buf_size, QCOW2_HDR_TOTAL_SIZE, offset);
 
     return BACKING_STORE_OK;
@@ -511,7 +512,7 @@ absolutePathFromBaseFile(const char *base_file, const char *path)
     if (d_len > INT_MAX)
         return NULL;
 
-    virAsprintf(&res, "%.*s/%s", (int) d_len, base_file, path);
+    ignore_value(virAsprintf(&res, "%.*s/%s", (int) d_len, base_file, path));
     return res;
 }
 
@@ -736,6 +737,19 @@ virStorageFileProbeFormatFromFD(const char *path, int fd)
     unsigned char *head;
     ssize_t len = STORAGE_MAX_HEAD;
     int ret = -1;
+    struct stat sb;
+
+    if (fstat(fd, &sb) < 0) {
+        virReportSystemError(errno,
+                             _("cannot stat file '%s'"),
+                             path);
+        return -1;
+    }
+
+    /* No header to probe for directories */
+    if (S_ISDIR(sb.st_mode)) {
+        return VIR_STORAGE_FILE_DIR;
+    }
 
     if (VIR_ALLOC_N(head, len) < 0) {
         virReportOOMError();
@@ -805,6 +819,8 @@ virStorageFileProbeFormat(const char *path)
  * it indicates the image didn't specify an explicit format for its
  * backing store. Callers are advised against probing for the
  * backing store format in this case.
+ *
+ * Caller MUST free @meta after use via virStorageFileFreeMetadata.
  */
 int
 virStorageFileGetMetadataFromFD(const char *path,
@@ -812,20 +828,33 @@ virStorageFileGetMetadataFromFD(const char *path,
                                 int format,
                                 virStorageFileMetadata *meta)
 {
-    unsigned char *head;
+    unsigned char *head = NULL;
     ssize_t len = STORAGE_MAX_HEAD;
     int ret = -1;
+    struct stat sb;
+
+    memset(meta, 0, sizeof (*meta));
+
+    if (fstat(fd, &sb) < 0) {
+        virReportSystemError(errno,
+                             _("cannot stat file '%s'"),
+                             path);
+        return -1;
+    }
+
+    /* No header to probe for directories */
+    if (S_ISDIR(sb.st_mode)) {
+        return 0;
+    }
+
+    if (lseek(fd, 0, SEEK_SET) == (off_t)-1) {
+        virReportSystemError(errno, _("cannot seek to start of '%s'"), path);
+        return -1;
+    }
 
     if (VIR_ALLOC_N(head, len) < 0) {
         virReportOOMError();
         return -1;
-    }
-
-    memset(meta, 0, sizeof (*meta));
-
-    if (lseek(fd, 0, SEEK_SET) == (off_t)-1) {
-        virReportSystemError(errno, _("cannot seek to start of '%s'"), path);
-        goto cleanup;
     }
 
     if ((len = read(fd, head, len)) < 0) {
@@ -865,6 +894,8 @@ cleanup:
  * it indicates the image didn't specify an explicit format for its
  * backing store. Callers are advised against probing for the
  * backing store format in this case.
+ *
+ * Caller MUST free @meta after use via virStorageFileFreeMetadata.
  */
 int
 virStorageFileGetMetadata(const char *path,
@@ -885,6 +916,20 @@ virStorageFileGetMetadata(const char *path,
     return ret;
 }
 
+/**
+ * virStorageFileFreeMetadata:
+ *
+ * Free pointers in passed structure and structure itself.
+ */
+void
+virStorageFileFreeMetadata(virStorageFileMetadata *meta)
+{
+    if (!meta)
+        return;
+
+    VIR_FREE(meta->backingStore);
+    VIR_FREE(meta);
+}
 
 #ifdef __linux__
 

@@ -28,6 +28,7 @@
 # include "internal.h"
 
 # include "domain_conf.h"
+# include "qemu_conf.h"
 # include "hash.h"
 
 typedef struct _qemuMonitor qemuMonitor;
@@ -49,12 +50,16 @@ struct _qemuMonitorMessage {
     int txOffset;
     int txLength;
 
+    /* Used by the text monitor reply / error */
     char *rxBuffer;
     int rxLength;
+    /* Used by the JSON monitor to hold reply / error */
+    void *rxObject;
 
-    int finished;
-
-    int lastErrno;
+    /* True if rxBuffer / rxObject are ready, or a
+     * fatal error occurred on the monitor channel
+     */
+    bool finished;
 
     qemuMonitorPasswordHandler passwordHandler;
     void *passwordOpaque;
@@ -67,9 +72,10 @@ struct _qemuMonitorCallbacks {
                     virDomainObjPtr vm);
 
     void (*eofNotify)(qemuMonitorPtr mon,
-                      virDomainObjPtr vm,
-                      int withError);
-    /* XXX we'd really like to avoid virCOnnectPtr here
+                      virDomainObjPtr vm);
+    void (*errorNotify)(qemuMonitorPtr mon,
+                        virDomainObjPtr vm);
+    /* XXX we'd really like to avoid virConnectPtr here
      * It is required so the callback can find the active
      * secret driver. Need to change this to work like the
      * security drivers do, to avoid this
@@ -112,11 +118,15 @@ struct _qemuMonitorCallbacks {
                           const char *authScheme,
                           const char *x509dname,
                           const char *saslUsername);
+    int (*domainBlockJob)(qemuMonitorPtr mon,
+                          virDomainObjPtr vm,
+                          const char *diskAlias,
+                          int type,
+                          int status);
 };
 
 
 char *qemuMonitorEscapeArg(const char *in);
-char *qemuMonitorEscapeShell(const char *in);
 
 qemuMonitorPtr qemuMonitorOpen(virDomainObjPtr vm,
                                virDomainChrSourceDefPtr config,
@@ -135,7 +145,12 @@ void qemuMonitorUnlock(qemuMonitorPtr mon);
 int qemuMonitorRef(qemuMonitorPtr mon);
 int qemuMonitorUnref(qemuMonitorPtr mon) ATTRIBUTE_RETURN_CHECK;
 
+int qemuMonitorSetLink(qemuMonitorPtr mon,
+                       const char *name,
+                       enum virDomainNetInterfaceLinkState state) ;
+
 /* These APIs are for use by the internal Text/JSON monitor impl code only */
+char *qemuMonitorNextCommandID(qemuMonitorPtr mon);
 int qemuMonitorSend(qemuMonitorPtr mon,
                     qemuMonitorMessagePtr msg);
 int qemuMonitorHMPCommandWithFd(qemuMonitorPtr mon,
@@ -173,34 +188,76 @@ int qemuMonitorEmitGraphics(qemuMonitorPtr mon,
                             const char *authScheme,
                             const char *x509dname,
                             const char *saslUsername);
+int qemuMonitorEmitBlockJob(qemuMonitorPtr mon,
+                            const char *diskAlias,
+                            int type,
+                            int status);
+
 
 
 int qemuMonitorStartCPUs(qemuMonitorPtr mon,
                          virConnectPtr conn);
 int qemuMonitorStopCPUs(qemuMonitorPtr mon);
 
+typedef enum {
+    QEMU_MONITOR_VM_STATUS_DEBUG,
+    QEMU_MONITOR_VM_STATUS_INMIGRATE,
+    QEMU_MONITOR_VM_STATUS_INTERNAL_ERROR,
+    QEMU_MONITOR_VM_STATUS_IO_ERROR,
+    QEMU_MONITOR_VM_STATUS_PAUSED,
+    QEMU_MONITOR_VM_STATUS_POSTMIGRATE,
+    QEMU_MONITOR_VM_STATUS_PRELAUNCH,
+    QEMU_MONITOR_VM_STATUS_FINISH_MIGRATE,
+    QEMU_MONITOR_VM_STATUS_RESTORE_VM,
+    QEMU_MONITOR_VM_STATUS_RUNNING,
+    QEMU_MONITOR_VM_STATUS_SAVE_VM,
+    QEMU_MONITOR_VM_STATUS_SHUTDOWN,
+    QEMU_MONITOR_VM_STATUS_WATCHDOG,
+
+    QEMU_MONITOR_VM_STATUS_LAST
+} qemuMonitorVMStatus;
+VIR_ENUM_DECL(qemuMonitorVMStatus)
+int qemuMonitorVMStatusToPausedReason(const char *status);
+
+int qemuMonitorGetStatus(qemuMonitorPtr mon,
+                         bool *running,
+                         virDomainPausedReason *reason);
+
+int qemuMonitorSystemReset(qemuMonitorPtr mon);
 int qemuMonitorSystemPowerdown(qemuMonitorPtr mon);
 
 int qemuMonitorGetCPUInfo(qemuMonitorPtr mon,
                           int **pids);
+int qemuMonitorGetVirtType(qemuMonitorPtr mon,
+                           int *virtType);
 int qemuMonitorGetBalloonInfo(qemuMonitorPtr mon,
                               unsigned long *currmem);
 int qemuMonitorGetMemoryStats(qemuMonitorPtr mon,
                               virDomainMemoryStatPtr stats,
                               unsigned int nr_stats);
+int qemuMonitorGetBlockInfo(qemuMonitorPtr mon,
+                            const char *devname,
+                            struct qemuDomainDiskInfo *info);
 int qemuMonitorGetBlockStatsInfo(qemuMonitorPtr mon,
-                                 const char *devname,
+                                 const char *dev_name,
                                  long long *rd_req,
                                  long long *rd_bytes,
+                                 long long *rd_total_times,
                                  long long *wr_req,
                                  long long *wr_bytes,
+                                 long long *wr_total_times,
+                                 long long *flush_req,
+                                 long long *flush_total_times,
                                  long long *errs);
+int qemuMonitorGetBlockStatsParamsNumber(qemuMonitorPtr mon,
+                                         int *nparams);
 
 int qemuMonitorGetBlockExtent(qemuMonitorPtr mon,
-                              const char *devname,
+                              const char *dev_name,
                               unsigned long long *extent);
-
-
+int qemuMonitorBlockResize(qemuMonitorPtr mon,
+                           const char *devname,
+                           unsigned long long size);
 int qemuMonitorSetVNCPassword(qemuMonitorPtr mon,
                               const char *password);
 int qemuMonitorSetPassword(qemuMonitorPtr mon,
@@ -220,10 +277,10 @@ int qemuMonitorSetCPU(qemuMonitorPtr mon, int cpu, int online);
  * this when doing the QMP implementation
  */
 int qemuMonitorEjectMedia(qemuMonitorPtr mon,
-                          const char *devname,
+                          const char *dev_name,
                           bool force);
 int qemuMonitorChangeMedia(qemuMonitorPtr mon,
-                           const char *devname,
+                           const char *dev_name,
                            const char *newmedia,
                            const char *format);
 
@@ -304,6 +361,12 @@ int qemuMonitorMigrateToUnix(qemuMonitorPtr mon,
 
 int qemuMonitorMigrateCancel(qemuMonitorPtr mon);
 
+int qemuMonitorGraphicsRelocate(qemuMonitorPtr mon,
+                                int type,
+                                const char *hostname,
+                                int port,
+                                int tlsPort,
+                                const char *tlsSubject);
 
 /* XXX disk driver type eg,  qcow/etc.
  * XXX cache mode
@@ -346,6 +409,9 @@ int qemuMonitorSendFileHandle(qemuMonitorPtr mon,
                               const char *fdname,
                               int fd);
 
+/* The function preserves previous error and only sets it's own error if no
+ * error was set before.
+ */
 int qemuMonitorCloseFileHandle(qemuMonitorPtr mon,
                                const char *fdname);
 
@@ -418,10 +484,51 @@ int qemuMonitorCreateSnapshot(qemuMonitorPtr mon, const char *name);
 int qemuMonitorLoadSnapshot(qemuMonitorPtr mon, const char *name);
 int qemuMonitorDeleteSnapshot(qemuMonitorPtr mon, const char *name);
 
+int qemuMonitorDiskSnapshot(qemuMonitorPtr mon,
+                            const char *device,
+                            const char *file);
+
 int qemuMonitorArbitraryCommand(qemuMonitorPtr mon,
                                 const char *cmd,
                                 char **reply,
                                 bool hmp);
+
+int qemuMonitorInjectNMI(qemuMonitorPtr mon);
+
+int qemuMonitorScreendump(qemuMonitorPtr mon,
+                          const char *file);
+
+int qemuMonitorSendKey(qemuMonitorPtr mon,
+                       unsigned int holdtime,
+                       unsigned int *keycodes,
+                       unsigned int nkeycodes);
+
+typedef enum {
+    BLOCK_JOB_ABORT = 0,
+    BLOCK_JOB_INFO = 1,
+    BLOCK_JOB_SPEED = 2,
+    BLOCK_JOB_PULL = 3,
+} BLOCK_JOB_CMD;
+
+int qemuMonitorBlockJob(qemuMonitorPtr mon,
+                        const char *device,
+                        unsigned long bandwidth,
+                        virDomainBlockJobInfoPtr info,
+                        int mode);
+
+int qemuMonitorOpenGraphics(qemuMonitorPtr mon,
+                            const char *protocol,
+                            int fd,
+                            const char *fdname,
+                            bool skipauth);
+
+int qemuMonitorSetBlockIoThrottle(qemuMonitorPtr mon,
+                                  const char *device,
+                                  virDomainBlockIoTuneInfoPtr info);
+
+int qemuMonitorGetBlockIoThrottle(qemuMonitorPtr mon,
+                                  const char *device,
+                                  virDomainBlockIoTuneInfoPtr reply);
 
 /**
  * When running two dd process and using <> redirection, we need a

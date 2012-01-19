@@ -1,7 +1,7 @@
 /*
  * qemu_capabilities.h: QEMU capabilities generation
  *
- * Copyright (C) 2006-2011 Red Hat, Inc.
+ * Copyright (C) 2006-2012 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -66,7 +66,7 @@ enum qemuCapsFlags {
     QEMU_CAPS_SMP_TOPOLOGY      = 28, /* Is sockets=s,cores=c,threads=t available for -smp? */
     QEMU_CAPS_NETDEV            = 29, /* The -netdev flag & netdev_add/remove monitor commands */
     QEMU_CAPS_RTC               = 30, /* The -rtc flag for clock options */
-    QEMU_CAPS_VNET_HOST         = 31, /* vnet-host support is available in qemu */
+    QEMU_CAPS_VHOST_NET         = 31, /* vhost-net support is available in qemu */
     QEMU_CAPS_RTC_TD_HACK       = 32, /* -rtc-td-hack available */
     QEMU_CAPS_NO_HPET           = 33, /* -no-hpet flag is supported */
     QEMU_CAPS_NO_KVM_PIT        = 34, /* -no-kvm-pit-reinjection supported */
@@ -95,6 +95,34 @@ enum qemuCapsFlags {
     QEMU_CAPS_DEVICE_SPICEVMC   = 57, /* older -device spicevmc*/
     QEMU_CAPS_VIRTIO_TX_ALG     = 58, /* -device virtio-net-pci,tx=string */
     QEMU_CAPS_DEVICE_QXL_VGA    = 59, /* Is the primary and vga campatible qxl device named qxl-vga? */
+    QEMU_CAPS_PCI_MULTIFUNCTION = 60, /* -device multifunction=on|off */
+    QEMU_CAPS_VIRTIO_IOEVENTFD  = 61, /* IOeventFD feature: virtio-{net|blk}-pci.ioeventfd=on/off */
+    QEMU_CAPS_SGA               = 62, /* Serial Graphics Adapter */
+    QEMU_CAPS_VIRTIO_BLK_EVENT_IDX = 63, /* virtio-blk-pci.event_idx */
+    QEMU_CAPS_VIRTIO_NET_EVENT_IDX = 64, /* virtio-net-pci.event_idx */
+    QEMU_CAPS_DRIVE_CACHE_DIRECTSYNC = 65, /* Is cache=directsync supported? */
+
+    QEMU_CAPS_PIIX3_USB_UHCI    = 66, /* -device piix3-usb-uhci */
+    QEMU_CAPS_PIIX4_USB_UHCI    = 67, /* -device piix4-usb-uhci */
+    QEMU_CAPS_USB_EHCI          = 68, /* -device usb-ehci */
+    QEMU_CAPS_ICH9_USB_EHCI1    = 69, /* -device ich9-usb-ehci1 and companions */
+    QEMU_CAPS_VT82C686B_USB_UHCI = 70, /* -device vt82c686b-usb-uhci */
+    QEMU_CAPS_PCI_OHCI          = 71, /* -device pci-ohci */
+    QEMU_CAPS_USB_REDIR         = 72, /* -device usb-redir */
+    QEMU_CAPS_USB_HUB           = 73, /* -device usb-hub */
+    QEMU_CAPS_NO_SHUTDOWN       = 74, /* usable -no-shutdown */
+
+    QEMU_CAPS_DRIVE_CACHE_UNSAFE = 75, /* Is cache=unsafe supported? */
+    QEMU_CAPS_PCI_ROMBAR         = 76, /* -device rombar=0|1 */
+    QEMU_CAPS_ICH9_AHCI         = 77, /* -device ich9-ahci */
+    QEMU_CAPS_NO_ACPI		= 78, /* -no-acpi */
+    QEMU_CAPS_FSDEV_READONLY    =79, /* -fsdev readonly supported */
+
+    QEMU_CAPS_VIRTIO_BLK_SCSI    = 80, /* virtio-blk-pci.scsi */
+    QEMU_CAPS_VIRTIO_BLK_SG_IO   = 81, /* support for SG_IO commands, reportedly added in 0.11 */
+    QEMU_CAPS_DRIVE_COPY_ON_READ = 82, /* -drive copy-on-read */
+    QEMU_CAPS_CPU_HOST          = 83, /* support for -cpu host */
+    QEMU_CAPS_FSDEV_WRITEOUT     = 84, /* -fsdev writeout supported */
 
     QEMU_CAPS_LAST,                   /* this must always be the last item */
 };
@@ -141,5 +169,6 @@ int qemuCapsParseHelpStr(const char *qemu,
 int qemuCapsParseDeviceStr(const char *str,
                            virBitmapPtr qemuCaps);
 
+VIR_ENUM_DECL(qemuCaps);
 
 #endif /* __QEMU_CAPABILITIES_H__*/

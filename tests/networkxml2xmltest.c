@@ -13,30 +13,25 @@
 #include "network_conf.h"
 #include "testutilsqemu.h"
 
-static char *progname;
-static char *abs_srcdir;
-
-#define MAX_FILE 4096
-
-
-static int testCompareXMLToXMLFiles(const char *inxml, const char *outxml) {
-    char inXmlData[MAX_FILE];
-    char *inXmlPtr = &(inXmlData[0]);
-    char outXmlData[MAX_FILE];
-    char *outXmlPtr = &(outXmlData[0]);
+static int
+testCompareXMLToXMLFiles(const char *inxml, const char *outxml,
+                         unsigned int flags)
+{
+    char *inXmlData = NULL;
+    char *outXmlData = NULL;
     char *actual = NULL;
     int ret = -1;
     virNetworkDefPtr dev = NULL;
 
-    if (virtTestLoadFile(inxml, &inXmlPtr, MAX_FILE) < 0)
+    if (virtTestLoadFile(inxml, &inXmlData) < 0)
         goto fail;
-    if (virtTestLoadFile(outxml, &outXmlPtr, MAX_FILE) < 0)
+    if (virtTestLoadFile(outxml, &outXmlData) < 0)
         goto fail;
 
     if (!(dev = virNetworkDefParseString(inXmlData)))
         goto fail;
 
-    if (!(actual = virNetworkDefFormat(dev)))
+    if (!(actual = virNetworkDefFormat(dev, flags)))
         goto fail;
 
     if (STRNEQ(outXmlData, actual)) {
@@ -47,49 +42,69 @@ static int testCompareXMLToXMLFiles(const char *inxml, const char *outxml) {
     ret = 0;
 
  fail:
+    free(inXmlData);
+    free(outXmlData);
     free(actual);
     virNetworkDefFree(dev);
     return ret;
 }
 
-static int testCompareXMLToXMLHelper(const void *data) {
-    char inxml[PATH_MAX];
-    char outxml[PATH_MAX];
-    snprintf(inxml, PATH_MAX, "%s/networkxml2xmlin/%s.xml",
-             abs_srcdir, (const char*)data);
-    snprintf(outxml, PATH_MAX, "%s/networkxml2xmlout/%s.xml",
-             abs_srcdir, (const char*)data);
-    return testCompareXMLToXMLFiles(inxml, outxml);
-}
-
+struct testInfo {
+    const char *name;
+    unsigned int flags;
+};
 
 static int
-mymain(int argc, char **argv)
+testCompareXMLToXMLHelper(const void *data)
 {
-    int ret = 0;
-    char cwd[PATH_MAX];
+    const struct testInfo *info = data;
+    int result = -1;
+    char *inxml = NULL;
+    char *outxml = NULL;
 
-    progname = argv[0];
-
-    if (argc > 1) {
-        fprintf(stderr, "Usage: %s\n", progname);
-        return (EXIT_FAILURE);
+    if (virAsprintf(&inxml, "%s/networkxml2xmlin/%s.xml",
+                    abs_srcdir, info->name) < 0 ||
+        virAsprintf(&outxml, "%s/networkxml2xmlout/%s.xml",
+                    abs_srcdir, info->name) < 0) {
+        goto cleanup;
     }
 
-    abs_srcdir = getenv("abs_srcdir");
-    if (!abs_srcdir)
-        abs_srcdir = getcwd(cwd, sizeof(cwd));
+    result = testCompareXMLToXMLFiles(inxml, outxml, info->flags);
 
-#define DO_TEST(name) \
-    if (virtTestRun("Network XML-2-XML " name, \
-                    1, testCompareXMLToXMLHelper, (name)) < 0) \
-        ret = -1
+cleanup:
+    free(inxml);
+    free(outxml);
+
+    return result;
+}
+
+static int
+mymain(void)
+{
+    int ret = 0;
+
+#define DO_TEST_FULL(name, flags)                                       \
+    do {                                                                \
+        const struct testInfo info = {name, flags};                     \
+        if (virtTestRun("Network XML-2-XML " name,                      \
+                        1, testCompareXMLToXMLHelper, &info) < 0)       \
+            ret = -1;                                                   \
+    } while (0)
+#define DO_TEST(name) DO_TEST_FULL(name, 0)
 
     DO_TEST("isolated-network");
     DO_TEST("routed-network");
     DO_TEST("nat-network");
     DO_TEST("netboot-network");
     DO_TEST("netboot-proxy-network");
+    DO_TEST("nat-network-dns-txt-record");
+    DO_TEST("nat-network-dns-hosts");
+    DO_TEST("8021Qbh-net");
+    DO_TEST("direct-net");
+    DO_TEST("host-bridge-net");
+    DO_TEST("vepa-net");
+    DO_TEST("bandwidth-network");
+    DO_TEST_FULL("passthrough-pf", VIR_NETWORK_XML_INACTIVE);
 
     return (ret==0 ? EXIT_SUCCESS : EXIT_FAILURE);
 }

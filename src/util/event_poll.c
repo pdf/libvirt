@@ -36,15 +36,17 @@
 #include "event_poll.h"
 #include "memory.h"
 #include "util.h"
+#include "virfile.h"
 #include "ignore-value.h"
 #include "virterror_internal.h"
+#include "virtime.h"
 
 #define EVENT_DEBUG(fmt, ...) VIR_DEBUG(fmt, __VA_ARGS__)
 
 #define VIR_FROM_THIS VIR_FROM_EVENT
 
 #define virEventError(code, ...)                                    \
-    virReportErrorHelper(NULL, VIR_FROM_EVENT, code, __FILE__,      \
+    virReportErrorHelper(VIR_FROM_EVENT, code, __FILE__,            \
                          __FUNCTION__, __LINE__, __VA_ARGS__)
 
 static int virEventPollInterruptLocked(void);
@@ -108,7 +110,6 @@ int virEventPollAddHandle(int fd, int events,
                           void *opaque,
                           virFreeCallback ff) {
     int watch;
-    EVENT_DEBUG("Add handle fd=%d events=%d cb=%p opaque=%p", fd, events, cb, opaque);
     virMutexLock(&eventLoop.lock);
     if (eventLoop.handlesCount == eventLoop.handlesAlloc) {
         EVENT_DEBUG("Used %zu handle slots, adding at least %d more",
@@ -134,6 +135,10 @@ int virEventPollAddHandle(int fd, int events,
     eventLoop.handlesCount++;
 
     virEventPollInterruptLocked();
+
+    PROBE(EVENT_POLL_ADD_HANDLE,
+          "watch=%d fd=%d events=%d cb=%p opaque=%p ff=%p",
+          watch, fd, events, cb, opaque, ff);
     virMutexUnlock(&eventLoop.lock);
 
     return watch;
@@ -141,7 +146,9 @@ int virEventPollAddHandle(int fd, int events,
 
 void virEventPollUpdateHandle(int watch, int events) {
     int i;
-    EVENT_DEBUG("Update handle w=%d e=%d", watch, events);
+    PROBE(EVENT_POLL_UPDATE_HANDLE,
+          "watch=%d events=%d",
+          watch, events);
 
     if (watch <= 0) {
         VIR_WARN("Ignoring invalid update watch %d", watch);
@@ -168,7 +175,9 @@ void virEventPollUpdateHandle(int watch, int events) {
  */
 int virEventPollRemoveHandle(int watch) {
     int i;
-    EVENT_DEBUG("Remove handle w=%d", watch);
+    PROBE(EVENT_POLL_REMOVE_HANDLE,
+          "watch=%d",
+          watch);
 
     if (watch <= 0) {
         VIR_WARN("Ignoring invalid remove watch %d", watch);
@@ -201,11 +210,12 @@ int virEventPollRemoveHandle(int watch) {
 int virEventPollAddTimeout(int frequency,
                            virEventTimeoutCallback cb,
                            void *opaque,
-                           virFreeCallback ff) {
-    struct timeval now;
+                           virFreeCallback ff)
+{
+    unsigned long long now;
     int ret;
-    EVENT_DEBUG("Adding timer %d with %d ms freq", nextTimer, frequency);
-    if (gettimeofday(&now, NULL) < 0) {
+
+    if (virTimeMillisNow(&now) < 0) {
         return -1;
     }
 
@@ -227,28 +237,33 @@ int virEventPollAddTimeout(int frequency,
     eventLoop.timeouts[eventLoop.timeoutsCount].opaque = opaque;
     eventLoop.timeouts[eventLoop.timeoutsCount].deleted = 0;
     eventLoop.timeouts[eventLoop.timeoutsCount].expiresAt =
-        frequency >= 0 ? frequency +
-        (((unsigned long long)now.tv_sec)*1000) +
-        (((unsigned long long)now.tv_usec)/1000) : 0;
+        frequency >= 0 ? frequency + now : 0;
 
     eventLoop.timeoutsCount++;
     ret = nextTimer-1;
     virEventPollInterruptLocked();
+
+    PROBE(EVENT_POLL_ADD_TIMEOUT,
+          "timer=%d frequency=%d cb=%p opaque=%p ff=%p",
+          ret, frequency, cb, opaque, ff);
     virMutexUnlock(&eventLoop.lock);
     return ret;
 }
 
-void virEventPollUpdateTimeout(int timer, int frequency) {
-    struct timeval tv;
+void virEventPollUpdateTimeout(int timer, int frequency)
+{
+    unsigned long long now;
     int i;
-    EVENT_DEBUG("Updating timer %d timeout with %d ms freq", timer, frequency);
+    PROBE(EVENT_POLL_UPDATE_TIMEOUT,
+          "timer=%d frequency=%d",
+          timer, frequency);
 
     if (timer <= 0) {
         VIR_WARN("Ignoring invalid update timer %d", timer);
         return;
     }
 
-    if (gettimeofday(&tv, NULL) < 0) {
+    if (virTimeMillisNow(&now) < 0) {
         return;
     }
 
@@ -257,9 +272,7 @@ void virEventPollUpdateTimeout(int timer, int frequency) {
         if (eventLoop.timeouts[i].timer == timer) {
             eventLoop.timeouts[i].frequency = frequency;
             eventLoop.timeouts[i].expiresAt =
-                frequency >= 0 ? frequency +
-                (((unsigned long long)tv.tv_sec)*1000) +
-                (((unsigned long long)tv.tv_usec)/1000) : 0;
+                frequency >= 0 ? frequency + now : 0;
             virEventPollInterruptLocked();
             break;
         }
@@ -275,7 +288,9 @@ void virEventPollUpdateTimeout(int timer, int frequency) {
  */
 int virEventPollRemoveTimeout(int timer) {
     int i;
-    EVENT_DEBUG("Remove timer %d", timer);
+    PROBE(EVENT_POLL_REMOVE_TIMEOUT,
+          "timer=%d",
+          timer);
 
     if (timer <= 0) {
         VIR_WARN("Ignoring invalid remove timer %d", timer);
@@ -321,18 +336,12 @@ static int virEventPollCalculateTimeout(int *timeout) {
 
     /* Calculate how long we should wait for a timeout if needed */
     if (then > 0) {
-        struct timeval tv;
+        unsigned long long now;
 
-        if (gettimeofday(&tv, NULL) < 0) {
-            virReportSystemError(errno, "%s",
-                                 _("Unable to get current time"));
+        if (virTimeMillisNow(&now) < 0)
             return -1;
-        }
 
-        *timeout = then -
-            ((((unsigned long long)tv.tv_sec)*1000) +
-             (((unsigned long long)tv.tv_usec)/1000));
-
+        *timeout = then - now;
         if (*timeout < 0)
             *timeout = 0;
     } else {
@@ -397,21 +406,16 @@ static struct pollfd *virEventPollMakePollFDs(int *nfds) {
  *
  * Returns 0 upon success, -1 if an error occurred
  */
-static int virEventPollDispatchTimeouts(void) {
-    struct timeval tv;
+static int virEventPollDispatchTimeouts(void)
+{
     unsigned long long now;
     int i;
     /* Save this now - it may be changed during dispatch */
     int ntimeouts = eventLoop.timeoutsCount;
     VIR_DEBUG("Dispatch %d", ntimeouts);
 
-    if (gettimeofday(&tv, NULL) < 0) {
-        virReportSystemError(errno, "%s",
-                             _("Unable to get current time"));
+    if (virTimeMillisNow(&now) < 0)
         return -1;
-    }
-    now = (((unsigned long long)tv.tv_sec)*1000) +
-        (((unsigned long long)tv.tv_usec)/1000);
 
     for (i = 0 ; i < ntimeouts ; i++) {
         if (eventLoop.timeouts[i].deleted || eventLoop.timeouts[i].frequency < 0)
@@ -429,6 +433,9 @@ static int virEventPollDispatchTimeouts(void) {
             eventLoop.timeouts[i].expiresAt =
                 now + eventLoop.timeouts[i].frequency;
 
+            PROBE(EVENT_POLL_DISPATCH_TIMEOUT,
+                  "timer=%d",
+                  timer);
             virMutexUnlock(&eventLoop.lock);
             (cb)(timer, opaque);
             virMutexLock(&eventLoop.lock);
@@ -476,8 +483,9 @@ static int virEventPollDispatchHandles(int nfds, struct pollfd *fds) {
             int watch = eventLoop.handles[i].watch;
             void *opaque = eventLoop.handles[i].opaque;
             int hEvents = virEventPollFromNativeEvents(fds[n].revents);
-            EVENT_DEBUG("Dispatch n=%d f=%d w=%d e=%d %p", i,
-                        fds[n].fd, watch, fds[n].revents, opaque);
+            PROBE(EVENT_POLL_DISPATCH_HANDLE,
+                  "watch=%d events=%d",
+                  watch, hEvents);
             virMutexUnlock(&eventLoop.lock);
             (cb)(watch, fds[n].fd, hEvents, opaque);
             virMutexLock(&eventLoop.lock);
@@ -506,8 +514,9 @@ static void virEventPollCleanupTimeouts(void) {
             continue;
         }
 
-        EVENT_DEBUG("Purging timeout %d with id %d", i,
-                    eventLoop.timeouts[i].timer);
+        PROBE(EVENT_POLL_PURGE_TIMEOUT,
+              "timer=%d",
+              eventLoop.timeouts[i].timer);
         if (eventLoop.timeouts[i].ff) {
             virFreeCallback ff = eventLoop.timeouts[i].ff;
             void *opaque = eventLoop.timeouts[i].opaque;
@@ -553,6 +562,9 @@ static void virEventPollCleanupHandles(void) {
             continue;
         }
 
+        PROBE(EVENT_POLL_PURGE_HANDLE,
+              "watch=%d",
+              eventLoop.handles[i].watch);
         if (eventLoop.handles[i].ff) {
             virFreeCallback ff = eventLoop.handles[i].ff;
             void *opaque = eventLoop.handles[i].opaque;
@@ -602,7 +614,9 @@ int virEventPollRunOnce(void) {
     virMutexUnlock(&eventLoop.lock);
 
  retry:
-    EVENT_DEBUG("Poll on %d handles %p timeout %d", nfds, fds, timeout);
+    PROBE(EVENT_POLL_RUN,
+          "nhandles=%d imeout=%d",
+          nfds, timeout);
     ret = poll(fds, nfds, timeout);
     if (ret < 0) {
         EVENT_DEBUG("Poll got error event %d", errno);
@@ -670,6 +684,8 @@ int virEventPollInit(void)
         virEventError(VIR_ERR_INTERNAL_ERROR,
                       _("Unable to add handle %d to event loop"),
                       eventLoop.wakeupfd[0]);
+        VIR_FORCE_CLOSE(eventLoop.wakeupfd[0]);
+        VIR_FORCE_CLOSE(eventLoop.wakeupfd[1]);
         return -1;
     }
 
@@ -687,7 +703,7 @@ static int virEventPollInterruptLocked(void)
         return 0;
     }
 
-    VIR_DEBUG0("Interrupting");
+    VIR_DEBUG("Interrupting");
     if (safewrite(eventLoop.wakeupfd[1], &c, sizeof(c)) != sizeof(c))
         return -1;
     return 0;

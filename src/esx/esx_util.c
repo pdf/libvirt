@@ -2,8 +2,8 @@
 /*
  * esx_util.c: utility functions for the VMware ESX driver
  *
- * Copyright (C) 2010 Red Hat, Inc.
- * Copyright (C) 2009 Matthias Bolte <matthias.bolte@googlemail.com>
+ * Copyright (C) 2010-2011 Red Hat, Inc.
+ * Copyright (C) 2009-2011 Matthias Bolte <matthias.bolte@googlemail.com>
  * Copyright (C) 2009 Maximilian Wilhelm <max@rfc2324.org>
  *
  * This library is free software; you can redistribute it and/or
@@ -51,7 +51,6 @@ esxUtil_ParseUri(esxUtil_ParsedUri **parsedUri, xmlURIPtr uri)
     int noVerify;
     int autoAnswer;
     char *tmp;
-    char *saveptr;
 
     if (parsedUri == NULL || *parsedUri != NULL) {
         ESX_VI_ERROR(VIR_ERR_INTERNAL_ERROR, "%s", _("Invalid argument"));
@@ -184,26 +183,13 @@ esxUtil_ParseUri(esxUtil_ParsedUri **parsedUri, xmlURIPtr uri)
         }
     }
 
-    /* Expected format: [/]<datacenter>/<computeresource>[/<hostsystem>] */
     if (uri->path != NULL) {
-        tmp = strdup(uri->path);
+        (*parsedUri)->path = strdup(uri->path);
 
-        if (tmp == NULL) {
+        if ((*parsedUri)->path == NULL) {
             virReportOOMError();
             goto cleanup;
         }
-
-        if (esxVI_String_DeepCopyValue(&(*parsedUri)->path_datacenter,
-                                       strtok_r(tmp, "/", &saveptr)) < 0 ||
-            esxVI_String_DeepCopyValue(&(*parsedUri)->path_computeResource,
-                                       strtok_r(NULL, "/", &saveptr)) < 0 ||
-            esxVI_String_DeepCopyValue(&(*parsedUri)->path_hostSystem,
-                                       strtok_r(NULL, "", &saveptr)) < 0) {
-            VIR_FREE(tmp);
-            goto cleanup;
-        }
-
-        VIR_FREE(tmp);
     }
 
     if ((*parsedUri)->transport == NULL) {
@@ -242,9 +228,7 @@ esxUtil_FreeParsedUri(esxUtil_ParsedUri **parsedUri)
     VIR_FREE((*parsedUri)->transport);
     VIR_FREE((*parsedUri)->vCenter);
     VIR_FREE((*parsedUri)->proxy_hostname);
-    VIR_FREE((*parsedUri)->path_datacenter);
-    VIR_FREE((*parsedUri)->path_computeResource);
-    VIR_FREE((*parsedUri)->path_hostSystem);
+    VIR_FREE((*parsedUri)->path);
 
     VIR_FREE(*parsedUri);
 }
@@ -284,7 +268,6 @@ esxUtil_ParseDatastorePath(const char *datastorePath, char **datastoreName,
     char *saveptr = NULL;
     char *preliminaryDatastoreName = NULL;
     char *preliminaryDirectoryAndFileName = NULL;
-    char *preliminaryFileName = NULL;
 
     if ((datastoreName != NULL && *datastoreName != NULL) ||
         (directoryName != NULL && *directoryName != NULL) ||
@@ -328,11 +311,11 @@ esxUtil_ParseDatastorePath(const char *datastorePath, char **datastoreName,
     }
 
     if (directoryName != NULL) {
-        /* Split <path> into <directory>/<file> */
-        preliminaryFileName = strrchr(preliminaryDirectoryAndFileName, '/');
+        /* Split <path> into <directory>/<file> and remove /<file> */
+        tmp = strrchr(preliminaryDirectoryAndFileName, '/');
 
-        if (preliminaryFileName != NULL) {
-            *preliminaryFileName++ = '\0';
+        if (tmp != NULL) {
+            *tmp = '\0';
         }
 
         if (esxVI_String_DeepCopyValue(directoryName,
@@ -401,7 +384,7 @@ esxUtil_ResolveHostname(const char *hostname,
 
     if (errcode != 0) {
         ESX_ERROR(VIR_ERR_INTERNAL_ERROR,
-                  _("Formating IP address for host '%s' failed: %s"), hostname,
+                  _("Formatting IP address for host '%s' failed: %s"), hostname,
                   gai_strerror(errcode));
         freeaddrinfo(result);
         return -1;

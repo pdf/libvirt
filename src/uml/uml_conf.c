@@ -23,7 +23,6 @@
 
 #include <config.h>
 
-#include <dirent.h>
 #include <string.h>
 #include <limits.h>
 #include <sys/types.h>
@@ -43,17 +42,25 @@
 #include "util.h"
 #include "memory.h"
 #include "nodeinfo.h"
-#include "verify.h"
-#include "bridge.h"
 #include "logging.h"
 #include "domain_nwfilter.h"
-#include "files.h"
+#include "virfile.h"
 #include "command.h"
+#include "virnetdevtap.h"
+#include "virnodesuspend.h"
+
 
 #define VIR_FROM_THIS VIR_FROM_UML
 
 #define umlLog(level, msg, ...)                                     \
         virLogMessage(__FILE__, level, 0, msg, __VA_ARGS__)
+
+
+static int umlDefaultConsoleType(const char *ostype ATTRIBUTE_UNUSED)
+{
+    return VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_UML;
+}
+
 
 virCapsPtr umlCapsInit(void) {
     struct utsname utsname;
@@ -73,8 +80,11 @@ virCapsPtr umlCapsInit(void) {
      */
     if (nodeCapsInitNUMA(caps) < 0) {
         virCapabilitiesFreeNUMAInfo(caps);
-        VIR_WARN0("Failed to query host NUMA topology, disabling NUMA capabilities");
+        VIR_WARN("Failed to query host NUMA topology, disabling NUMA capabilities");
     }
+
+    if (virNodeSuspendGetTargetMask(&caps->host.powerMgmt) < 0)
+        VIR_WARN("Failed to get host power management capabilities");
 
     if (virGetHostUUID(caps->host.host_uuid)) {
         umlReportError(VIR_ERR_INTERNAL_ERROR,
@@ -100,7 +110,7 @@ virCapsPtr umlCapsInit(void) {
                                       NULL) == NULL)
         goto error;
 
-    caps->defaultConsoleTargetType = VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_UML;
+    caps->defaultConsoleTargetType = umlDefaultConsoleType;
 
     return caps;
 
@@ -112,84 +122,51 @@ virCapsPtr umlCapsInit(void) {
 
 static int
 umlConnectTapDevice(virConnectPtr conn,
+                    virDomainDefPtr vm,
                     virDomainNetDefPtr net,
                     const char *bridge)
 {
-    brControl *brctl = NULL;
-    int template_ifname = 0;
-    int err;
+    bool template_ifname = false;
     unsigned char tapmac[VIR_MAC_BUFLEN];
 
-    if ((err = brInit(&brctl))) {
-        virReportSystemError(err, "%s",
-                             _("cannot initialize bridge support"));
-        goto error;
-    }
-
     if (!net->ifname ||
-        STRPREFIX(net->ifname, "vnet") ||
+        STRPREFIX(net->ifname, VIR_NET_GENERATED_PREFIX) ||
         strchr(net->ifname, '%')) {
         VIR_FREE(net->ifname);
-        if (!(net->ifname = strdup("vnet%d")))
+        if (!(net->ifname = strdup(VIR_NET_GENERATED_PREFIX "%d")))
             goto no_memory;
-        /* avoid exposing vnet%d in dumpxml or error outputs */
-        template_ifname = 1;
+        /* avoid exposing vnet%d in getXMLDesc or error outputs */
+        template_ifname = true;
     }
 
     memcpy(tapmac, net->mac, VIR_MAC_BUFLEN);
     tapmac[0] = 0xFE; /* Discourage bridge from using TAP dev MAC */
-    if ((err = brAddTap(brctl,
-                        bridge,
-                        &net->ifname,
-                        tapmac,
-                        0,
-                        true,
-                        NULL))) {
-        if (err == ENOTSUP) {
-            /* In this particular case, give a better diagnostic. */
-            umlReportError(VIR_ERR_INTERNAL_ERROR,
-                           _("Failed to add tap interface to bridge. "
-                             "%s is not a bridge device"), bridge);
-        } else if (err == ENOENT) {
-            virReportSystemError(err, "%s",
-                    _("Failed to add tap interface to bridge. Your kernel "
-                      "is missing the 'tun' module or CONFIG_TUN, or you need "
-                      "to add the /dev/net/tun device node."));
-        } else if (template_ifname) {
-            virReportSystemError(err,
-                                 _("Failed to add tap interface to bridge '%s'"),
-                                 bridge);
-        } else {
-            virReportSystemError(err,
-                                 _("Failed to add tap interface '%s' to bridge '%s'"),
-                                 net->ifname, bridge);
-        }
+    if (virNetDevTapCreateInBridgePort(bridge, &net->ifname, tapmac,
+                                       0, true, NULL) < 0) {
         if (template_ifname)
             VIR_FREE(net->ifname);
         goto error;
     }
 
     if (net->filter) {
-        if (virDomainConfNWFilterInstantiate(conn, net)) {
+        if (virDomainConfNWFilterInstantiate(conn, vm->uuid, net) < 0) {
             if (template_ifname)
                 VIR_FREE(net->ifname);
             goto error;
         }
     }
 
-    brShutdown(brctl);
-
     return 0;
 
 no_memory:
     virReportOOMError();
 error:
-    brShutdown(brctl);
     return -1;
 }
 
 static char *
 umlBuildCommandLineNet(virConnectPtr conn,
+                       virDomainDefPtr vm,
                        virDomainNetDefPtr def,
                        int idx)
 {
@@ -197,7 +174,7 @@ umlBuildCommandLineNet(virConnectPtr conn,
 
     /* General format:  ethNN=type,options */
 
-    virBufferVSprintf(&buf, "eth%d=", idx);
+    virBufferAsprintf(&buf, "eth%d=", idx);
 
     switch (def->type) {
     case VIR_DOMAIN_NET_TYPE_USER:
@@ -207,15 +184,13 @@ umlBuildCommandLineNet(virConnectPtr conn,
 
     case VIR_DOMAIN_NET_TYPE_ETHERNET:
         /* ethNNN=tuntap,tapname,macaddr,gateway */
-        virBufferAddLit(&buf, "tuntap");
+        virBufferAddLit(&buf, "tuntap,");
+        if (def->ifname) {
+            virBufferAdd(&buf, def->ifname, -1);
+        }
         if (def->data.ethernet.ipaddr) {
             umlReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                           _("IP address not supported for ethernet inteface"));
-            goto error;
-        }
-        if (def->data.ethernet.script) {
-            umlReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                           _("script execution not supported for ethernet inteface"));
+                           _("IP address not supported for ethernet interface"));
             goto error;
         }
         break;
@@ -252,22 +227,23 @@ umlBuildCommandLineNet(virConnectPtr conn,
             goto error;
         }
 
-        if (umlConnectTapDevice(conn, def, bridge) < 0) {
+        if (umlConnectTapDevice(conn, vm, def, bridge) < 0) {
             VIR_FREE(bridge);
             goto error;
         }
 
         /* ethNNN=tuntap,tapname,macaddr,gateway */
-        virBufferVSprintf(&buf, "tuntap,%s", def->ifname);
+        virBufferAsprintf(&buf, "tuntap,%s", def->ifname);
         break;
     }
 
     case VIR_DOMAIN_NET_TYPE_BRIDGE:
-        if (umlConnectTapDevice(conn, def, def->data.bridge.brname) < 0)
+        if (umlConnectTapDevice(conn, vm, def,
+                                def->data.bridge.brname) < 0)
             goto error;
 
         /* ethNNN=tuntap,tapname,macaddr,gateway */
-        virBufferVSprintf(&buf, "tuntap,%s", def->ifname);
+        virBufferAsprintf(&buf, "tuntap,%s", def->ifname);
         break;
 
     case VIR_DOMAIN_NET_TYPE_INTERNAL:
@@ -284,12 +260,18 @@ umlBuildCommandLineNet(virConnectPtr conn,
         break;
     }
 
-    virBufferVSprintf(&buf, ",%02x:%02x:%02x:%02x:%02x:%02x",
+    if (def->script) {
+        umlReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                       _("interface script execution not supported by this driver"));
+        goto error;
+    }
+
+    virBufferAsprintf(&buf, ",%02x:%02x:%02x:%02x:%02x:%02x",
                       def->mac[0], def->mac[1], def->mac[2],
                       def->mac[3], def->mac[4], def->mac[5]);
 
     if (def->type == VIR_DOMAIN_NET_TYPE_MCAST) {
-        virBufferVSprintf(&buf, ",%s,%d",
+        virBufferAsprintf(&buf, ",%s,%d",
                           def->data.socket.address,
                           def->data.socket.port);
     }
@@ -456,7 +438,7 @@ virCommandPtr umlBuildCommandLine(virConnectPtr conn,
     }
 
     for (i = 0 ; i < vm->def->nnets ; i++) {
-        char *ret = umlBuildCommandLineNet(conn, vm->def->nets[i], i);
+        char *ret = umlBuildCommandLineNet(conn, vm->def, vm->def->nets[i], i);
         if (!ret)
             goto error;
         virCommandAddArg(cmd, ret);
@@ -464,9 +446,13 @@ virCommandPtr umlBuildCommandLine(virConnectPtr conn,
     }
 
     for (i = 0 ; i < UML_MAX_CHAR_DEVICE ; i++) {
+        virDomainChrDefPtr chr = NULL;
         char *ret = NULL;
-        if (i == 0 && vm->def->console)
-            ret = umlBuildCommandLineChr(vm->def->console, "con", cmd);
+        for (j = 0 ; j < vm->def->nconsoles ; j++)
+            if (vm->def->consoles[j]->target.port == i)
+                chr = vm->def->consoles[j];
+        if (chr)
+            ret = umlBuildCommandLineChr(chr, "con", cmd);
         if (!ret)
             if (virAsprintf(&ret, "con%d=none", i) < 0)
                 goto no_memory;

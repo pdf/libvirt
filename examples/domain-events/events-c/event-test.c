@@ -8,10 +8,7 @@
 #include <libvirt/libvirt.h>
 #include <libvirt/virterror.h>
 
-#define VIR_DEBUG0(fmt) printf("%s:%d :: " fmt "\n", \
-        __func__, __LINE__)
-#define VIR_DEBUG(fmt, ...) printf("%s:%d: " fmt "\n", \
-        __func__, __LINE__, __VA_ARGS__)
+#define VIR_DEBUG(fmt) printf("%s:%d: " fmt "\n", __func__, __LINE__)
 #define STREQ(a,b) (strcmp(a,b) == 0)
 
 #ifndef ATTRIBUTE_UNUSED
@@ -43,7 +40,7 @@ void usage(const char *pname);
 
 const char *eventToString(int event) {
     const char *ret = "";
-    switch(event) {
+    switch ((virDomainEventType) event) {
         case VIR_DOMAIN_EVENT_DEFINED:
             ret ="Defined";
             break;
@@ -62,13 +59,16 @@ const char *eventToString(int event) {
         case VIR_DOMAIN_EVENT_STOPPED:
             ret ="Stopped";
             break;
+        case VIR_DOMAIN_EVENT_SHUTDOWN:
+            ret = "Shutdown";
+            break;
     }
     return ret;
 }
 
 static const char *eventDetailToString(int event, int detail) {
     const char *ret = "";
-    switch(event) {
+    switch ((virDomainEventType) event) {
         case VIR_DOMAIN_EVENT_DEFINED:
             if (detail == VIR_DOMAIN_EVENT_DEFINED_ADDED)
                 ret = "Added";
@@ -80,7 +80,7 @@ static const char *eventDetailToString(int event, int detail) {
                 ret = "Removed";
             break;
         case VIR_DOMAIN_EVENT_STARTED:
-            switch (detail) {
+            switch ((virDomainEventStartedDetailType) detail) {
             case VIR_DOMAIN_EVENT_STARTED_BOOTED:
                 ret = "Booted";
                 break;
@@ -90,22 +90,48 @@ static const char *eventDetailToString(int event, int detail) {
             case VIR_DOMAIN_EVENT_STARTED_RESTORED:
                 ret = "Restored";
                 break;
+            case VIR_DOMAIN_EVENT_STARTED_FROM_SNAPSHOT:
+                ret = "Snapshot";
+                break;
             }
             break;
         case VIR_DOMAIN_EVENT_SUSPENDED:
-            if (detail == VIR_DOMAIN_EVENT_SUSPENDED_PAUSED)
+            switch ((virDomainEventSuspendedDetailType) detail) {
+            case VIR_DOMAIN_EVENT_SUSPENDED_PAUSED:
                 ret = "Paused";
-            else if (detail == VIR_DOMAIN_EVENT_SUSPENDED_MIGRATED)
+                break;
+            case VIR_DOMAIN_EVENT_SUSPENDED_MIGRATED:
                 ret = "Migrated";
+                break;
+            case VIR_DOMAIN_EVENT_SUSPENDED_IOERROR:
+                ret = "I/O Error";
+                break;
+            case VIR_DOMAIN_EVENT_SUSPENDED_WATCHDOG:
+                ret = "Watchdog";
+                break;
+            case VIR_DOMAIN_EVENT_SUSPENDED_RESTORED:
+                ret = "Restored";
+                break;
+            case VIR_DOMAIN_EVENT_SUSPENDED_FROM_SNAPSHOT:
+                ret = "Snapshot";
+                break;
+            }
             break;
         case VIR_DOMAIN_EVENT_RESUMED:
-            if (detail == VIR_DOMAIN_EVENT_RESUMED_UNPAUSED)
+            switch ((virDomainEventResumedDetailType) detail) {
+            case VIR_DOMAIN_EVENT_RESUMED_UNPAUSED:
                 ret = "Unpaused";
-            else if (detail == VIR_DOMAIN_EVENT_RESUMED_MIGRATED)
+                break;
+            case VIR_DOMAIN_EVENT_RESUMED_MIGRATED:
                 ret = "Migrated";
+                break;
+            case VIR_DOMAIN_EVENT_RESUMED_FROM_SNAPSHOT:
+                ret = "Snapshot";
+                break;
+            }
             break;
         case VIR_DOMAIN_EVENT_STOPPED:
-            switch (detail) {
+            switch ((virDomainEventStoppedDetailType) detail) {
             case VIR_DOMAIN_EVENT_STOPPED_SHUTDOWN:
                 ret = "Shutdown";
                 break;
@@ -123,6 +149,16 @@ static const char *eventDetailToString(int event, int detail) {
                 break;
             case VIR_DOMAIN_EVENT_STOPPED_FAILED:
                 ret = "Failed";
+                break;
+            case VIR_DOMAIN_EVENT_STOPPED_FROM_SNAPSHOT:
+                ret = "Snapshot";
+                break;
+            }
+            break;
+        case VIR_DOMAIN_EVENT_SHUTDOWN:
+            switch ((virDomainEventShutdownDetailType) detail) {
+            case VIR_DOMAIN_EVENT_SHUTDOWN_FINISHED:
+                ret = "Finished";
                 break;
             }
             break;
@@ -248,6 +284,36 @@ static int myDomainEventGraphicsCallback(virConnectPtr conn ATTRIBUTE_UNUSED,
     return 0;
 }
 
+static int myDomainEventControlErrorCallback(virConnectPtr conn ATTRIBUTE_UNUSED,
+                                             virDomainPtr dom,
+                                             void *opaque ATTRIBUTE_UNUSED)
+{
+    printf("%s EVENT: Domain %s(%d) control error\n", __func__, virDomainGetName(dom),
+           virDomainGetID(dom));
+
+    return 0;
+}
+
+
+const char *diskChangeReasonStrings[] = {
+    "startupPolicy", /* 0 */
+    /* add new reason here */
+};
+static int myDomainEventDiskChangeCallback(virConnectPtr conn ATTRIBUTE_UNUSED,
+                                           virDomainPtr dom,
+                                           const char *oldSrcPath,
+                                           const char *newSrcPath,
+                                           const char *devAlias,
+                                           int reason,
+                                           void *opaque ATTRIBUTE_UNUSED)
+{
+    printf("%s EVENT: Domain %s(%d) disk change oldSrcPath: %s newSrcPath: %s devAlias: %s reason: %s\n",
+           __func__, virDomainGetName(dom), virDomainGetID(dom),
+           oldSrcPath, newSrcPath, devAlias, diskChangeReasonStrings[reason]);
+    return 0;
+}
+
+
 static void myFreeFunc(void *opaque)
 {
     char *str = opaque;
@@ -281,6 +347,8 @@ int main(int argc, char **argv)
     int callback5ret = -1;
     int callback6ret = -1;
     int callback7ret = -1;
+    int callback8ret = -1;
+    int callback9ret = -1;
     struct sigaction action_stop;
 
     memset(&action_stop, 0, sizeof action_stop);
@@ -295,7 +363,9 @@ int main(int argc, char **argv)
     virEventRegisterDefaultImpl();
 
     virConnectPtr dconn = NULL;
-    dconn = virConnectOpenReadOnly (argv[1] ? argv[1] : NULL);
+    dconn = virConnectOpenAuth(argc > 1 ? argv[1] : NULL,
+                               virConnectAuthPtrDefault,
+                               VIR_CONNECT_RO);
     if (!dconn) {
         printf("error opening\n");
         return -1;
@@ -304,7 +374,7 @@ int main(int argc, char **argv)
     sigaction(SIGTERM, &action_stop, NULL);
     sigaction(SIGINT, &action_stop, NULL);
 
-    VIR_DEBUG0("Registering domain event cbs");
+    VIR_DEBUG("Registering domain event cbs");
 
     /* Add 2 callbacks to prove this works with more than just one */
     callback1ret = virConnectDomainEventRegister(dconn, myDomainEventCallback1,
@@ -339,6 +409,16 @@ int main(int argc, char **argv)
                                                     VIR_DOMAIN_EVENT_ID_GRAPHICS,
                                                     VIR_DOMAIN_EVENT_CALLBACK(myDomainEventGraphicsCallback),
                                                     strdup("callback graphics"), myFreeFunc);
+    callback8ret = virConnectDomainEventRegisterAny(dconn,
+                                                    NULL,
+                                                    VIR_DOMAIN_EVENT_ID_CONTROL_ERROR,
+                                                    VIR_DOMAIN_EVENT_CALLBACK(myDomainEventControlErrorCallback),
+                                                    strdup("callback control error"), myFreeFunc);
+    callback9ret = virConnectDomainEventRegisterAny(dconn,
+                                                    NULL,
+                                                    VIR_DOMAIN_EVENT_ID_DISK_CHANGE,
+                                                    VIR_DOMAIN_EVENT_CALLBACK(myDomainEventDiskChangeCallback),
+                                                    strdup("disk change"), myFreeFunc);
 
     if ((callback1ret != -1) &&
         (callback2ret != -1) &&
@@ -346,8 +426,16 @@ int main(int argc, char **argv)
         (callback4ret != -1) &&
         (callback5ret != -1) &&
         (callback6ret != -1) &&
-        (callback7ret != -1)) {
-        while (run) {
+        (callback7ret != -1) &&
+        (callback9ret != -1)) {
+        if (virConnectSetKeepAlive(dconn, 5, 3) < 0) {
+            virErrorPtr err = virGetLastError();
+            fprintf(stderr, "Failed to start keepalive protocol: %s\n",
+                    err && err->message ? err->message : "Unknown error");
+            run = 0;
+        }
+
+        while (run && virConnectIsAlive(dconn) == 1) {
             if (virEventRunDefaultImpl() < 0) {
                 virErrorPtr err = virGetLastError();
                 fprintf(stderr, "Failed to run event loop: %s\n",
@@ -355,7 +443,7 @@ int main(int argc, char **argv)
             }
         }
 
-        VIR_DEBUG0("Deregistering event handlers");
+        VIR_DEBUG("Deregistering event handlers");
         virConnectDomainEventDeregister(dconn, myDomainEventCallback1);
         virConnectDomainEventDeregisterAny(dconn, callback2ret);
         virConnectDomainEventDeregisterAny(dconn, callback3ret);
@@ -363,9 +451,12 @@ int main(int argc, char **argv)
         virConnectDomainEventDeregisterAny(dconn, callback5ret);
         virConnectDomainEventDeregisterAny(dconn, callback6ret);
         virConnectDomainEventDeregisterAny(dconn, callback7ret);
+        virConnectDomainEventDeregisterAny(dconn, callback9ret);
+        if (callback8ret != -1)
+            virConnectDomainEventDeregisterAny(dconn, callback8ret);
     }
 
-    VIR_DEBUG0("Closing connection");
+    VIR_DEBUG("Closing connection");
     if (dconn && virConnectClose(dconn) < 0) {
         printf("error closing\n");
     }

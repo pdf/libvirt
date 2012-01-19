@@ -1,7 +1,7 @@
 /*
  * xs_internal.c: access to Xen Store
  *
- * Copyright (C) 2006, 2009-2010 Red Hat, Inc.
+ * Copyright (C) 2006, 2009-2011 Red Hat, Inc.
  *
  * See COPYING.LIB for the License of this software
  *
@@ -29,7 +29,6 @@
 #include "datatypes.h"
 #include "driver.h"
 #include "memory.h"
-#include "event.h"
 #include "logging.h"
 #include "uuid.h"
 #include "xen_driver.h"
@@ -43,47 +42,17 @@ static void xenStoreWatchEvent(int watch, int fd, int events, void *data);
 static void xenStoreWatchListFree(xenStoreWatchListPtr list);
 
 struct xenUnifiedDriver xenStoreDriver = {
-    xenStoreOpen, /* open */
-    xenStoreClose, /* close */
-    NULL, /* version */
-    NULL, /* hostname */
-    NULL, /* nodeGetInfo */
-    NULL, /* getCapabilities */
-    xenStoreListDomains, /* listDomains */
-    NULL, /* numOfDomains */
-    NULL, /* domainCreateXML */
-    NULL, /* domainSuspend */
-    NULL, /* domainResume */
-    xenStoreDomainShutdown, /* domainShutdown */
-    xenStoreDomainReboot, /* domainReboot */
-    NULL, /* domainDestroy */
-    xenStoreDomainGetOSType, /* domainGetOSType */
-    xenStoreDomainGetMaxMemory, /* domainGetMaxMemory */
-    NULL, /* domainSetMaxMemory */
-    xenStoreDomainSetMemory, /* domainSetMemory */
-    xenStoreGetDomainInfo, /* domainGetInfo */
-    NULL, /* domainSave */
-    NULL, /* domainRestore */
-    NULL, /* domainCoreDump */
-    NULL, /* domainPinVcpu */
-    NULL, /* domainGetVcpus */
-    NULL, /* listDefinedDomains */
-    NULL, /* numOfDefinedDomains */
-    NULL, /* domainCreate */
-    NULL, /* domainDefineXML */
-    NULL, /* domainUndefine */
-    NULL, /* domainAttachDeviceFlags */
-    NULL, /* domainDetachDeviceFlags */
-    NULL, /* domainUpdateDeviceFlags */
-    NULL, /* domainGetAutostart */
-    NULL, /* domainSetAutostart */
-    NULL, /* domainGetSchedulerType */
-    NULL, /* domainGetSchedulerParameters */
-    NULL, /* domainSetSchedulerParameters */
+    .xenClose = xenStoreClose,
+    .xenDomainShutdown = xenStoreDomainShutdown,
+    .xenDomainReboot = xenStoreDomainReboot,
+    .xenDomainGetOSType = xenStoreDomainGetOSType,
+    .xenDomainGetMaxMemory = xenStoreDomainGetMaxMemory,
+    .xenDomainSetMemory = xenStoreDomainSetMemory,
+    .xenDomainGetInfo = xenStoreGetDomainInfo,
 };
 
 #define virXenStoreError(code, ...)                                  \
-        virReportErrorHelper(NULL, VIR_FROM_XENSTORE, code, __FILE__,      \
+        virReportErrorHelper(VIR_FROM_XENSTORE, code, __FILE__,      \
                              __FUNCTION__, __LINE__, __VA_ARGS__)
 
 /************************************************************************
@@ -267,9 +236,11 @@ virDomainGetVMInfo(virDomainPtr domain, const char *vm, const char *name)
 virDrvOpenStatus
 xenStoreOpen(virConnectPtr conn,
              virConnectAuthPtr auth ATTRIBUTE_UNUSED,
-             int flags ATTRIBUTE_UNUSED)
+             unsigned int flags)
 {
     xenUnifiedPrivatePtr priv = (xenUnifiedPrivatePtr) conn->privateData;
+
+    virCheckFlags(VIR_CONNECT_RO, VIR_DRV_OPEN_ERROR);
 
     if (flags & VIR_CONNECT_RO)
         priv->xshandle = xs_daemon_open_readonly();
@@ -327,7 +298,7 @@ xenStoreOpen(virConnectPtr conn,
                                            xenStoreWatchEvent,
                                            conn,
                                            NULL)) < 0)
-        VIR_DEBUG0("Failed to add event handle, disabling events");
+        VIR_DEBUG("Failed to add event handle, disabling events");
 
     return 0;
 }
@@ -353,12 +324,12 @@ xenStoreClose(virConnectPtr conn)
     priv = (xenUnifiedPrivatePtr) conn->privateData;
 
     if (xenStoreRemoveWatch(conn, "@introduceDomain", "introduceDomain") < 0) {
-        VIR_DEBUG0("Warning, could not remove @introduceDomain watch");
+        VIR_DEBUG("Warning, could not remove @introduceDomain watch");
         /* not fatal */
     }
 
     if (xenStoreRemoveWatch(conn, "@releaseDomain", "releaseDomain") < 0) {
-        VIR_DEBUG0("Warning, could not remove @releaseDomain watch");
+        VIR_DEBUG("Warning, could not remove @releaseDomain watch");
         /* not fatal */
     }
 
@@ -384,7 +355,7 @@ xenStoreClose(virConnectPtr conn)
  * @domain: pointer to the domain block
  * @info: the place where information should be stored
  *
- * Do an hypervisor call to get the related set of domain information.
+ * Do a hypervisor call to get the related set of domain information.
  *
  * Returns 0 in case of success, -1 in case of error.
  */
@@ -446,6 +417,42 @@ xenStoreGetDomainInfo(virDomainPtr domain, virDomainInfoPtr info)
         VIR_FREE(tmp2);
     }
     return (0);
+}
+
+/**
+ * xenStoreDomainGetState:
+ * @domain: pointer to the domain block
+ * @state: returned domain's state
+ * @reason: returned state reason
+ * @flags: additional flags, 0 for now
+ *
+ * Returns 0 in case of success, -1 in case of error.
+ */
+int
+xenStoreDomainGetState(virDomainPtr domain,
+                       int *state,
+                       int *reason,
+                       unsigned int flags)
+{
+    char *running;
+
+    virCheckFlags(0, -1);
+
+    if (domain->id == -1)
+        return -1;
+
+    running = virDomainDoStoreQuery(domain->conn, domain->id, "running");
+
+    if (running && *running == '1')
+        *state = VIR_DOMAIN_RUNNING;
+    else
+        *state = VIR_DOMAIN_NOSTATE;
+    if (reason)
+        *reason = 0;
+
+    VIR_FREE(running);
+
+    return 0;
 }
 
 /**
@@ -744,10 +751,12 @@ xenStoreDomainShutdown(virDomainPtr domain)
  * Returns 0 in case of success, -1 in case of error.
  */
 int
-xenStoreDomainReboot(virDomainPtr domain, unsigned int flags ATTRIBUTE_UNUSED)
+xenStoreDomainReboot(virDomainPtr domain, unsigned int flags)
 {
     int ret;
     xenUnifiedPrivatePtr priv;
+
+    virCheckFlags(0, -1);
 
     if ((domain == NULL) || (domain->conn == NULL)) {
         virXenStoreError(VIR_ERR_INVALID_ARG, __FUNCTION__);
@@ -841,6 +850,25 @@ int             xenStoreDomainGetVNCPort(virConnectPtr conn, int domid) {
  */
 char *          xenStoreDomainGetConsolePath(virConnectPtr conn, int domid) {
   return virDomainDoStoreQuery(conn, domid, "console/tty");
+}
+
+/**
+ * xenStoreDomainGetSerailConsolePath:
+ * @conn: the hypervisor connection
+ * @domid: id of the domain
+ *
+ * Return the path to the pseudo TTY on which the guest domain's
+ * serial console is attached.
+ *
+ * Returns the path to the serial console. It is the callers
+ * responsibilty to free() the return string. Returns NULL
+ * on error
+ *
+ * The caller must hold the lock on the privateData
+ * associated with the 'conn' parameter.
+ */
+char * xenStoreDomainGetSerialConsolePath(virConnectPtr conn, int domid) {
+    return virDomainDoStoreQuery(conn, domid, "serial/0/tty");
 }
 
 
@@ -1196,7 +1224,7 @@ int xenStoreRemoveWatch(virConnectPtr conn,
                        list->watches[i]->path,
                        list->watches[i]->token))
             {
-                VIR_DEBUG0("WARNING: Could not remove watch");
+                VIR_DEBUG("WARNING: Could not remove watch");
                 /* Not fatal, continue */
             }
 
@@ -1351,7 +1379,7 @@ retry:
     VIR_FREE(new_domids);
 
     if (missing && retries--) {
-        VIR_DEBUG0("Some domains were missing, trying again");
+        VIR_DEBUG("Some domains were missing, trying again");
         usleep(100 * 1000);
         goto retry;
     }
@@ -1426,7 +1454,7 @@ retry:
     VIR_FREE(new_domids);
 
     if (!removed && retries--) {
-        VIR_DEBUG0("No domains removed, retrying");
+        VIR_DEBUG("No domains removed, retrying");
         usleep(100 * 1000);
         goto retry;
     }

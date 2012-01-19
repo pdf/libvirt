@@ -32,7 +32,6 @@
 #include <regex.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <dirent.h>
 #include <sys/stat.h>
 
 #include "virterror_internal.h"
@@ -41,7 +40,8 @@
 #include "util.h"
 #include "memory.h"
 #include "logging.h"
-#include "files.h"
+#include "virfile.h"
+#include "command.h"
 
 #define VIR_FROM_THIS VIR_FROM_STORAGE
 
@@ -159,8 +159,7 @@ virStorageBackendISCSISession(virStoragePoolObjPtr pool,
                                       regexes,
                                       vars,
                                       virStorageBackendISCSIExtractSession,
-                                      &session,
-                                      NULL) < 0)
+                                      &session, NULL) < 0)
         return NULL;
 
     if (session == NULL &&
@@ -183,28 +182,22 @@ virStorageBackendIQNFound(const char *initiatoriqn,
     int ret = IQN_MISSING, fd = -1;
     char ebuf[64];
     FILE *fp = NULL;
-    pid_t child = 0;
-    char *line = NULL, *newline = NULL, *iqn = NULL, *token = NULL,
-        *saveptr = NULL;
-    const char *const prog[] = {
-        ISCSIADM, "--mode", "iface", NULL
-    };
+    char *line = NULL, *newline = NULL, *iqn = NULL, *token = NULL;
+    virCommandPtr cmd = virCommandNewArgList(ISCSIADM,
+                                             "--mode", "iface", NULL);
 
     if (VIR_ALLOC_N(line, LINE_SIZE) != 0) {
         ret = IQN_ERROR;
         virStorageReportError(VIR_ERR_INTERNAL_ERROR,
                               _("Could not allocate memory for output of '%s'"),
-                              prog[0]);
+                              ISCSIADM);
         goto out;
     }
 
     memset(line, 0, LINE_SIZE);
 
-    if (virExec(prog, NULL, NULL, &child, -1, &fd, NULL, VIR_EXEC_NONE) < 0) {
-        virStorageReportError(VIR_ERR_INTERNAL_ERROR,
-                              _("Failed to run '%s' when looking for existing interface with IQN '%s'"),
-                              prog[0], initiatoriqn);
-
+    virCommandSetOutputFD(cmd, &fd);
+    if (virCommandRunAsync(cmd, NULL) < 0) {
         ret = IQN_ERROR;
         goto out;
     }
@@ -213,7 +206,7 @@ virStorageBackendIQNFound(const char *initiatoriqn,
         virStorageReportError(VIR_ERR_INTERNAL_ERROR,
                               _("Failed to open stream for file descriptor "
                                 "when reading output from '%s': '%s'"),
-                              prog[0], virStrerror(errno, ebuf, sizeof ebuf));
+                              ISCSIADM, virStrerror(errno, ebuf, sizeof ebuf));
         ret = IQN_ERROR;
         goto out;
     }
@@ -225,7 +218,7 @@ virStorageBackendIQNFound(const char *initiatoriqn,
             virStorageReportError(VIR_ERR_INTERNAL_ERROR,
                                   _("Unexpected line > %d characters "
                                     "when parsing output of '%s'"),
-                                  LINE_SIZE, prog[0]);
+                                  LINE_SIZE, ISCSIADM);
             goto out;
         }
         *newline = '\0';
@@ -237,8 +230,15 @@ virStorageBackendIQNFound(const char *initiatoriqn,
         iqn++;
 
         if (STREQ(iqn, initiatoriqn)) {
-            token = strtok_r(line, " ", &saveptr);
-            *ifacename = strdup(token);
+            token = strchr(line, ' ');
+            if (!token) {
+                ret = IQN_ERROR;
+                virStorageReportError(VIR_ERR_INTERNAL_ERROR,
+                                      _("Missing space when parsing output "
+                                        "of '%s'"), ISCSIADM);
+                goto out;
+            }
+            *ifacename = strndup(line, token - line);
             if (*ifacename == NULL) {
                 ret = IQN_ERROR;
                 virReportOOMError();
@@ -250,6 +250,9 @@ virStorageBackendIQNFound(const char *initiatoriqn,
         }
     }
 
+    if (virCommandWait(cmd, NULL) < 0)
+        ret = IQN_ERROR;
+
 out:
     if (ret == IQN_MISSING) {
         VIR_DEBUG("Could not find interface with IQN '%s'", iqn);
@@ -258,6 +261,7 @@ out:
     VIR_FREE(line);
     VIR_FORCE_FCLOSE(fp);
     VIR_FORCE_CLOSE(fd);
+    virCommandFree(cmd);
 
     return ret;
 }
@@ -348,28 +352,11 @@ virStorageBackendISCSIConnection(const char *portal,
         "--targetname", target,
         NULL
     };
-    int i;
-    int nargs = 0;
+    virCommandPtr cmd;
     char *ifacename = NULL;
-    const char **cmdargv;
 
-    for (i = 0 ; baseargv[i] != NULL ; i++)
-        nargs++;
-    for (i = 0 ; extraargv[i] != NULL ; i++)
-        nargs++;
-    if (initiatoriqn)
-        nargs += 2;
-
-    if (VIR_ALLOC_N(cmdargv, nargs+1) < 0) {
-        virReportOOMError();
-        return -1;
-    }
-
-    nargs = 0;
-    for (i = 0 ; baseargv[i] != NULL ; i++)
-        cmdargv[nargs++] = baseargv[i];
-    for (i = 0 ; extraargv[i] != NULL ; i++)
-        cmdargv[nargs++] = extraargv[i];
+    cmd = virCommandNewArgs(baseargv);
+    virCommandAddArgSet(cmd, extraargv);
 
     if (initiatoriqn) {
         switch (virStorageBackendIQNFound(initiatoriqn, &ifacename)) {
@@ -377,7 +364,8 @@ virStorageBackendISCSIConnection(const char *portal,
             VIR_DEBUG("ifacename: '%s'", ifacename);
             break;
         case IQN_MISSING:
-            if (virStorageBackendCreateIfaceIQN(initiatoriqn, &ifacename) != 0) {
+            if (virStorageBackendCreateIfaceIQN(initiatoriqn,
+                                                &ifacename) != 0) {
                 goto cleanup;
             }
             break;
@@ -385,19 +373,16 @@ virStorageBackendISCSIConnection(const char *portal,
         default:
             goto cleanup;
         }
-
-        cmdargv[nargs++] = "--interface";
-        cmdargv[nargs++] = ifacename;
+        virCommandAddArgList(cmd, "--interface", ifacename, NULL);
     }
-    cmdargv[nargs++] = NULL;
 
-    if (virRun(cmdargv, NULL) < 0)
+    if (virCommandRun(cmd, NULL) < 0)
         goto cleanup;
 
     ret = 0;
 
 cleanup:
-    VIR_FREE(cmdargv);
+    virCommandFree(cmd);
     VIR_FREE(ifacename);
 
     return ret;
@@ -522,7 +507,6 @@ virStorageBackendISCSIScanTargets(const char *portal,
     };
     struct virStorageBackendISCSITargetList list;
     int i;
-    int exitstatus;
 
     memset(&list, 0, sizeof(list));
 
@@ -532,17 +516,7 @@ virStorageBackendISCSIScanTargets(const char *portal,
                                       regexes,
                                       vars,
                                       virStorageBackendISCSIGetTargets,
-                                      &list,
-                                      &exitstatus) < 0) {
-        virStorageReportError(VIR_ERR_INTERNAL_ERROR,
-                              "%s", _("iscsiadm command failed"));
-                              return -1;
-    }
-
-    if (exitstatus != 0) {
-        virStorageReportError(VIR_ERR_INTERNAL_ERROR,
-                              _("iscsiadm sendtargets command failed with exitstatus %d"),
-                              exitstatus);
+                                      &list, NULL) < 0) {
         return -1;
     }
 
@@ -575,7 +549,7 @@ virStorageBackendISCSIScanTargets(const char *portal,
 static char *
 virStorageBackendISCSIFindPoolSources(virConnectPtr conn ATTRIBUTE_UNUSED,
                                       const char *srcSpec,
-                                      unsigned int flags ATTRIBUTE_UNUSED)
+                                      unsigned int flags)
 {
     virStoragePoolSourcePtr source = NULL;
     size_t ntargets = 0;
@@ -588,6 +562,8 @@ virStorageBackendISCSIFindPoolSources(virConnectPtr conn ATTRIBUTE_UNUSED,
         .sources = NULL
     };
     char *portal = NULL;
+
+    virCheckFlags(0, NULL);
 
     if (!(source = virStoragePoolDefParseSourceString(srcSpec,
                                                       list.type)))

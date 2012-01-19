@@ -1,7 +1,7 @@
 /*
  * storage_backend_disk.c: storage backend for disk handling
  *
- * Copyright (C) 2007-2008, 2010 Red Hat, Inc.
+ * Copyright (C) 2007-2008, 2010-2011 Red Hat, Inc.
  * Copyright (C) 2007-2008 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -262,7 +262,6 @@ static int
 virStorageBackendDiskReadPartitions(virStoragePoolObjPtr pool,
                                     virStorageVolDefPtr vol)
 {
-
     /*
      *  # libvirt_parthelper DEVICE
      * /dev/sda1      normal       data        32256    106928128    106896384
@@ -320,6 +319,13 @@ virStorageBackendDiskRefreshPool(virConnectPtr conn ATTRIBUTE_UNUSED,
 
     virFileWaitForDevices();
 
+    if (!virFileExists(pool->def->source.devices[0].path)) {
+        virStorageReportError(VIR_ERR_INVALID_ARG,
+                              _("device path '%s' doesn't exist"),
+                              pool->def->source.devices[0].path);
+        return -1;
+    }
+
     if (virStorageBackendDiskReadGeometry(pool) != 0) {
         return -1;
     }
@@ -329,13 +335,49 @@ virStorageBackendDiskRefreshPool(virConnectPtr conn ATTRIBUTE_UNUSED,
 
 
 /**
+ * Check for a valid disk label (partition table) on device
+ *
+ * return: 0 - valid disk label found
+ *        >0 - no or unrecognized disk label
+ *        <0 - error finding the disk label
+ */
+static int
+virStorageBackendDiskFindLabel(const char* device)
+{
+    const char *const args[] = {
+        device, "print", "--script", NULL,
+    };
+    virCommandPtr cmd = virCommandNew(PARTED);
+    char *output = NULL;
+    int ret = -1;
+
+    virCommandAddArgSet(cmd, args);
+    virCommandAddEnvString(cmd, "LC_ALL=C");
+    virCommandSetOutputBuffer(cmd, &output);
+
+    /* if parted succeeds we have a valid partition table */
+    ret = virCommandRun(cmd, NULL);
+    if (ret < 0) {
+        if (strstr (output, "unrecognised disk label"))
+            ret = 1;
+    }
+
+    virCommandFree(cmd);
+    VIR_FREE(output);
+    return ret;
+}
+
+
+/**
  * Write a new partition table header
  */
 static int
 virStorageBackendDiskBuildPool(virConnectPtr conn ATTRIBUTE_UNUSED,
                                virStoragePoolObjPtr pool,
-                               unsigned int flags ATTRIBUTE_UNUSED)
+                               unsigned int flags)
 {
+    bool ok_to_mklabel = false;
+    int ret = -1;
     /* eg parted /dev/sda mklabel msdos */
     const char *prog[] = {
         PARTED,
@@ -347,10 +389,40 @@ virStorageBackendDiskBuildPool(virConnectPtr conn ATTRIBUTE_UNUSED,
         NULL,
     };
 
-    if (virRun(prog, NULL) < 0)
-        return -1;
+    virCheckFlags(VIR_STORAGE_POOL_BUILD_OVERWRITE |
+                  VIR_STORAGE_POOL_BUILD_NO_OVERWRITE, ret);
 
-    return 0;
+    if (flags == (VIR_STORAGE_POOL_BUILD_OVERWRITE |
+                  VIR_STORAGE_POOL_BUILD_NO_OVERWRITE)) {
+        virStorageReportError(VIR_ERR_OPERATION_INVALID,
+                              _("Overwrite and no overwrite flags"
+                                " are mutually exclusive"));
+        goto error;
+    }
+
+    if (flags & VIR_STORAGE_POOL_BUILD_OVERWRITE)
+        ok_to_mklabel = true;
+    else {
+        int check;
+
+        check = virStorageBackendDiskFindLabel (
+                    pool->def->source.devices[0].path);
+        if (check > 0) {
+            ok_to_mklabel = true;
+        } else if (check < 0) {
+            virStorageReportError(VIR_ERR_OPERATION_FAILED,
+                                  _("Error checking for disk label"));
+        } else {
+            virStorageReportError(VIR_ERR_OPERATION_INVALID,
+                                  _("Disk label already present"));
+        }
+    }
+
+    if (ok_to_mklabel)
+        ret = virRun(prog, NULL);
+
+error:
+    return ret;
 }
 
 /**
@@ -572,7 +644,7 @@ virStorageBackendDiskCreateVol(virConnectPtr conn ATTRIBUTE_UNUSED,
     };
 
     if (vol->target.encryption != NULL) {
-        virStorageReportError(VIR_ERR_NO_SUPPORT,
+        virStorageReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                               "%s", _("storage pool does not support encrypted "
                                       "volumes"));
         return -1;
@@ -643,14 +715,16 @@ static int
 virStorageBackendDiskDeleteVol(virConnectPtr conn ATTRIBUTE_UNUSED,
                                virStoragePoolObjPtr pool,
                                virStorageVolDefPtr vol,
-                               unsigned int flags ATTRIBUTE_UNUSED)
+                               unsigned int flags)
 {
     char *part_num = NULL;
     char *devpath = NULL;
-    char *devname, *srcname;
+    char *dev_name, *srcname;
     virCommandPtr cmd = NULL;
     bool isDevMapperDevice;
     int rc = -1;
+
+    virCheckFlags(0, -1);
 
     if (virFileResolveLink(vol->target.path, &devpath) < 0) {
         virReportSystemError(errno,
@@ -659,26 +733,26 @@ virStorageBackendDiskDeleteVol(virConnectPtr conn ATTRIBUTE_UNUSED,
         goto cleanup;
     }
 
-    devname = basename(devpath);
+    dev_name = basename(devpath);
     srcname = basename(pool->def->source.devices[0].path);
-    VIR_DEBUG("devname=%s, srcname=%s", devname, srcname);
+    VIR_DEBUG("dev_name=%s, srcname=%s", dev_name, srcname);
 
     isDevMapperDevice = virIsDevMapperDevice(devpath);
 
-    if (!isDevMapperDevice && !STRPREFIX(devname, srcname)) {
+    if (!isDevMapperDevice && !STRPREFIX(dev_name, srcname)) {
         virStorageReportError(VIR_ERR_INTERNAL_ERROR,
                               _("Volume path '%s' did not start with parent "
-                                "pool source device name."), devname);
+                                "pool source device name."), dev_name);
         goto cleanup;
     }
 
     if (!isDevMapperDevice) {
-        part_num = devname + strlen(srcname);
+        part_num = dev_name + strlen(srcname);
 
         if (*part_num == 0) {
             virStorageReportError(VIR_ERR_INTERNAL_ERROR,
                                   _("cannot parse partition number from target "
-                                    "'%s'"), devname);
+                                    "'%s'"), dev_name);
             goto cleanup;
         }
 

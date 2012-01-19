@@ -16,26 +16,19 @@
 #include "nwfilter_conf.h"
 #include "testutilsqemu.h"
 
-static char *progname;
-static char *abs_srcdir;
-
-#define MAX_FILE 4096
-
-
-static int testCompareXMLToXMLFiles(const char *inxml,
-                                    const char *outxml,
-                                    bool expect_error) {
-    char inXmlData[MAX_FILE];
-    char *inXmlPtr = &(inXmlData[0]);
-    char outXmlData[MAX_FILE];
-    char *outXmlPtr = &(outXmlData[0]);
+static int
+testCompareXMLToXMLFiles(const char *inxml, const char *outxml,
+                         bool expect_error)
+{
+    char *inXmlData = NULL;
+    char *outXmlData = NULL;
     char *actual = NULL;
     int ret = -1;
     virNWFilterDefPtr dev = NULL;
 
-    if (virtTestLoadFile(inxml, &inXmlPtr, MAX_FILE) < 0)
+    if (virtTestLoadFile(inxml, &inXmlData) < 0)
         goto fail;
-    if (virtTestLoadFile(outxml, &outXmlPtr, MAX_FILE) < 0)
+    if (virtTestLoadFile(outxml, &outXmlData) < 0)
         goto fail;
 
     virResetLastError();
@@ -62,6 +55,8 @@ static int testCompareXMLToXMLFiles(const char *inxml,
     ret = 0;
 
  fail:
+    free(inXmlData);
+    free(outXmlData);
     free(actual);
     virNWFilterDefFree(dev);
     return ret;
@@ -72,34 +67,34 @@ typedef struct test_parms {
     bool expect_warning;
 } test_parms;
 
-static int testCompareXMLToXMLHelper(const void *data) {
-    const test_parms *tp = data;
-    char inxml[PATH_MAX];
-    char outxml[PATH_MAX];
-    snprintf(inxml, PATH_MAX, "%s/nwfilterxml2xmlin/%s.xml",
-             abs_srcdir, tp->name);
-    snprintf(outxml, PATH_MAX, "%s/nwfilterxml2xmlout/%s.xml",
-             abs_srcdir, tp->name);
-    return testCompareXMLToXMLFiles(inxml, outxml, tp->expect_warning);
-}
-
-
 static int
-mymain(int argc, char **argv)
+testCompareXMLToXMLHelper(const void *data)
 {
-    int ret = 0;
-    char cwd[PATH_MAX];
+    int result = -1;
+    const test_parms *tp = data;
+    char *inxml = NULL;
+    char *outxml = NULL;
 
-    progname = argv[0];
-
-    if (argc > 1) {
-        fprintf(stderr, "Usage: %s\n", progname);
-        return (EXIT_FAILURE);
+    if (virAsprintf(&inxml, "%s/nwfilterxml2xmlin/%s.xml",
+                    abs_srcdir, tp->name) < 0 ||
+        virAsprintf(&outxml, "%s/nwfilterxml2xmlout/%s.xml",
+                    abs_srcdir, tp->name) < 0) {
+        goto cleanup;
     }
 
-    abs_srcdir = getenv("abs_srcdir");
-    if (!abs_srcdir)
-        abs_srcdir = getcwd(cwd, sizeof(cwd));
+    result = testCompareXMLToXMLFiles(inxml, outxml, tp->expect_warning);
+
+cleanup:
+    free(inxml);
+    free(outxml);
+
+    return result;
+}
+
+static int
+mymain(void)
+{
+    int ret = 0;
 
 #define DO_TEST(NAME, EXPECT_WARN)                                \
     do {                                                          \
@@ -113,6 +108,8 @@ mymain(int argc, char **argv)
     } while (0)
 
     DO_TEST("mac-test", true);
+    DO_TEST("vlan-test", true);
+    DO_TEST("stp-test", false);
     DO_TEST("arp-test", true);
     DO_TEST("rarp-test", true);
     DO_TEST("ip-test", true);
@@ -152,6 +149,13 @@ mymain(int argc, char **argv)
 
     DO_TEST("example-1", false);
     DO_TEST("example-2", false);
+
+    DO_TEST("chain_prefixtest1", true); /* derived from arp-test */
+
+    DO_TEST("attr-value-test", false);
+    DO_TEST("iter-test1", false);
+    DO_TEST("iter-test2", false);
+    DO_TEST("iter-test3", false);
 
     return (ret==0 ? EXIT_SUCCESS : EXIT_FAILURE);
 }

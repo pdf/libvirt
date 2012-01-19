@@ -1,7 +1,7 @@
 /*
  * libvirt.h: publically exported APIs, not for public use
  *
- * Copyright (C) 2006-2008 Red Hat, Inc.
+ * Copyright (C) 2006-2008, 2011 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -39,8 +39,8 @@ int virStateActive(void);
  *
  * The remote driver passes features through to the real driver at the
  * remote end unmodified, except if you query a VIR_DRV_FEATURE_REMOTE*
- * feature.
- *
+ * feature.  Queries for VIR_DRV_FEATURE_PROGRAM* features are answered
+ * directly by the RPC layer and not by the real driver.
  */
 enum {
     /* Driver supports V1-style virDomainMigrate, ie. domainMigratePrepare/
@@ -66,6 +66,35 @@ enum {
      * perform step is used.
      */
     VIR_DRV_FEATURE_MIGRATION_DIRECT = 5,
+
+    /*
+     * Driver supports V3-style virDomainMigrate, ie domainMigrateBegin3/
+     * domainMigratePrepare3/domainMigratePerform3/domainMigrateFinish3/
+     * domainMigrateConfirm3.
+     */
+    VIR_DRV_FEATURE_MIGRATION_V3 = 6,
+
+    /*
+     * Driver supports protecting the whole V3-style migration against changes
+     * to domain configuration, i.e., starting from Begin3 and not Perform3.
+     */
+    VIR_DRV_FEATURE_MIGRATE_CHANGE_PROTECTION = 7,
+
+    /*
+     * Support for file descriptor passing
+     */
+    VIR_DRV_FEATURE_FD_PASSING = 8,
+
+    /*
+     * Support for VIR_TYPED_PARAM_STRING
+     */
+    VIR_DRV_FEATURE_TYPED_PARAM_STRING = 9,
+
+    /*
+     * Remote party supports keepalive program (i.e., sending keepalive
+     * messages).
+     */
+    VIR_DRV_FEATURE_PROGRAM_KEEPALIVE = 10,
 };
 
 
@@ -114,5 +143,67 @@ int virDomainMigratePrepareTunnel(virConnectPtr dconn,
                                   const char *dname,
                                   unsigned long resource,
                                   const char *dom_xml);
+
+
+char *virDomainMigrateBegin3(virDomainPtr domain,
+                             const char *xmlin,
+                             char **cookieout,
+                             int *cookieoutlen,
+                             unsigned long flags,
+                             const char *dname,
+                             unsigned long resource);
+
+int virDomainMigratePrepare3(virConnectPtr dconn,
+                             const char *cookiein,
+                             int cookieinlen,
+                             char **cookieout,
+                             int *cookieoutlen,
+                             const char *uri_in,
+                             char **uri_out,
+                             unsigned long flags,
+                             const char *dname,
+                             unsigned long resource,
+                             const char *dom_xml);
+
+int virDomainMigratePrepareTunnel3(virConnectPtr dconn,
+                                   virStreamPtr st,
+                                   const char *cookiein,
+                                   int cookieinlen,
+                                   char **cookieout,
+                                   int *cookieoutlen,
+                                   unsigned long flags,
+                                   const char *dname,
+                                   unsigned long resource,
+                                   const char *dom_xml);
+
+
+int virDomainMigratePerform3(virDomainPtr dom,
+                             const char *xmlin,
+                             const char *cookiein,
+                             int cookieinlen,
+                             char **cookieout,
+                             int *cookieoutlen,
+                             const char *dconnuri, /* libvirtd URI if Peer2Peer, NULL otherwise */
+                             const char *uri, /* VM Migration URI */
+                             unsigned long flags,
+                             const char *dname,
+                             unsigned long resource);
+
+virDomainPtr virDomainMigrateFinish3(virConnectPtr dconn,
+                                     const char *dname,
+                                     const char *cookiein,
+                                     int cookieinlen,
+                                     char **cookieout,
+                                     int *cookieoutlen,
+                                     const char *dconnuri, /* libvirtd URI if Peer2Peer, NULL otherwise */
+                                     const char *uri, /* VM Migration URI, NULL in tunnelled case */
+                                     unsigned long flags,
+                                     int cancelled); /* Kill the dst VM */
+
+int virDomainMigrateConfirm3(virDomainPtr domain,
+                             const char *cookiein,
+                             int cookieinlen,
+                             unsigned long flags,
+                             int restart); /* Restart the src VM */
 
 #endif

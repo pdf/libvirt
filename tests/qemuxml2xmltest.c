@@ -13,34 +13,31 @@
 # include "internal.h"
 # include "testutils.h"
 # include "qemu/qemu_conf.h"
+# include "qemu/qemu_domain.h"
 # include "testutilsqemu.h"
 
-static char *progname;
-static char *abs_srcdir;
 static struct qemud_driver driver;
 
-# define MAX_FILE 4096
-
-
-static int testCompareXMLToXMLFiles(const char *inxml, const char *outxml) {
-    char inXmlData[MAX_FILE];
-    char *inXmlPtr = &(inXmlData[0]);
-    char outXmlData[MAX_FILE];
-    char *outXmlPtr = &(outXmlData[0]);
+static int
+testCompareXMLToXMLFiles(const char *inxml, const char *outxml)
+{
+    char *inXmlData = NULL;
+    char *outXmlData = NULL;
     char *actual = NULL;
     int ret = -1;
     virDomainDefPtr def = NULL;
 
-    if (virtTestLoadFile(inxml, &inXmlPtr, MAX_FILE) < 0)
+    if (virtTestLoadFile(inxml, &inXmlData) < 0)
         goto fail;
-    if (virtTestLoadFile(outxml, &outXmlPtr, MAX_FILE) < 0)
+    if (virtTestLoadFile(outxml, &outXmlData) < 0)
         goto fail;
 
     if (!(def = virDomainDefParseString(driver.caps, inXmlData,
-                                          VIR_DOMAIN_XML_INACTIVE)))
+                                        QEMU_EXPECTED_VIRT_TYPES,
+                                        VIR_DOMAIN_XML_INACTIVE)))
         goto fail;
 
-    if (!(actual = virDomainDefFormat(def, 0)))
+    if (!(actual = virDomainDefFormat(def, VIR_DOMAIN_XML_SECURE)))
         goto fail;
 
 
@@ -51,6 +48,8 @@ static int testCompareXMLToXMLFiles(const char *inxml, const char *outxml) {
 
     ret = 0;
  fail:
+    free(inXmlData);
+    free(outXmlData);
     free(actual);
     virDomainDefFree(def);
     return ret;
@@ -61,16 +60,19 @@ struct testInfo {
     int different;
 };
 
-static int testCompareXMLToXMLHelper(const void *data) {
+static int
+testCompareXMLToXMLHelper(const void *data)
+{
     const struct testInfo *info = data;
-    char xml_in[PATH_MAX];
-    char xml_out[PATH_MAX];
-    int ret;
+    char *xml_in = NULL;
+    char *xml_out = NULL;
+    int ret = -1;
 
-    snprintf(xml_in, PATH_MAX, "%s/qemuxml2argvdata/qemuxml2argv-%s.xml",
-             abs_srcdir, info->name);
-    snprintf(xml_out, PATH_MAX, "%s/qemuxml2xmloutdata/qemuxml2xmlout-%s.xml",
-             abs_srcdir, info->name);
+    if (virAsprintf(&xml_in, "%s/qemuxml2argvdata/qemuxml2argv-%s.xml",
+                    abs_srcdir, info->name) < 0 ||
+        virAsprintf(&xml_out, "%s/qemuxml2xmloutdata/qemuxml2xmlout-%s.xml",
+                    abs_srcdir, info->name) < 0)
+        goto cleanup;
 
     if (info->different) {
         ret = testCompareXMLToXMLFiles(xml_in, xml_out);
@@ -78,26 +80,17 @@ static int testCompareXMLToXMLHelper(const void *data) {
         ret = testCompareXMLToXMLFiles(xml_in, xml_in);
     }
 
+cleanup:
+    free(xml_in);
+    free(xml_out);
     return ret;
 }
 
 
 static int
-mymain(int argc, char **argv)
+mymain(void)
 {
     int ret = 0;
-    char cwd[PATH_MAX];
-
-    progname = argv[0];
-
-    if (argc > 1) {
-        fprintf(stderr, "Usage: %s\n", progname);
-        return (EXIT_FAILURE);
-    }
-
-    abs_srcdir = getenv("abs_srcdir");
-    if (!abs_srcdir)
-        abs_srcdir = getcwd(cwd, sizeof(cwd));
 
     if ((driver.caps = testQemuCapsInit()) == NULL)
         return (EXIT_FAILURE);
@@ -146,12 +139,16 @@ mymain(int argc, char **argv)
     DO_TEST("disk-drive-cache-v1-wb");
     DO_TEST("disk-drive-cache-v1-none");
     DO_TEST("disk-scsi-device");
+    DO_TEST("disk-scsi-vscsi");
+    DO_TEST("disk-scsi-virtio-scsi");
+    DO_TEST("graphics-listen-network");
     DO_TEST("graphics-vnc");
     DO_TEST("graphics-vnc-sasl");
     DO_TEST("graphics-vnc-tls");
     DO_TEST("graphics-sdl");
     DO_TEST("graphics-sdl-fullscreen");
     DO_TEST("graphics-spice");
+    DO_TEST("graphics-spice-compression");
     DO_TEST("graphics-spice-qxl-vga");
     DO_TEST("input-usbmouse");
     DO_TEST("input-usbtablet");
@@ -163,7 +160,9 @@ mymain(int argc, char **argv)
     DO_TEST("net-virtio-device");
     DO_TEST("net-eth");
     DO_TEST("net-eth-ifname");
+    DO_TEST("net-virtio-network-portgroup");
     DO_TEST("sound");
+    DO_TEST("net-bandwidth");
 
     DO_TEST("serial-vc");
     DO_TEST("serial-pty");
@@ -176,6 +175,7 @@ mymain(int argc, char **argv)
     DO_TEST("serial-many");
     DO_TEST("parallel-tcp");
     DO_TEST("console-compat");
+    DO_TEST("console-virtio-many");
     DO_TEST("channel-guestfwd");
     DO_TEST("channel-virtio");
 
@@ -185,9 +185,20 @@ mymain(int argc, char **argv)
     DO_TEST("encrypted-disk");
     DO_TEST("memtune");
     DO_TEST("blkiotune");
+    DO_TEST("blkiotune-device");
     DO_TEST("cputune");
 
     DO_TEST("smp");
+    DO_TEST("lease");
+    DO_TEST("event_idx");
+    DO_TEST("virtio-lun");
+
+    DO_TEST("usb-redir");
+    DO_TEST("blkdeviotune");
+
+    DO_TEST("seclabel-dynamic-baselabel");
+    DO_TEST("seclabel-dynamic-override");
+    DO_TEST("seclabel-static");
 
     /* These tests generate different XML */
     DO_TEST_DIFFERENT("balloon-device-auto");
@@ -196,6 +207,8 @@ mymain(int argc, char **argv)
     DO_TEST_DIFFERENT("disk-scsi-device-auto");
     DO_TEST_DIFFERENT("console-virtio");
     DO_TEST_DIFFERENT("serial-target-port-auto");
+    DO_TEST_DIFFERENT("graphics-listen-network2");
+    DO_TEST_DIFFERENT("graphics-spice-timeout");
 
     virCapabilitiesFree(driver.caps);
 
@@ -205,7 +218,12 @@ mymain(int argc, char **argv)
 VIRT_TEST_MAIN(mymain)
 
 #else
+# include "testutils.h"
 
-int main (void) { exit (EXIT_AM_SKIP); }
+int
+main(void)
+{
+    return EXIT_AM_SKIP;
+}
 
 #endif /* WITH_QEMU */

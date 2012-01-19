@@ -24,7 +24,7 @@
 #include "util.h"
 #include "c-ctype.h"
 #include "memory.h"
-#include "files.h"
+#include "virfile.h"
 
 #define VIR_FROM_THIS VIR_FROM_CONF
 
@@ -100,13 +100,13 @@ virConfError(virConfParserCtxtPtr ctxt,
 
     /* Construct the string 'filename:line: info' if we have that. */
     if (ctxt && ctxt->filename) {
-        virRaiseError(NULL, NULL, NULL, VIR_FROM_CONF, error, VIR_ERR_ERROR,
+        virRaiseError(NULL, NULL, VIR_FROM_CONF, error, VIR_ERR_ERROR,
                         info, ctxt->filename, NULL,
                         ctxt->line, 0,
                         "%s:%d: %s", ctxt->filename, ctxt->line, info);
     } else {
         format = virErrorMsg(error, info);
-        virRaiseError(NULL, NULL, NULL, VIR_FROM_CONF, error, VIR_ERR_ERROR,
+        virRaiseError(NULL, NULL, VIR_FROM_CONF, error, VIR_ERR_ERROR,
                         info, NULL, NULL,
                         ctxt ? ctxt->line : 0, 0,
                         format, info);
@@ -260,17 +260,17 @@ virConfSaveValue(virBufferPtr buf, virConfValuePtr val)
         case VIR_CONF_NONE:
             return(-1);
         case VIR_CONF_LONG:
-            virBufferVSprintf(buf, "%ld", val->l);
+            virBufferAsprintf(buf, "%ld", val->l);
             break;
         case VIR_CONF_STRING:
             if (strchr(val->str, '\n') != NULL) {
-                virBufferVSprintf(buf, "\"\"\"%s\"\"\"", val->str);
+                virBufferAsprintf(buf, "\"\"\"%s\"\"\"", val->str);
             } else if (strchr(val->str, '"') == NULL) {
-                virBufferVSprintf(buf, "\"%s\"", val->str);
+                virBufferAsprintf(buf, "\"%s\"", val->str);
             } else if (strchr(val->str, '\'') == NULL) {
-                virBufferVSprintf(buf, "'%s'", val->str);
+                virBufferAsprintf(buf, "'%s'", val->str);
             } else {
-                virBufferVSprintf(buf, "\"\"\"%s\"\"\"", val->str);
+                virBufferAsprintf(buf, "\"\"\"%s\"\"\"", val->str);
             }
             break;
         case VIR_CONF_LIST: {
@@ -698,7 +698,7 @@ virConfParseStatement(virConfParserCtxtPtr ctxt)
  * Parse the subset of the Python language needed to handle simple
  * Xen configuration files.
  *
- * Returns an handle to lookup settings or NULL if it failed to
+ * Returns a handle to lookup settings or NULL if it failed to
  *         read or parse the file, use virConfFree() to free the data.
  */
 static virConfPtr
@@ -745,7 +745,7 @@ error:
  *
  * Reads a configuration file.
  *
- * Returns an handle to lookup settings or NULL if it failed to
+ * Returns a handle to lookup settings or NULL if it failed to
  *         read or parse the file, use virConfFree() to free the data.
  */
 virConfPtr
@@ -780,7 +780,7 @@ virConfReadFile(const char *filename, unsigned int flags)
  * Reads a configuration file loaded in memory. The string can be
  * zero terminated in which case @len can be 0
  *
- * Returns an handle to lookup settings or NULL if it failed to
+ * Returns a handle to lookup settings or NULL if it failed to
  *         parse the content, use virConfFree() to free the data.
  */
 virConfPtr
@@ -808,10 +808,8 @@ int
 virConfFree(virConfPtr conf)
 {
     virConfEntryPtr tmp;
-    if (conf == NULL) {
-        virConfError(NULL, VIR_ERR_INVALID_ARG, __FUNCTION__);
-        return(-1);
-    }
+    if (conf == NULL)
+        return 0;
 
     tmp = conf->entries;
     while (tmp) {

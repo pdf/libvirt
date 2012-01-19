@@ -3,7 +3,7 @@
  * esx_storage_driver.c: storage driver functions for managing VMware ESX
  *                       host storage
  *
- * Copyright (C) 2010 Red Hat, Inc.
+ * Copyright (C) 2010-2011 Red Hat, Inc.
  * Copyright (C) 2010 Matthias Bolte <matthias.bolte@googlemail.com>
  *
  * This library is free software; you can redistribute it and/or
@@ -104,8 +104,10 @@ esxStoragePoolLookupType(esxVI_Context *ctx, const char *poolName,
 static virDrvOpenStatus
 esxStorageOpen(virConnectPtr conn,
                virConnectAuthPtr auth ATTRIBUTE_UNUSED,
-               int flags ATTRIBUTE_UNUSED)
+               unsigned int flags)
 {
+    virCheckFlags(VIR_CONNECT_RO, VIR_DRV_OPEN_ERROR);
+
     if (conn->driver->no != VIR_DRV_ESX) {
         return VIR_DRV_OPEN_DECLINED;
     }
@@ -166,11 +168,6 @@ esxListStoragePools(virConnectPtr conn, char **const names, int maxnames)
     esxVI_ObjectContent *datastore = NULL;
     int count = 0;
     int i;
-
-    if (names == NULL || maxnames < 0) {
-        ESX_ERROR(VIR_ERR_INVALID_ARG, "%s", _("Invalid argument"));
-        return -1;
-    }
 
     if (maxnames == 0) {
         return 0;
@@ -837,7 +834,7 @@ esxStorageVolumeLookupByKey(virConnectPtr conn, const char *key)
 
     if (!priv->primary->hasQueryVirtualDiskUuid) {
         ESX_ERROR(VIR_ERR_INTERNAL_ERROR, "%s",
-                  _("QueryVirtualDiskUuid not avialable, cannot lookup storage "
+                  _("QueryVirtualDiskUuid not available, cannot lookup storage "
                     "volume by UUID"));
         return NULL;
     }
@@ -1114,7 +1111,8 @@ esxStorageVolumeCreateXML(virStoragePoolPtr pool, const char *xmldesc,
                esxVI_VirtualDiskSpec_DynamicCast(virtualDiskSpec), &task) < 0 ||
             esxVI_WaitForTaskCompletion(priv->primary, task, NULL,
                                         esxVI_Occurrence_None,
-                                        priv->autoAnswer, &taskInfoState,
+                                        priv->parsedUri->autoAnswer,
+                                        &taskInfoState,
                                         &taskInfoErrorMessage) < 0) {
             goto cleanup;
         }
@@ -1315,7 +1313,8 @@ esxStorageVolumeCreateXMLFrom(virStoragePoolPtr pool, const char *xmldesc,
                                        NULL, esxVI_Boolean_False, &task) < 0 ||
             esxVI_WaitForTaskCompletion(priv->primary, task, NULL,
                                         esxVI_Occurrence_None,
-                                        priv->autoAnswer, &taskInfoState,
+                                        priv->parsedUri->autoAnswer,
+                                        &taskInfoState,
                                         &taskInfoErrorMessage) < 0) {
             goto cleanup;
         }
@@ -1402,7 +1401,8 @@ esxStorageVolumeDelete(virStorageVolPtr volume, unsigned int flags)
                                      priv->primary->datacenter->_reference,
                                      &task) < 0 ||
         esxVI_WaitForTaskCompletion(priv->primary, task, NULL,
-                                    esxVI_Occurrence_None, priv->autoAnswer,
+                                    esxVI_Occurrence_None,
+                                    priv->parsedUri->autoAnswer,
                                     &taskInfoState, &taskInfoErrorMessage) < 0) {
         goto cleanup;
     }
@@ -1450,7 +1450,8 @@ esxStorageVolumeWipe(virStorageVolPtr volume, unsigned int flags)
                                        priv->primary->datacenter->_reference,
                                        &task) < 0 ||
         esxVI_WaitForTaskCompletion(priv->primary, task, NULL,
-                                    esxVI_Occurrence_None, priv->autoAnswer,
+                                    esxVI_Occurrence_None,
+                                    priv->parsedUri->autoAnswer,
                                     &taskInfoState, &taskInfoErrorMessage) < 0) {
         goto cleanup;
     }
@@ -1523,7 +1524,7 @@ esxStorageVolumeGetInfo(virStorageVolPtr volume, virStorageVolInfoPtr info)
 
 
 static char *
-esxStorageVolumeDumpXML(virStorageVolPtr volume, unsigned int flags)
+esxStorageVolumeGetXMLDesc(virStorageVolPtr volume, unsigned int flags)
 {
     esxPrivate *priv = volume->conn->storagePrivateData;
     virStoragePoolDef pool;
@@ -1641,45 +1642,35 @@ esxStoragePoolIsPersistent(virStoragePoolPtr pool ATTRIBUTE_UNUSED)
 
 
 static virStorageDriver esxStorageDriver = {
-    "ESX",                                 /* name */
-    esxStorageOpen,                        /* open */
-    esxStorageClose,                       /* close */
-    esxNumberOfStoragePools,               /* numOfPools */
-    esxListStoragePools,                   /* listPools */
-    esxNumberOfDefinedStoragePools,        /* numOfDefinedPools */
-    esxListDefinedStoragePools,            /* listDefinedPools */
-    NULL,                                  /* findPoolSources */
-    esxStoragePoolLookupByName,            /* poolLookupByName */
-    esxStoragePoolLookupByUUID,            /* poolLookupByUUID */
-    esxStoragePoolLookupByVolume,          /* poolLookupByVolume */
-    NULL,                                  /* poolCreateXML */
-    NULL,                                  /* poolDefineXML */
-    NULL,                                  /* poolBuild */
-    NULL,                                  /* poolUndefine */
-    NULL,                                  /* poolCreate */
-    NULL,                                  /* poolDestroy */
-    NULL,                                  /* poolDelete */
-    esxStoragePoolRefresh,                 /* poolRefresh */
-    esxStoragePoolGetInfo,                 /* poolGetInfo */
-    esxStoragePoolGetXMLDesc,              /* poolGetXMLDesc */
-    esxStoragePoolGetAutostart,            /* poolGetAutostart */
-    esxStoragePoolSetAutostart,            /* poolSetAutostart */
-    esxStoragePoolNumberOfStorageVolumes,  /* poolNumOfVolumes */
-    esxStoragePoolListStorageVolumes,      /* poolListVolumes */
-    esxStorageVolumeLookupByName,          /* volLookupByName */
-    esxStorageVolumeLookupByKey,           /* volLookupByKey */
-    esxStorageVolumeLookupByPath,          /* volLookupByPath */
-    esxStorageVolumeCreateXML,             /* volCreateXML */
-    esxStorageVolumeCreateXMLFrom,         /* volCreateXMLFrom */
-    NULL, /* volDownload */
-    NULL, /* volUpload */
-    esxStorageVolumeDelete,                /* volDelete */
-    esxStorageVolumeWipe,                  /* volWipe */
-    esxStorageVolumeGetInfo,               /* volGetInfo */
-    esxStorageVolumeDumpXML,               /* volGetXMLDesc */
-    esxStorageVolumeGetPath,               /* volGetPath */
-    esxStoragePoolIsActive,                /* poolIsActive */
-    esxStoragePoolIsPersistent,            /* poolIsPersistent */
+    .name = "ESX",
+    .open = esxStorageOpen, /* 0.7.6 */
+    .close = esxStorageClose, /* 0.7.6 */
+    .numOfPools = esxNumberOfStoragePools, /* 0.8.2 */
+    .listPools = esxListStoragePools, /* 0.8.2 */
+    .numOfDefinedPools = esxNumberOfDefinedStoragePools, /* 0.8.2 */
+    .listDefinedPools = esxListDefinedStoragePools, /* 0.8.2 */
+    .poolLookupByName = esxStoragePoolLookupByName, /* 0.8.2 */
+    .poolLookupByUUID = esxStoragePoolLookupByUUID, /* 0.8.2 */
+    .poolLookupByVolume = esxStoragePoolLookupByVolume, /* 0.8.4 */
+    .poolRefresh = esxStoragePoolRefresh, /* 0.8.2 */
+    .poolGetInfo = esxStoragePoolGetInfo, /* 0.8.2 */
+    .poolGetXMLDesc = esxStoragePoolGetXMLDesc, /* 0.8.2 */
+    .poolGetAutostart = esxStoragePoolGetAutostart, /* 0.8.2 */
+    .poolSetAutostart = esxStoragePoolSetAutostart, /* 0.8.2 */
+    .poolNumOfVolumes = esxStoragePoolNumberOfStorageVolumes, /* 0.8.4 */
+    .poolListVolumes = esxStoragePoolListStorageVolumes, /* 0.8.4 */
+    .volLookupByName = esxStorageVolumeLookupByName, /* 0.8.4 */
+    .volLookupByKey = esxStorageVolumeLookupByKey, /* 0.8.4 */
+    .volLookupByPath = esxStorageVolumeLookupByPath, /* 0.8.4 */
+    .volCreateXML = esxStorageVolumeCreateXML, /* 0.8.4 */
+    .volCreateXMLFrom = esxStorageVolumeCreateXMLFrom, /* 0.8.7 */
+    .volDelete = esxStorageVolumeDelete, /* 0.8.7 */
+    .volWipe = esxStorageVolumeWipe, /* 0.8.7 */
+    .volGetInfo = esxStorageVolumeGetInfo, /* 0.8.4 */
+    .volGetXMLDesc = esxStorageVolumeGetXMLDesc, /* 0.8.4 */
+    .volGetPath = esxStorageVolumeGetPath, /* 0.8.4 */
+    .poolIsActive = esxStoragePoolIsActive, /* 0.8.2 */
+    .poolIsPersistent = esxStoragePoolIsPersistent, /* 0.8.2 */
 };
 
 

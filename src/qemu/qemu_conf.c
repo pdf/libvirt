@@ -1,7 +1,7 @@
 /*
  * qemu_conf.c: QEMU configuration management
  *
- * Copyright (C) 2006, 2007, 2008, 2009, 2010 Red Hat, Inc.
+ * Copyright (C) 2006-2011 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -23,7 +23,6 @@
 
 #include <config.h>
 
-#include <dirent.h>
 #include <string.h>
 #include <limits.h>
 #include <sys/types.h>
@@ -46,16 +45,13 @@
 #include "conf.h"
 #include "util.h"
 #include "memory.h"
-#include "verify.h"
 #include "datatypes.h"
 #include "xml.h"
 #include "nodeinfo.h"
 #include "logging.h"
-#include "network.h"
-#include "macvtap.h"
 #include "cpu/cpu.h"
 #include "domain_nwfilter.h"
-#include "files.h"
+#include "virfile.h"
 #include "configmake.h"
 
 #define VIR_FROM_THIS VIR_FROM_QEMU
@@ -115,6 +111,12 @@ int qemudLoadDriverConfig(struct qemud_driver *driver,
     }
 #endif
 
+    if (!(driver->lockManager =
+          virLockManagerPluginNew("nop", NULL, 0)))
+        return -1;
+
+    driver->keepAliveInterval = 5;
+    driver->keepAliveCount = 5;
 
     /* Just check the file is readable before opening it, otherwise
      * libvirt emits an error.
@@ -287,7 +289,7 @@ int qemudLoadDriverConfig(struct qemud_driver *driver,
         for (i = 0, pp = p->list; pp; ++i, pp = pp->next) {
             int ctl;
             if (pp->type != VIR_CONF_STRING) {
-                VIR_ERROR0(_("cgroup_controllers must be a list of strings"));
+                VIR_ERROR(_("cgroup_controllers must be a list of strings"));
                 virConfFree(conf);
                 return -1;
             }
@@ -304,7 +306,8 @@ int qemudLoadDriverConfig(struct qemud_driver *driver,
             (1 << VIR_CGROUP_CONTROLLER_CPU) |
             (1 << VIR_CGROUP_CONTROLLER_DEVICES) |
             (1 << VIR_CGROUP_CONTROLLER_MEMORY) |
-            (1 << VIR_CGROUP_CONTROLLER_BLKIO);
+            (1 << VIR_CGROUP_CONTROLLER_BLKIO) |
+            (1 << VIR_CGROUP_CONTROLLER_CPUSET);
     }
     for (i = 0 ; i < VIR_CGROUP_CONTROLLER_LAST ; i++) {
         if (driver->cgroupControllers & (1 << i)) {
@@ -327,7 +330,7 @@ int qemudLoadDriverConfig(struct qemud_driver *driver,
         }
         for (i = 0, pp = p->list; pp; ++i, pp = pp->next) {
             if (pp->type != VIR_CONF_STRING) {
-                VIR_ERROR0(_("cgroup_device_acl must be a list of strings"));
+                VIR_ERROR(_("cgroup_device_acl must be a list of strings"));
                 virConfFree(conf);
                 return -1;
             }
@@ -375,16 +378,24 @@ int qemudLoadDriverConfig(struct qemud_driver *driver,
         }
     }
 
-     p = virConfGetValue (conf, "hugetlbfs_mount");
-     CHECK_TYPE ("hugetlbfs_mount", VIR_CONF_STRING);
-     if (p && p->str) {
-         VIR_FREE(driver->hugetlbfs_mount);
-         if (!(driver->hugetlbfs_mount = strdup(p->str))) {
-             virReportOOMError();
-             virConfFree(conf);
-             return -1;
-         }
-     }
+    p = virConfGetValue (conf, "auto_dump_bypass_cache");
+    CHECK_TYPE ("auto_dump_bypass_cache", VIR_CONF_LONG);
+    if (p) driver->autoDumpBypassCache = true;
+
+    p = virConfGetValue (conf, "auto_start_bypass_cache");
+    CHECK_TYPE ("auto_start_bypass_cache", VIR_CONF_LONG);
+    if (p) driver->autoStartBypassCache = true;
+
+    p = virConfGetValue (conf, "hugetlbfs_mount");
+    CHECK_TYPE ("hugetlbfs_mount", VIR_CONF_STRING);
+    if (p && p->str) {
+        VIR_FREE(driver->hugetlbfs_mount);
+        if (!(driver->hugetlbfs_mount = strdup(p->str))) {
+            virReportOOMError();
+            virConfFree(conf);
+            return -1;
+        }
+    }
 
     p = virConfGetValue (conf, "mac_filter");
     CHECK_TYPE ("mac_filter", VIR_CONF_LONG);
@@ -395,12 +406,16 @@ int qemudLoadDriverConfig(struct qemud_driver *driver,
             virReportSystemError(errno,
                                  _("failed to enable mac filter in '%s'"),
                                  __FILE__);
+            virConfFree(conf);
+            return -1;
         }
 
         if ((errno = networkDisableAllFrames(driver))) {
             virReportSystemError(errno,
                          _("failed to add rule to drop all frames in '%s'"),
                                  __FILE__);
+            virConfFree(conf);
+            return -1;
         }
     }
 
@@ -427,6 +442,38 @@ int qemudLoadDriverConfig(struct qemud_driver *driver,
     p = virConfGetValue(conf, "max_processes");
     CHECK_TYPE("max_processes", VIR_CONF_LONG);
     if (p) driver->maxProcesses = p->l;
+
+    p = virConfGetValue(conf, "max_files");
+    CHECK_TYPE("max_files", VIR_CONF_LONG);
+    if (p) driver->maxFiles = p->l;
+
+    p = virConfGetValue (conf, "lock_manager");
+    CHECK_TYPE ("lock_manager", VIR_CONF_STRING);
+    if (p && p->str) {
+        char *lockConf;
+        virLockManagerPluginUnref(driver->lockManager);
+        if (virAsprintf(&lockConf, "%s/libvirt/qemu-%s.conf", SYSCONFDIR, p->str) < 0) {
+            virReportOOMError();
+            virConfFree(conf);
+            return -1;
+        }
+        if (!(driver->lockManager =
+              virLockManagerPluginNew(p->str, lockConf, 0)))
+            VIR_ERROR(_("Failed to load lock manager %s"), p->str);
+        VIR_FREE(lockConf);
+    }
+
+    p = virConfGetValue(conf, "max_queued");
+    CHECK_TYPE("max_queued", VIR_CONF_LONG);
+    if (p) driver->max_queued = p->l;
+
+    p = virConfGetValue(conf, "keepalive_interval");
+    CHECK_TYPE("keepalive_interval", VIR_CONF_LONG);
+    if (p) driver->keepAliveInterval = p->l;
+
+    p = virConfGetValue(conf, "keepalive_count");
+    CHECK_TYPE("keepalive_count", VIR_CONF_LONG);
+    if (p) driver->keepAliveCount = p->l;
 
     virConfFree (conf);
     return 0;

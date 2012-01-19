@@ -6,13 +6,20 @@
 
 #include "internal.h"
 #include "xml.h"
+#include "util.h"
 #include "testutils.h"
 
-static char *progname;
-static char *abs_srcdir;
-#define MAX_FILE 4096
+#ifdef WIN32
 
-#define DOM_UUID "ef861801-45b9-11cb-88e3-afbfe5370493"
+int
+main(void)
+{
+    return EXIT_AM_SKIP;
+}
+
+#else
+
+# define DOM_UUID "ef861801-45b9-11cb-88e3-afbfe5370493"
 
 static const char *dominfo_fc4 = "\
 Id:             2\n\
@@ -25,6 +32,7 @@ Max memory:     261072 kB\n\
 Used memory:    131072 kB\n\
 Persistent:     yes\n\
 Autostart:      disable\n\
+Managed save:   unknown\n\
 \n";
 static const char *domuuid_fc4 = DOM_UUID "\n\n";
 static const char *domid_fc4 = "2\n\n";
@@ -47,58 +55,48 @@ static int testFilterLine(char *buffer,
   return 0;
 }
 
-static int testCompareOutputLit(const char *expectData,
-                                const char *filter, const char *const argv[]) {
-  char actualData[MAX_FILE];
-  char *actualPtr = &(actualData[0]);
+static int
+testCompareOutputLit(const char *expectData,
+                     const char *filter, const char *const argv[])
+{
+    int result = -1;
+    char *actualData = NULL;
 
-  if (virtTestCaptureProgramOutput(argv, &actualPtr, MAX_FILE) < 0)
-    return -1;
+    if (virtTestCaptureProgramOutput(argv, &actualData, 4096) < 0)
+        goto cleanup;
 
-  if (filter)
-    if (testFilterLine(actualData, filter) < 0)
-      return -1;
+    if (filter && testFilterLine(actualData, filter) < 0)
+        goto cleanup;
 
-  if (STRNEQ(expectData, actualData)) {
-      virtTestDifference(stderr, expectData, actualData);
-      return -1;
-  }
+    if (STRNEQ(expectData, actualData)) {
+        virtTestDifference(stderr, expectData, actualData);
+        goto cleanup;
+    }
 
-  return 0;
+    result = 0;
+
+cleanup:
+    free(actualData);
+
+    return result;
 }
 
-#if unused
-static int testCompareOutput(const char *expect_rel, const char *filter,
-                             const char *const argv[]) {
-  char expectData[MAX_FILE];
-  char *expectPtr = &(expectData[0]);
-  char expect[PATH_MAX];
-
-  snprintf(expect, sizeof expect - 1, "%s/%s", abs_srcdir, expect_rel);
-
-  if (virtTestLoadFile(expect, &expectPtr, MAX_FILE) < 0)
-    return -1;
-
-  return testCompareOutputLit(expectData, filter, argv);
-}
-#endif
-
-#define VIRSH_DEFAULT     "../tools/virsh", \
+# define VIRSH_DEFAULT     "../tools/virsh", \
     "--connect", \
     "test:///default"
 
 static char *custom_uri;
 
-#define VIRSH_CUSTOM     "../tools/virsh", \
+# define VIRSH_CUSTOM     "../tools/virsh", \
     "--connect", \
     custom_uri
 
 static int testCompareListDefault(const void *data ATTRIBUTE_UNUSED) {
   const char *const argv[] = { VIRSH_DEFAULT, "list", NULL };
   const char *exp = "\
- Id Name                 State\n\
-----------------------------------\n\
-  1 test                 running\n\
+ Id    Name                           State\n\
+----------------------------------------------------\n\
+ 1     test                           running\n\
 \n";
   return testCompareOutputLit(exp, NULL, argv);
 }
@@ -106,10 +104,10 @@ static int testCompareListDefault(const void *data ATTRIBUTE_UNUSED) {
 static int testCompareListCustom(const void *data ATTRIBUTE_UNUSED) {
   const char *const argv[] = { VIRSH_CUSTOM, "list", NULL };
   const char *exp = "\
- Id Name                 State\n\
-----------------------------------\n\
-  1 fv0                  running\n\
-  2 fc4                  running\n\
+ Id    Name                           State\n\
+----------------------------------------------------\n\
+ 1     fv0                            running\n\
+ 2     fc4                            running\n\
 \n";
   return testCompareOutputLit(exp, NULL, argv);
 }
@@ -232,29 +230,13 @@ static int testCompareEcho(const void *data) {
 
 
 static int
-mymain(int argc, char **argv)
+mymain(void)
 {
     int ret = 0;
-    char buffer[PATH_MAX];
-    char cwd[PATH_MAX];
 
-    abs_srcdir = getenv("abs_srcdir");
-    if (!abs_srcdir)
-        abs_srcdir = getcwd(cwd, sizeof(cwd));
-
-#ifdef WIN32
-    exit (EXIT_AM_SKIP);
-#endif
-
-    snprintf(buffer, PATH_MAX-1, "test://%s/../examples/xml/test/testnode.xml", abs_srcdir);
-    buffer[PATH_MAX-1] = '\0';
-    progname = argv[0];
-    custom_uri = buffer;
-
-    if (argc > 1) {
-        fprintf(stderr, "Usage: %s\n", progname);
-        return(EXIT_FAILURE);
-    }
+    if (virAsprintf(&custom_uri, "test://%s/../examples/xml/test/testnode.xml",
+                    abs_srcdir) < 0)
+        return EXIT_FAILURE;
 
     if (virtTestRun("virsh list (default)",
                     1, testCompareListDefault, NULL) != 0)
@@ -322,7 +304,7 @@ mymain(int argc, char **argv)
 
     /* It's a bit awkward listing result before argument, but that's a
      * limitation of C99 vararg macros.  */
-#define DO_TEST(i, result, ...)                                         \
+# define DO_TEST(i, result, ...)                                         \
     do {                                                                \
         const char *myargv[] = { VIRSH_DEFAULT, __VA_ARGS__, NULL };    \
         const struct testInfo info = { myargv, result };                \
@@ -404,9 +386,12 @@ mymain(int argc, char **argv)
     DO_TEST(30, "--shell a\n",
             "echo \t '-'\"-\" \t --shell \t a");
 
-#undef DO_TEST
+# undef DO_TEST
 
+    free(custom_uri);
     return(ret==0 ? EXIT_SUCCESS : EXIT_FAILURE);
 }
 
 VIRT_TEST_MAIN(mymain)
+
+#endif /* WIN32 */

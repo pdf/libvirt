@@ -1,7 +1,7 @@
 /*
  * node_device_conf.h: config handling for node devices
  *
- * Copyright (C) 2010 Red Hat, Inc.
+ * Copyright (C) 2010-2011 Red Hat, Inc.
  * Copyright (C) 2008 Virtual Iron Software, Inc.
  * Copyright (C) 2008 David F. Lively
  *
@@ -82,13 +82,6 @@ enum virNodeDevPCICapFlags {
     VIR_NODE_DEV_CAP_FLAG_PCI_VIRTUAL_FUNCTION		= (1 << 1),
 };
 
-struct pci_config_address {
-    unsigned domain;
-    unsigned bus;
-    unsigned slot;
-    unsigned function;
-};
-
 typedef struct _virNodeDevCapsDef virNodeDevCapsDef;
 typedef virNodeDevCapsDef *virNodeDevCapsDefPtr;
 struct _virNodeDevCapsDef {
@@ -109,55 +102,56 @@ struct _virNodeDevCapsDef {
             } firmware;
         } system;
         struct {
-            unsigned domain;
-            unsigned bus;
-            unsigned slot;
-            unsigned function;
-            unsigned product;
-            unsigned vendor;
-            unsigned class;
+            unsigned int domain;
+            unsigned int bus;
+            unsigned int slot;
+            unsigned int function;
+            unsigned int product;
+            unsigned int vendor;
+            unsigned int class;
             char *product_name;
             char *vendor_name;
             struct pci_config_address *physical_function;
             struct pci_config_address **virtual_functions;
-            unsigned num_virtual_functions;
-            unsigned flags;
+            unsigned int num_virtual_functions;
+            unsigned int flags;
         } pci_dev;
         struct {
-            unsigned bus;
-            unsigned device;
-            unsigned product;
-            unsigned vendor;
+            unsigned int bus;
+            unsigned int device;
+            unsigned int product;
+            unsigned int vendor;
             char *product_name;
             char *vendor_name;
         } usb_dev;
         struct {
-            unsigned number;
-            unsigned _class;		/* "class" is reserved in C */
-            unsigned subclass;
-            unsigned protocol;
+            unsigned int number;
+            unsigned int _class;		/* "class" is reserved in C */
+            unsigned int subclass;
+            unsigned int protocol;
             char *description;
         } usb_if;
         struct {
             char *address;
-            unsigned address_len;
+            unsigned int address_len;
             char *ifname;
             enum virNodeDevNetCapType subtype;  /* LAST -> no subtype */
         } net;
         struct {
-            unsigned host;
+            unsigned int host;
             char *wwnn;
             char *wwpn;
-            unsigned flags;
+            char *fabric_wwn;
+            unsigned int flags;
         } scsi_host;
         struct {
             char *name;
         } scsi_target;
         struct {
-            unsigned host;
-            unsigned bus;
-            unsigned target;
-            unsigned lun;
+            unsigned int host;
+            unsigned int bus;
+            unsigned int target;
+            unsigned int lun;
             char *type;
         } scsi;
         struct {
@@ -172,7 +166,7 @@ struct _virNodeDevCapsDef {
             char *vendor;
             char *serial;
             char *media_label;
-            unsigned flags;	/* virNodeDevStorageCapFlags bits */
+            unsigned int flags;	/* virNodeDevStorageCapFlags bits */
         } storage;
     } data;
     virNodeDevCapsDefPtr next;          /* next capability */
@@ -219,7 +213,7 @@ struct _virDeviceMonitorState {
 };
 
 # define virNodeDeviceReportError(code, ...)                             \
-    virReportErrorHelper(NULL, VIR_FROM_NODEDEV, code, __FILE__,	\
+    virReportErrorHelper(VIR_FROM_NODEDEV, code, __FILE__,               \
                          __FUNCTION__, __LINE__, __VA_ARGS__)
 
 int virNodeDeviceHasCap(const virNodeDeviceObjPtr dev, const char *cap);
@@ -228,7 +222,8 @@ virNodeDeviceObjPtr virNodeDeviceFindByName(const virNodeDeviceObjListPtr devs,
                                             const char *name);
 virNodeDeviceObjPtr
 virNodeDeviceFindBySysfsPath(const virNodeDeviceObjListPtr devs,
-                             const char *sysfs_path);
+                             const char *sysfs_path)
+    ATTRIBUTE_NONNULL(2);
 
 virNodeDeviceObjPtr virNodeDeviceAssignDef(virNodeDeviceObjListPtr devs,
                                            const virNodeDeviceDefPtr def);

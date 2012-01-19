@@ -16,17 +16,19 @@
 #include <stdarg.h>
 #include <limits.h>
 #include <math.h>               /* for isnan() */
+#include <sys/stat.h>
 
 #include "virterror_internal.h"
 #include "xml.h"
 #include "buf.h"
 #include "util.h"
 #include "memory.h"
+#include "virfile.h"
 
 #define VIR_FROM_THIS VIR_FROM_XML
 
 #define virGenericReportError(from, code, ...)                          \
-        virReportErrorHelper(NULL, from, code, __FILE__,                \
+        virReportErrorHelper(from, code, __FILE__,                      \
                              __FUNCTION__, __LINE__, __VA_ARGS__)
 
 #define virXMLError(code, ...)                                          \
@@ -601,10 +603,14 @@ virXPathNodeSet(const char *xpath,
     ctxt->node = relnode;
     if (obj == NULL)
         return(0);
+
     if (obj->type != XPATH_NODESET) {
+        virXMLError(VIR_ERR_INTERNAL_ERROR,
+                    _("Incorrect xpath '%s'"), xpath);
         xmlXPathFreeObject(obj);
         return (-1);
     }
+
     if ((obj->nodesetval == NULL)  || (obj->nodesetval->nodeNr < 0)) {
         xmlXPathFreeObject(obj);
         return (0);
@@ -629,28 +635,92 @@ virXPathNodeSet(const char *xpath,
  * catchXMLError:
  *
  * Called from SAX on parsing errors in the XML.
+ *
+ * This version is heavily based on xmlParserPrintFileContextInternal from libxml2.
  */
 static void
 catchXMLError(void *ctx, const char *msg ATTRIBUTE_UNUSED, ...)
 {
-    int domcode = VIR_FROM_XML;
     xmlParserCtxtPtr ctxt = (xmlParserCtxtPtr) ctx;
 
-    if (ctxt) {
-        if (ctxt->_private)
+    const xmlChar *cur, *base;
+    unsigned int n, col;	/* GCC warns if signed, because compared with sizeof() */
+    int domcode = VIR_FROM_XML;
+
+    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    char *contextstr = NULL;
+    char *pointerstr = NULL;
+
+
+    /* conditions for error printing */
+    if (!ctxt ||
+        (virGetLastError() != NULL) ||
+        ctxt->input == NULL ||
+        ctxt->lastError.level != XML_ERR_FATAL ||
+        ctxt->lastError.message == NULL)
+        return;
+
+    if (ctxt->_private)
             domcode = ((struct virParserData *) ctxt->_private)->domcode;
 
-        if (virGetLastError() == NULL &&
-            ctxt->lastError.level == XML_ERR_FATAL &&
-            ctxt->lastError.message != NULL) {
-            virGenericReportError(domcode, VIR_ERR_XML_DETAIL,
-                                  _("at line %d: %s"),
-                                  ctxt->lastError.line,
-                                  ctxt->lastError.message);
-        }
-    }
-}
 
+    cur = ctxt->input->cur;
+    base = ctxt->input->base;
+
+    /* skip backwards over any end-of-lines */
+    while ((cur > base) && ((*(cur) == '\n') || (*(cur) == '\r'))) {
+        cur--;
+    }
+
+    /* search backwards for beginning-of-line (to max buff size) */
+    while ((cur > base) && (*(cur) != '\n') && (*(cur) != '\r'))
+        cur--;
+    if ((*(cur) == '\n') || (*(cur) == '\r')) cur++;
+
+    /* calculate the error position in terms of the current position */
+    col = ctxt->input->cur - cur;
+
+    /* search forward for end-of-line (to max buff size) */
+    /* copy selected text to our buffer */
+    while ((*cur != 0) && (*(cur) != '\n') && (*(cur) != '\r')) {
+        virBufferAddChar(&buf, *cur++);
+    }
+
+    /* create blank line with problem pointer */
+    contextstr = virBufferContentAndReset(&buf);
+
+    /* (leave buffer space for pointer + line terminator) */
+    for  (n = 0; (n<col) && (contextstr[n] != 0); n++) {
+        if (contextstr[n] == '\t')
+            virBufferAddChar(&buf, '\t');
+        else
+            virBufferAddChar(&buf, '-');
+    }
+
+    virBufferAddChar(&buf, '^');
+
+    pointerstr = virBufferContentAndReset(&buf);
+
+    if (ctxt->lastError.file) {
+        virGenericReportError(domcode, VIR_ERR_XML_DETAIL,
+                              _("%s:%d: %s%s\n%s"),
+                              ctxt->lastError.file,
+                              ctxt->lastError.line,
+                              ctxt->lastError.message,
+                              contextstr,
+                              pointerstr);
+    } else {
+         virGenericReportError(domcode, VIR_ERR_XML_DETAIL,
+                              _("at line %d: %s%s\n%s"),
+                              ctxt->lastError.line,
+                              ctxt->lastError.message,
+                              contextstr,
+                              pointerstr);
+    }
+
+    VIR_FREE(contextstr);
+    VIR_FREE(pointerstr);
+}
 
 /**
  * virXMLParseHelper:
@@ -658,6 +728,7 @@ catchXMLError(void *ctx, const char *msg ATTRIBUTE_UNUSED, ...)
  * @filename: file to be parsed or NULL if string parsing is requested
  * @xmlStr: XML string to be parsed in case filename is NULL
  * @url: URL of XML document for string parser
+ * @ctxt: optional pointer to populate with new context pointer
  *
  * Parse XML document provided either as a file or a string. The function
  * guarantees that the XML document contains a root element.
@@ -668,7 +739,8 @@ xmlDocPtr
 virXMLParseHelper(int domcode,
                   const char *filename,
                   const char *xmlStr,
-                  const char *url)
+                  const char *url,
+                  xmlXPathContextPtr *ctxt)
 {
     struct virParserData private;
     xmlParserCtxtPtr pctxt;
@@ -676,8 +748,10 @@ virXMLParseHelper(int domcode,
 
     /* Set up a parser context so we can catch the details of XML errors. */
     pctxt = xmlNewParserCtxt();
-    if (!pctxt || !pctxt->sax)
+    if (!pctxt || !pctxt->sax) {
+        virReportOOMError();
         goto error;
+    }
 
     private.domcode = domcode;
     pctxt->_private = &private;
@@ -701,6 +775,15 @@ virXMLParseHelper(int domcode,
         goto error;
     }
 
+    if (ctxt) {
+        *ctxt = xmlXPathNewContext(xml);
+        if (!*ctxt) {
+            virReportOOMError();
+            goto error;
+        }
+        (*ctxt)->node = xmlDocGetRootElement(xml);
+    }
+
 cleanup:
     xmlFreeParserCtxt(pctxt);
 
@@ -717,38 +800,56 @@ error:
     goto cleanup;
 }
 
-/**
- * virXMLParseStrHelper:
- * @domcode: error domain of the caller, usually VIR_FROM_THIS
- * @xmlStr: XML string to be parsed in case filename is NULL
- * @url: URL of XML document for string parser
- *
- * Parse XML document provided as a string. The function guarantees that
- * the XML document contains a root element.
- *
- * Returns parsed XML document.
- */
-xmlDocPtr
-virXMLParseStrHelper(int domcode,
-                     const char *xmlStr,
-                     const char *url)
+
+struct virXMLRewritFileData {
+    const char *warnName;
+    const char *warnCommand;
+    const char *xml;
+};
+
+static int
+virXMLRewriteFile(int fd, void *opaque)
 {
-    return virXMLParseHelper(domcode, NULL, xmlStr, url);
+    struct virXMLRewritFileData *data = opaque;
+
+    if (data->warnName && data->warnCommand) {
+        if (virEmitXMLWarning(fd, data->warnName, data->warnCommand) < 0)
+            return -1;
+    }
+
+    if (safewrite(fd, data->xml, strlen(data->xml)) < 0)
+        return -1;
+
+    return 0;
 }
 
-/**
- * virXMLParseFileHelper:
- * @domcode: error domain of the caller, usually VIR_FROM_THIS
- * @filename: file to be parsed
- *
- * Parse XML document provided as a file. The function guarantees that
- * the XML document contains a root element.
- *
- * Returns parsed XML document.
- */
-xmlDocPtr
-virXMLParseFileHelper(int domcode,
-                      const char *filename)
+int
+virXMLSaveFile(const char *path,
+               const char *warnName,
+               const char *warnCommand,
+               const char *xml)
 {
-    return virXMLParseHelper(domcode, filename, NULL, NULL);
+    struct virXMLRewritFileData data = { warnName, warnCommand, xml };
+
+    return virFileRewrite(path, S_IRUSR | S_IWUSR, virXMLRewriteFile, &data);
+}
+
+/* Returns the number of children of node, or -1 on error.  */
+long
+virXMLChildElementCount(xmlNodePtr node)
+{
+    long ret = 0;
+    xmlNodePtr cur = NULL;
+
+    /* xmlChildElementCount returns 0 on error, which isn't helpful;
+     * besides, it is not available in libxml2 2.6.  */
+    if (!node || node->type != XML_ELEMENT_NODE)
+        return -1;
+    cur = node->children;
+    while (cur) {
+        if (cur->type == XML_ELEMENT_NODE)
+            ret++;
+        cur = cur->next;
+    }
+    return ret;
 }

@@ -25,16 +25,16 @@
       <source dev='/dev/HostVG/XenGuest2'/>
       <target dev='hda' bus='ide'/>
     </disk>
+    <disk type='block' device='disk'>
+      <driver name='phy'/>
+      <source dev='/dev/HostVG/XenGuest&apos;&quot;'/>
+      <target dev='hdb' bus='ide'/>
+    </disk>
     <disk type='file' device='cdrom'>
       <driver name='file'/>
       <source file='/root/boot.iso&amp;test'/>
       <target dev='hdc' bus='ide'/>
       <readonly/>
-    </disk>
-    <disk type='block' device='disk'>
-      <driver name='phy'/>
-      <source dev='/dev/HostVG/XenGuest&apos;&quot;'/>
-      <target dev='hdb' bus='ide'/>
     </disk>
     <interface type='bridge'>
       <mac address='00:16:3e:66:92:9c'/>
@@ -43,7 +43,9 @@
       <model type='e1000'/>
     </interface>
     <input type='mouse' bus='ps2'/>
-    <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1' passwd='123poi'/>
+    <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1' passwd='123poi'>
+      <listen type='address' address='127.0.0.1'/>
+    </graphics>
     <sound model='sb16'/>
     <sound model='es1370'/>
   </devices>

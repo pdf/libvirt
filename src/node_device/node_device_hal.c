@@ -1,6 +1,7 @@
 /*
  * node_device_hal.c: node device enumeration - HAL-based implementation
  *
+ * Copyright (C) 2011 Red Hat, Inc.
  * Copyright (C) 2008 Virtual Iron Software, Inc.
  * Copyright (C) 2008 David F. Lively
  *
@@ -32,11 +33,12 @@
 #include "virterror_internal.h"
 #include "driver.h"
 #include "datatypes.h"
-#include "event.h"
 #include "memory.h"
 #include "uuid.h"
+#include "pci.h"
 #include "logging.h"
 #include "node_device_driver.h"
+#include "ignore-value.h"
 
 #define VIR_FROM_THIS VIR_FROM_NODEDEV
 
@@ -146,8 +148,13 @@ static int gather_pci_cap(LibHalContext *ctx, const char *udi,
             (void)virStrToLong_ui(p+1, &p, 16, &d->pci_dev.function);
         }
 
-        get_physical_function(sysfs_path, d);
-        get_virtual_functions(sysfs_path, d);
+        if (!pciGetPhysicalFunction(sysfs_path, &d->pci_dev.physical_function))
+            d->pci_dev.flags |= VIR_NODE_DEV_CAP_FLAG_PCI_PHYSICAL_FUNCTION;
+
+        if (!pciGetVirtualFunctions(sysfs_path, &d->pci_dev.virtual_functions,
+            &d->pci_dev.num_virtual_functions) ||
+            d->pci_dev.num_virtual_functions > 0)
+            d->pci_dev.flags |= VIR_NODE_DEV_CAP_FLAG_PCI_VIRTUAL_FUNCTION;
 
         VIR_FREE(sysfs_path);
     }
@@ -293,7 +300,7 @@ static int gather_system_cap(LibHalContext *ctx, const char *udi,
     (void)get_str_prop(ctx, udi, "system.hardware.serial",
                        &d->system.hardware.serial);
     if (get_str_prop(ctx, udi, "system.hardware.uuid", &uuidstr) == 0) {
-        (void)virUUIDParse(uuidstr, d->system.hardware.uuid);
+        ignore_value(virUUIDParse(uuidstr, d->system.hardware.uuid));
         VIR_FREE(uuidstr);
     }
     (void)get_str_prop(ctx, udi, "system.firmware.vendor",
@@ -514,7 +521,7 @@ static void dev_refresh(const char *udi)
 static void device_added(LibHalContext *ctx ATTRIBUTE_UNUSED,
                          const char *udi)
 {
-    VIR_DEBUG0(hal_name(udi));
+    VIR_DEBUG("%s", hal_name(udi));
     dev_create(udi);
 }
 
@@ -527,7 +534,7 @@ static void device_removed(LibHalContext *ctx ATTRIBUTE_UNUSED,
 
     nodeDeviceLock(driverState);
     dev = virNodeDeviceFindByName(&driverState->devs,name);
-    VIR_DEBUG0(name);
+    VIR_DEBUG("%s", name);
     if (dev)
         virNodeDeviceObjRemove(&driverState->devs, dev);
     else
@@ -718,12 +725,12 @@ static int halDeviceMonitorStartup(int privileged ATTRIBUTE_UNUSED)
     dbus_error_init(&err);
     hal_ctx = libhal_ctx_new();
     if (hal_ctx == NULL) {
-        VIR_ERROR0(_("libhal_ctx_new returned NULL"));
+        VIR_ERROR(_("libhal_ctx_new returned NULL"));
         goto failure;
     }
     dbus_conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
     if (dbus_conn == NULL) {
-        VIR_ERROR0(_("dbus_bus_get failed"));
+        VIR_ERROR(_("dbus_bus_get failed"));
         /* We don't want to show a fatal error here,
            otherwise entire libvirtd shuts down when
            D-Bus isn't running */
@@ -733,11 +740,11 @@ static int halDeviceMonitorStartup(int privileged ATTRIBUTE_UNUSED)
     dbus_connection_set_exit_on_disconnect(dbus_conn, FALSE);
 
     if (!libhal_ctx_set_dbus_connection(hal_ctx, dbus_conn)) {
-        VIR_ERROR0(_("libhal_ctx_set_dbus_connection failed"));
+        VIR_ERROR(_("libhal_ctx_set_dbus_connection failed"));
         goto failure;
     }
     if (!libhal_ctx_init(hal_ctx, &err)) {
-        VIR_ERROR0(_("libhal_ctx_init failed, haldaemon is probably not running"));
+        VIR_ERROR(_("libhal_ctx_init failed, haldaemon is probably not running"));
         /* We don't want to show a fatal error here,
            otherwise entire libvirtd shuts down when
            hald isn't running */
@@ -751,7 +758,7 @@ static int halDeviceMonitorStartup(int privileged ATTRIBUTE_UNUSED)
                                              remove_dbus_watch,
                                              toggle_dbus_watch,
                                              NULL, NULL)) {
-        VIR_ERROR0(_("dbus_connection_set_watch_functions failed"));
+        VIR_ERROR(_("dbus_connection_set_watch_functions failed"));
         goto failure;
     }
 
@@ -772,13 +779,13 @@ static int halDeviceMonitorStartup(int privileged ATTRIBUTE_UNUSED)
         !libhal_ctx_set_device_lost_capability(hal_ctx, device_cap_lost) ||
         !libhal_ctx_set_device_property_modified(hal_ctx, device_prop_modified) ||
         !libhal_device_property_watch_all(hal_ctx, &err)) {
-        VIR_ERROR0(_("setting up HAL callbacks failed"));
+        VIR_ERROR(_("setting up HAL callbacks failed"));
         goto failure;
     }
 
     udi = libhal_get_all_devices(hal_ctx, &num_devs, &err);
     if (udi == NULL) {
-        VIR_ERROR0(_("libhal_get_all_devices failed"));
+        VIR_ERROR(_("libhal_get_all_devices failed"));
         goto failure;
     }
     for (i = 0; i < num_devs; i++) {
@@ -828,18 +835,18 @@ static int halDeviceMonitorReload(void)
     int num_devs, i;
     LibHalContext *hal_ctx;
 
-    VIR_INFO0("Reloading HAL device state");
+    VIR_INFO("Reloading HAL device state");
     nodeDeviceLock(driverState);
-    VIR_INFO0("Removing existing objects");
+    VIR_INFO("Removing existing objects");
     virNodeDeviceObjListFree(&driverState->devs);
     nodeDeviceUnlock(driverState);
 
     hal_ctx = DRV_STATE_HAL_CTX(driverState);
-    VIR_INFO0("Creating new objects");
+    VIR_INFO("Creating new objects");
     dbus_error_init(&err);
     udi = libhal_get_all_devices(hal_ctx, &num_devs, &err);
     if (udi == NULL) {
-        VIR_ERROR0(_("libhal_get_all_devices failed"));
+        VIR_ERROR(_("libhal_get_all_devices failed"));
         return -1;
     }
     for (i = 0; i < num_devs; i++) {
@@ -847,7 +854,7 @@ static int halDeviceMonitorReload(void)
         VIR_FREE(udi[i]);
     }
     VIR_FREE(udi);
-    VIR_INFO0("HAL device reload complete");
+    VIR_INFO("HAL device reload complete");
 
     return 0;
 }
@@ -862,8 +869,10 @@ static int halDeviceMonitorActive(void)
 
 static virDrvOpenStatus halNodeDrvOpen(virConnectPtr conn,
                                        virConnectAuthPtr auth ATTRIBUTE_UNUSED,
-                                       int flags ATTRIBUTE_UNUSED)
+                                       unsigned int flags)
 {
+    virCheckFlags(VIR_CONNECT_RO, VIR_DRV_OPEN_ERROR);
+
     if (driverState == NULL)
         return VIR_DRV_OPEN_DECLINED;
 
@@ -881,22 +890,30 @@ static int halNodeDrvClose(virConnectPtr conn ATTRIBUTE_UNUSED)
 
 static virDeviceMonitor halDeviceMonitor = {
     .name = "halDeviceMonitor",
-    .open = halNodeDrvOpen,
-    .close = halNodeDrvClose,
+    .open = halNodeDrvOpen, /* 0.5.0 */
+    .close = halNodeDrvClose, /* 0.5.0 */
+    .numOfDevices = nodeNumOfDevices, /* 0.5.0 */
+    .listDevices = nodeListDevices, /* 0.5.0 */
+    .deviceLookupByName = nodeDeviceLookupByName, /* 0.5.0 */
+    .deviceGetXMLDesc = nodeDeviceGetXMLDesc, /* 0.5.0 */
+    .deviceGetParent = nodeDeviceGetParent, /* 0.5.0 */
+    .deviceNumOfCaps = nodeDeviceNumOfCaps, /* 0.5.0 */
+    .deviceListCaps = nodeDeviceListCaps, /* 0.5.0 */
+    .deviceCreateXML = nodeDeviceCreateXML, /* 0.6.5 */
+    .deviceDestroy = nodeDeviceDestroy, /* 0.6.5 */
 };
 
 
 static virStateDriver halStateDriver = {
     .name = "HAL",
-    .initialize = halDeviceMonitorStartup,
-    .cleanup = halDeviceMonitorShutdown,
-    .reload = halDeviceMonitorReload,
-    .active = halDeviceMonitorActive,
+    .initialize = halDeviceMonitorStartup, /* 0.5.0 */
+    .cleanup = halDeviceMonitorShutdown, /* 0.5.0 */
+    .reload = halDeviceMonitorReload, /* 0.5.0 */
+    .active = halDeviceMonitorActive, /* 0.5.0 */
 };
 
 int halNodeRegister(void)
 {
-    registerCommonNodeFuncs(&halDeviceMonitor);
     if (virRegisterDeviceMonitor(&halDeviceMonitor) < 0)
         return -1;
     return virRegisterStateDriver(&halStateDriver);

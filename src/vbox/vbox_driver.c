@@ -3,7 +3,7 @@
  */
 
 /*
- * Copyright (C) 2010 Red Hat, Inc.
+ * Copyright (C) 2010-2011 Red Hat, Inc.
  * Copyright (C) 2008-2009 Sun Microsystems, Inc.
  *
  * This file is part of a free software library; you can redistribute
@@ -60,13 +60,16 @@ extern virStorageDriver vbox32StorageDriver;
 extern virDriver vbox40Driver;
 extern virNetworkDriver vbox40NetworkDriver;
 extern virStorageDriver vbox40StorageDriver;
+extern virDriver vbox41Driver;
+extern virNetworkDriver vbox41NetworkDriver;
+extern virStorageDriver vbox41StorageDriver;
 
 static virDriver vboxDriverDummy;
 
 #define VIR_FROM_THIS VIR_FROM_VBOX
 
 #define vboxError(code, ...) \
-        virReportErrorHelper(NULL, VIR_FROM_VBOX, code, __FILE__, \
+        virReportErrorHelper(VIR_FROM_VBOX, code, __FILE__, \
                              __FUNCTION__, __LINE__, __VA_ARGS__)
 
 int vboxRegister(void) {
@@ -98,36 +101,40 @@ int vboxRegister(void) {
          * number 51, thus the version ranges in the if statements below.
          */
         if (uVersion >= 2001052 && uVersion < 2002051) {
-            VIR_DEBUG0("VirtualBox API version: 2.2");
+            VIR_DEBUG("VirtualBox API version: 2.2");
             driver        = &vbox22Driver;
             networkDriver = &vbox22NetworkDriver;
             storageDriver = &vbox22StorageDriver;
         } else if (uVersion >= 2002051 && uVersion < 3000051) {
-            VIR_DEBUG0("VirtualBox API version: 3.0");
+            VIR_DEBUG("VirtualBox API version: 3.0");
             driver        = &vbox30Driver;
             networkDriver = &vbox30NetworkDriver;
             storageDriver = &vbox30StorageDriver;
         } else if (uVersion >= 3000051 && uVersion < 3001051) {
-            VIR_DEBUG0("VirtualBox API version: 3.1");
+            VIR_DEBUG("VirtualBox API version: 3.1");
             driver        = &vbox31Driver;
             networkDriver = &vbox31NetworkDriver;
             storageDriver = &vbox31StorageDriver;
         } else if (uVersion >= 3001051 && uVersion < 3002051) {
-            VIR_DEBUG0("VirtualBox API version: 3.2");
+            VIR_DEBUG("VirtualBox API version: 3.2");
             driver        = &vbox32Driver;
             networkDriver = &vbox32NetworkDriver;
             storageDriver = &vbox32StorageDriver;
         } else if (uVersion >= 3002051 && uVersion < 4000051) {
-            VIR_DEBUG0("VirtualBox API version: 4.0");
+            VIR_DEBUG("VirtualBox API version: 4.0");
             driver        = &vbox40Driver;
             networkDriver = &vbox40NetworkDriver;
             storageDriver = &vbox40StorageDriver;
+        } else if (uVersion >= 4000051 && uVersion < 4001051) {
+            VIR_DEBUG("VirtualBox API version: 4.1");
+            driver        = &vbox41Driver;
+            networkDriver = &vbox41NetworkDriver;
+            storageDriver = &vbox41StorageDriver;
         } else {
-            VIR_DEBUG0("Unsupport VirtualBox API version");
+            VIR_DEBUG("Unsupported VirtualBox API version: %u", uVersion);
         }
-
     } else {
-        VIR_DEBUG0("VBoxCGlueInit failed, using dummy driver");
+        VIR_DEBUG("VBoxCGlueInit failed, using dummy driver");
     }
 
     if (virRegisterDriver(driver) < 0)
@@ -142,8 +149,11 @@ int vboxRegister(void) {
 
 static virDrvOpenStatus vboxOpenDummy(virConnectPtr conn,
                                       virConnectAuthPtr auth ATTRIBUTE_UNUSED,
-                                      int flags ATTRIBUTE_UNUSED) {
+                                      unsigned int flags)
+{
     uid_t uid = getuid();
+
+    virCheckFlags(VIR_CONNECT_RO, VIR_DRV_OPEN_ERROR);
 
     if (conn->uri == NULL ||
         conn->uri->scheme == NULL ||

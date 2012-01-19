@@ -35,14 +35,14 @@
 #include "util.h"
 #include "logging.h"
 #include "memory.h"
-#include "files.h"
+#include "virfile.h"
 #include "configmake.h"
 #include "command.h"
 
 #define VIR_FROM_THIS VIR_FROM_HOOK
 
 #define virHookReportError(code, ...)                              \
-    virReportErrorHelper(NULL, VIR_FROM_HOOK, code, __FILE__,      \
+    virReportErrorHelper(VIR_FROM_HOOK, code, __FILE__,            \
                          __FUNCTION__, __LINE__, __VA_ARGS__)
 
 #define LIBVIRT_HOOK_DIR SYSCONFDIR "/libvirt/hooks"
@@ -193,6 +193,7 @@ int
 virHookCall(int driver, const char *id, int op, int sub_op, const char *extra,
             const char *input) {
     int ret;
+    int exitstatus;
     char *path;
     virCommandPtr cmd;
     const char *drvstr;
@@ -209,7 +210,8 @@ virHookCall(int driver, const char *id, int op, int sub_op, const char *extra,
      */
     if ((virHooksFound == -1) ||
         ((driver == VIR_HOOK_DRIVER_DAEMON) &&
-         (op == VIR_HOOK_DAEMON_OP_RELOAD)))
+         (op == VIR_HOOK_DAEMON_OP_RELOAD ||
+         op == VIR_HOOK_DAEMON_OP_SHUTDOWN)))
         virHookInitialize();
 
     if ((virHooksFound & (1 << driver)) == 0)
@@ -256,7 +258,13 @@ virHookCall(int driver, const char *id, int op, int sub_op, const char *extra,
     if (input)
         virCommandSetInputBuffer(cmd, input);
 
-    ret = virCommandRun(cmd, NULL);
+    ret = virCommandRun(cmd, &exitstatus);
+    if (ret == 0 && exitstatus != 0) {
+        virHookReportError(VIR_ERR_HOOK_SCRIPT_FAILED,
+                           _("Hook script %s %s failed with error code %d"),
+                           path, drvstr, exitstatus);
+        ret = -1;
+    }
 
     virCommandFree(cmd);
 

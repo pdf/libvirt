@@ -1,7 +1,7 @@
 /*
  * threads.h: basic thread synchronization primitives
  *
- * Copyright (C) 2009-2010 Red Hat, Inc.
+ * Copyright (C) 2009-2011 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -36,6 +36,10 @@ typedef virThreadLocal *virThreadLocalPtr;
 typedef struct virThread virThread;
 typedef virThread *virThreadPtr;
 
+typedef struct virOnceControl virOnceControl;
+typedef virOnceControl *virOnceControlPtr;
+
+typedef void (*virOnceFunc)(void);
 
 int virThreadInitialize(void) ATTRIBUTE_RETURN_CHECK;
 void virThreadOnExit(void);
@@ -57,6 +61,21 @@ void virThreadJoin(virThreadPtr thread);
 int virThreadSelfID(void);
 int virThreadID(virThreadPtr thread);
 
+/* Static initialization of mutexes is not possible, so we instead
+ * provide for guaranteed one-time initialization via a callback
+ * function.  Usage:
+ * static virOnceControl once = VIR_ONCE_CONTROL_INITIALIZER;
+ * static void initializer(void) { ... }
+ * void myfunc()
+ * {
+ *     if (virOnce(&once, initializer) < 0)
+ *         goto error;
+ *     ...now guaranteed that initializer has completed exactly once
+ * }
+ */
+int virOnce(virOnceControlPtr once, virOnceFunc init)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_RETURN_CHECK;
+
 int virMutexInit(virMutexPtr m) ATTRIBUTE_RETURN_CHECK;
 int virMutexInitRecursive(virMutexPtr m) ATTRIBUTE_RETURN_CHECK;
 void virMutexDestroy(virMutexPtr m);
@@ -69,8 +88,14 @@ void virMutexUnlock(virMutexPtr m);
 int virCondInit(virCondPtr c) ATTRIBUTE_RETURN_CHECK;
 int virCondDestroy(virCondPtr c) ATTRIBUTE_RETURN_CHECK;
 
+/* virCondWait, virCondWaitUntil:
+ * These functions can return without the associated predicate
+ * changing value. Therefore in nearly all cases they
+ * should be enclosed in a while loop that checks the predicate.
+ */
 int virCondWait(virCondPtr c, virMutexPtr m) ATTRIBUTE_RETURN_CHECK;
 int virCondWaitUntil(virCondPtr c, virMutexPtr m, unsigned long long whenms) ATTRIBUTE_RETURN_CHECK;
+
 void virCondSignal(virCondPtr c);
 void virCondBroadcast(virCondPtr c);
 

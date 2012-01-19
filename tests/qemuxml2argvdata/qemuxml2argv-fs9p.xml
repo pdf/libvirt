@@ -24,5 +24,15 @@
       <source dir='/export/to/guest'/>
       <target dir='/import/from/host'/>
     </filesystem>
+    <filesystem accessmode='mapped'>
+      <driver type='path' wrpolicy='immediate'/>
+      <source dir='/export/to/guest2'/>
+      <target dir='/import/from/host2'/>
+    </filesystem>
+    <filesystem>
+      <driver type='handle' wrpolicy='immediate'/>
+      <source dir='/export/to/guest3'/>
+      <target dir='/import/from/host3'/>
+    </filesystem>
   </devices>
 </domain>

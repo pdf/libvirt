@@ -272,12 +272,14 @@ returnErrorFromSession(xen_session *session)
 {
     int i;
     virBuffer buf = VIR_BUFFER_INITIALIZER;
-    for (i = 0; i < session->error_description_count - 1; i++) {
+    for (i = 0; i < session->error_description_count; i++) {
         if (!i)
             virBufferEscapeString(&buf, "%s", session->error_description[i]);
         else
             virBufferEscapeString(&buf, " : %s", session->error_description[i]);
     }
+    if (virBufferUse(&buf) < 1)
+        virBufferAdd(&buf, _("unknown error"), -1);
     return virBufferContentAndReset(&buf);
 }
 
@@ -292,7 +294,7 @@ mapDomainPinVcpu(unsigned char *cpumap, int maplen)
     for (i = 0; i < maplen; i++) {
         for (j = 0; j < 8; j++) {
             if (cpumap[i] & (1 << j)) {
-                virBufferVSprintf(&buf, "%d,", (8*i)+j);
+                virBufferAsprintf(&buf, "%d,", (8*i)+j);
             }
         }
     }
@@ -386,11 +388,11 @@ xenapiSessionErrorHandle(virConnectPtr conn, virErrorNumber errNum,
 
     if (buf == NULL && priv != NULL && priv->session != NULL) {
         char *ret = returnErrorFromSession(priv->session);
-        virReportErrorHelper(conn, VIR_FROM_XENAPI, errNum, filename, func, lineno, _("%s"), ret);
+        virReportErrorHelper(VIR_FROM_XENAPI, errNum, filename, func, lineno, _("%s"), ret);
         xen_session_clear_error(priv->session);
         VIR_FREE(ret);
     } else {
-        virReportErrorHelper(conn, VIR_FROM_XENAPI, errNum, filename, func, lineno, _("%s"), buf);
+        virReportErrorHelper(VIR_FROM_XENAPI, errNum, filename, func, lineno, _("%s"), buf);
     }
 }
 
@@ -536,6 +538,8 @@ createVMRecordFromXml (virConnectPtr conn, virDomainDefPtr def,
             allocStringMap(&strings, (char *)"pae", (char *)"true");
         if (def->features & (1 << VIR_DOMAIN_FEATURE_HAP))
             allocStringMap(&strings, (char *)"hap", (char *)"true");
+        if (def->features & (1 << VIR_DOMAIN_FEATURE_VIRIDIAN))
+            allocStringMap(&strings, (char *)"viridian", (char *)"true");
     }
     if (strings != NULL)
         (*record)->platform = strings;

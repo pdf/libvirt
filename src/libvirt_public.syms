@@ -436,4 +436,84 @@ LIBVIRT_0.9.0 {
         virStorageVolUpload;
 } LIBVIRT_0.8.8;
 
+LIBVIRT_0.9.2 {
+    global:
+        virDomainGetSchedulerParametersFlags;
+        virDomainGetState;
+        virDomainInjectNMI;
+        virDomainMigrate2;
+        virDomainMigrateToURI2;
+        virDomainScreenshot;
+        virDomainSetSchedulerParametersFlags;
+        virInterfaceChangeBegin;
+        virInterfaceChangeCommit;
+        virInterfaceChangeRollback;
+} LIBVIRT_0.9.0;
+
+LIBVIRT_0.9.3 {
+    global:
+        virDomainGetControlInfo;
+        virDomainGetVcpuPinInfo;
+        virDomainPinVcpuFlags;
+        virDomainSendKey;
+        virEventAddHandle;
+        virEventAddTimeout;
+        virEventRemoveHandle;
+        virEventRemoveTimeout;
+        virEventUpdateHandle;
+        virEventUpdateTimeout;
+        virNodeGetCPUStats;
+        virNodeGetMemoryStats;
+} LIBVIRT_0.9.2;
+
+LIBVIRT_0.9.4 {
+    global:
+        virDomainRestoreFlags;
+        virDomainSaveFlags;
+        virDomainSaveImageDefineXML;
+        virDomainSaveImageGetXMLDesc;
+        virDomainUndefineFlags;
+        virDomainDestroyFlags;
+        virDomainBlockJobAbort;
+        virDomainGetBlockJobInfo;
+        virDomainBlockJobSetSpeed;
+        virDomainBlockPull;
+} LIBVIRT_0.9.3;
+
+LIBVIRT_0.9.5 {
+    global:
+        virDomainBlockStatsFlags;
+        virDomainMigrateGetMaxSpeed;
+        virDomainSnapshotGetConnect;
+        virDomainSnapshotGetDomain;
+        virDomainSnapshotGetName;
+} LIBVIRT_0.9.4;
+
+LIBVIRT_0.9.7 {
+    global:
+        virDomainOpenGraphics;
+        virDomainReset;
+        virDomainSnapshotGetParent;
+        virDomainSnapshotListChildrenNames;
+        virDomainSnapshotNumChildren;
+} LIBVIRT_0.9.5;
+
+LIBVIRT_0.9.8 {
+    global:
+        virConnectIsAlive;
+        virConnectSetKeepAlive;
+        virDomainBlockResize;
+        virDomainGetBlockIoTune;
+        virDomainSetBlockIoTune;
+        virNodeSuspendForDuration;
+} LIBVIRT_0.9.7;
+
+LIBVIRT_0.9.9 {
+    global:
+        virDomainGetInterfaceParameters;
+        virDomainGetNumaParameters;
+        virDomainSetInterfaceParameters;
+        virDomainSetNumaParameters;
+} LIBVIRT_0.9.8;
+
 # .... define new API here using predicted next version number ....

@@ -25,8 +25,8 @@
 #define VIR_FROM_THIS VIR_FROM_SEXPR
 
 #define virSexprError(code, ...)                                           \
-        virReportErrorHelper(NULL, VIR_FROM_SEXPR, code, __FILE__,         \
-                               __FUNCTION__, __LINE__, __VA_ARGS__)
+        virReportErrorHelper(VIR_FROM_SEXPR, code, __FILE__,               \
+                             __FUNCTION__, __LINE__, __VA_ARGS__)
 
 /**
  * sexpr_new:
@@ -215,7 +215,7 @@ sexpr2string(const struct sexpr *sexpr, virBufferPtr buffer)
         virBufferAddChar(buffer, '(');
 
         if (sexpr2string(sexpr->u.s.car, buffer) < 0)
-            goto error;
+            return -1;
 
         while (sexpr->u.s.cdr->kind != SEXPR_NIL) {
             sexpr = sexpr->u.s.cdr;
@@ -223,7 +223,7 @@ sexpr2string(const struct sexpr *sexpr, virBufferPtr buffer)
             virBufferAddChar(buffer, ' ');
 
             if (sexpr2string(sexpr->u.s.car, buffer) < 0)
-                goto error;
+                return -1;
         }
 
         virBufferAddChar(buffer, ')');
@@ -232,7 +232,7 @@ sexpr2string(const struct sexpr *sexpr, virBufferPtr buffer)
         if (strchr(sexpr->u.value, ' ') ||
             strchr(sexpr->u.value, ')') ||
             strchr(sexpr->u.value, '('))
-            virBufferVSprintf(buffer, "'%s'", sexpr->u.value);
+            virBufferAsprintf(buffer, "'%s'", sexpr->u.value);
         else
             virBufferAdd(buffer, sexpr->u.value, -1);
 
@@ -241,14 +241,12 @@ sexpr2string(const struct sexpr *sexpr, virBufferPtr buffer)
         virBufferAddLit(buffer, "()");
         break;
     default:
-        goto error;
+        virSexprError(VIR_ERR_SEXPR_SERIAL,
+                      _("unknown s-expression kind %d"), sexpr->kind);
+        return -1;
     }
 
     return 0;
-
-  error:
-    virSexprError(VIR_ERR_SEXPR_SERIAL, NULL);
-    return -1;
 }
 
 #define IS_SPACE(c) ((c == 0x20) || (c == 0x9) || (c == 0xD) || (c == 0xA))
@@ -521,7 +519,7 @@ int sexpr_node_copy(const struct sexpr *sexpr, const char *node, char **dst)
 {
     const char *val = sexpr_node(sexpr, node);
 
-    if (val) {
+    if (val && *val) {
         *dst = strdup(val);
         if (!(*dst))
             return -1;

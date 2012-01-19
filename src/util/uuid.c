@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007, 2008, 2009, 2010 Red Hat, Inc.
+ * Copyright (C) 2007-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -39,7 +39,7 @@
 #include "virterror_internal.h"
 #include "logging.h"
 #include "memory.h"
-#include "files.h"
+#include "virfile.h"
 
 #ifndef ENODATA
 # define ENODATA EIO
@@ -80,7 +80,7 @@ virUUIDGeneratePseudoRandomBytes(unsigned char *buf,
                                  int buflen)
 {
     while (buflen > 0) {
-        *buf = virRandom(256);
+        *buf++ = virRandom(256);
         buflen--;
     }
 
@@ -128,9 +128,6 @@ int
 virUUIDParse(const char *uuidstr, unsigned char *uuid) {
     const char *cur;
     int i;
-
-    if ((uuidstr == NULL) || (uuid == NULL))
-        return(-1);
 
     /*
      * do a liberal scan allowing '-' and ' ' anywhere between character
@@ -239,7 +236,7 @@ getDMISystemUUID(char *uuid, int len)
 
     while (paths[i]) {
         int fd = open(paths[i], O_RDONLY);
-        if (fd > 0) {
+        if (fd >= 0) {
             if (saferead(fd, uuid, len) == len) {
                 VIR_FORCE_CLOSE(fd);
                 return 0;

@@ -38,17 +38,14 @@ enum instCase {
 
 
 int virNWFilterInstantiateFilter(virConnectPtr conn,
+                                 const unsigned char *vmuuid,
                                  const virDomainNetDefPtr net);
 int virNWFilterUpdateInstantiateFilter(virConnectPtr conn,
+                                       const unsigned char *vmuuid,
                                        const virDomainNetDefPtr net,
                                        bool *skipIface);
-int virNWFilterRollbackUpdateFilter(virConnectPtr conn,
-                                    const virDomainNetDefPtr net);
 
-int virNWFilterTearOldFilter(virConnectPtr conn,
-                             const virDomainNetDefPtr net);
-
-int virNWFilterInstantiateFilterLate(virConnectPtr conn,
+int virNWFilterInstantiateFilterLate(const unsigned char *vmuuid,
                                      const char *ifname,
                                      int ifindex,
                                      const char *linkdev,
@@ -61,7 +58,7 @@ int virNWFilterInstantiateFilterLate(virConnectPtr conn,
 int virNWFilterTeardownFilter(const virDomainNetDefPtr net);
 
 virNWFilterHashTablePtr virNWFilterCreateVarHashmap(char *macaddr,
-                                                    char *ipaddr);
+                                       const virNWFilterVarValuePtr);
 
 void virNWFilterDomainFWUpdateCB(void *payload,
                                  const void *name,

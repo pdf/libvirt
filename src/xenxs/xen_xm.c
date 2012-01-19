@@ -174,21 +174,38 @@ static int xenXMConfigCopyStringOpt(virConfPtr conf,
 /* Convenience method to grab a string UUID from the config file object */
 static int xenXMConfigGetUUID(virConfPtr conf, const char *name, unsigned char *uuid) {
     virConfValuePtr val;
-    if (!uuid || !name || !conf)
-        return (-1);
-    if (!(val = virConfGetValue(conf, name))) {
-        return (-1);
+
+    if (!uuid || !name || !conf) {
+        XENXS_ERROR(VIR_ERR_INVALID_ARG,
+                   _("Arguments must be non null"));
+        return -1;
     }
 
-    if (val->type != VIR_CONF_STRING)
-        return (-1);
-    if (!val->str)
-        return (-1);
+    if (!(val = virConfGetValue(conf, name))) {
+        XENXS_ERROR(VIR_ERR_CONF_SYNTAX,
+                   _("config value %s was missing"), name);
+        return -1;
+    }
 
-    if (virUUIDParse(val->str, uuid) < 0)
-        return (-1);
+    if (val->type != VIR_CONF_STRING) {
+        XENXS_ERROR(VIR_ERR_CONF_SYNTAX,
+                   _("config value %s not a string"), name);
+        return -1;
+    }
 
-    return (0);
+    if (!val->str) {
+        XENXS_ERROR(VIR_ERR_CONF_SYNTAX,
+                   _("%s can't be empty"), name);
+        return -1;
+    }
+
+    if (virUUIDParse(val->str, uuid) < 0) {
+        XENXS_ERROR(VIR_ERR_CONF_SYNTAX,
+                   _("%s not parseable"), val->str);
+        return -1;
+    }
+
+    return 0;
 }
 
 #define MAX_VFB 1024
@@ -213,6 +230,7 @@ xenParseXM(virConfPtr conf, int xendConfigVersion,
     int vmlocaltime = 0;
     unsigned long count;
     char *script = NULL;
+    char *listenAddr = NULL;
 
     if (VIR_ALLOC(def) < 0) {
         virReportOOMError();
@@ -320,7 +338,7 @@ xenParseXM(virConfPtr conf, int xendConfigVersion,
         if (VIR_ALLOC_N(def->cpumask, def->cpumasklen) < 0)
             goto no_memory;
 
-        if (virDomainCpuSetParse(&str, 0,
+        if (virDomainCpuSetParse(str, 0,
                                  def->cpumask, def->cpumasklen) < 0)
             goto cleanup;
     }
@@ -369,6 +387,29 @@ xenParseXM(virConfPtr conf, int xendConfigVersion,
             goto cleanup;
         else if (val)
             def->features |= (1 << VIR_DOMAIN_FEATURE_HAP);
+        if (xenXMConfigGetBool(conf, "viridian", &val, 0) < 0)
+            goto cleanup;
+        else if (val)
+            def->features |= (1 << VIR_DOMAIN_FEATURE_VIRIDIAN);
+
+        if (xenXMConfigGetBool(conf, "hpet", &val, -1) < 0)
+            goto cleanup;
+        else if (val != -1) {
+            virDomainTimerDefPtr timer;
+
+            if (VIR_ALLOC_N(def->clock.timers, 1) < 0 ||
+                VIR_ALLOC(timer) < 0) {
+                virReportOOMError();
+                goto cleanup;
+            }
+
+            timer->name = VIR_DOMAIN_TIMER_NAME_HPET;
+            timer->present = val;
+            timer->tickpolicy = -1;
+
+            def->clock.ntimers = 1;
+            def->clock.timers[0] = timer;
+        }
     }
     if (xenXMConfigGetBool(conf, "localtime", &vmlocaltime, 0) < 0)
         goto cleanup;
@@ -656,8 +697,8 @@ xenParseXM(virConfPtr conf, int xendConfigVersion,
                 }
             }
 
-            if (bridge[0] || STREQ(script, "vif-bridge") ||
-                STREQ(script, "vif-vnic")) {
+            if (bridge[0] || STREQ_NULLABLE(script, "vif-bridge") ||
+                STREQ_NULLABLE(script, "vif-vnic")) {
                 net->type = VIR_DOMAIN_NET_TYPE_BRIDGE;
             } else {
                 net->type = VIR_DOMAIN_NET_TYPE_ETHERNET;
@@ -667,20 +708,18 @@ xenParseXM(virConfPtr conf, int xendConfigVersion,
                 if (bridge[0] &&
                     !(net->data.bridge.brname = strdup(bridge)))
                     goto no_memory;
-                if (script[0] &&
-                    !(net->data.bridge.script = strdup(script)))
-                    goto no_memory;
                 if (ip[0] &&
                     !(net->data.bridge.ipaddr = strdup(ip)))
                     goto no_memory;
             } else {
-                if (script[0] &&
-                    !(net->data.ethernet.script = strdup(script)))
-                    goto no_memory;
                 if (ip[0] &&
                     !(net->data.ethernet.ipaddr = strdup(ip)))
                     goto no_memory;
             }
+
+            if (script && script[0] &&
+                !(net->script = strdup(script)))
+               goto no_memory;
 
             if (model[0] &&
                 !(net->model = strdup(model)))
@@ -837,8 +876,16 @@ xenParseXM(virConfPtr conf, int xendConfigVersion,
                     goto cleanup;
                 graphics->data.vnc.port = (int)vncdisplay + 5900;
             }
-            if (xenXMConfigCopyStringOpt(conf, "vnclisten", &graphics->data.vnc.listenAddr) < 0)
+
+            if (xenXMConfigCopyStringOpt(conf, "vnclisten", &listenAddr) < 0)
                 goto cleanup;
+            if (listenAddr &&
+                virDomainGraphicsListenSetAddress(graphics, 0, listenAddr,
+                                                  -1, true) < 0) {
+               goto cleanup;
+            }
+            VIR_FREE(listenAddr);
+
             if (xenXMConfigCopyStringOpt(conf, "vncpasswd", &graphics->data.vnc.auth.passwd) < 0)
                 goto cleanup;
             if (xenXMConfigCopyStringOpt(conf, "keymap", &graphics->data.vnc.keymap) < 0)
@@ -908,8 +955,9 @@ xenParseXM(virConfPtr conf, int xendConfigVersion,
                         if (STREQ(key + 10, "1"))
                             graphics->data.vnc.autoport = 1;
                     } else if (STRPREFIX(key, "vnclisten=")) {
-                        if (!(graphics->data.vnc.listenAddr = strdup(key + 10)))
-                            goto no_memory;
+                        if (virDomainGraphicsListenSetAddress(graphics, 0, key+10,
+                                                              -1, true) < 0)
+                            goto cleanup;
                     } else if (STRPREFIX(key, "vncpasswd=")) {
                         if (!(graphics->data.vnc.auth.passwd = strdup(key + 10)))
                             goto no_memory;
@@ -983,8 +1031,6 @@ xenParseXM(virConfPtr conf, int xendConfigVersion,
                     continue;
                 }
 
-                if (!(chr = virDomainChrDefNew()))
-                    goto cleanup;
                 if (!(chr = xenParseSxprChar(port, NULL)))
                     goto cleanup;
 
@@ -1018,11 +1064,14 @@ xenParseXM(virConfPtr conf, int xendConfigVersion,
             }
         }
     } else {
-        if (!(def->console = xenParseSxprChar("pty", NULL)))
+        def->nconsoles = 1;
+        if (VIR_ALLOC_N(def->consoles, 1) < 0)
+            goto no_memory;
+        if (!(def->consoles[0] = xenParseSxprChar("pty", NULL)))
             goto cleanup;
-        def->console->deviceType = VIR_DOMAIN_CHR_DEVICE_TYPE_CONSOLE;
-        def->console->target.port = 0;
-        def->console->targetType = VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_XEN;
+        def->consoles[0]->deviceType = VIR_DOMAIN_CHR_DEVICE_TYPE_CONSOLE;
+        def->consoles[0]->target.port = 0;
+        def->consoles[0]->targetType = VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_XEN;
     }
 
     if (hvm) {
@@ -1034,6 +1083,7 @@ xenParseXM(virConfPtr conf, int xendConfigVersion,
             goto cleanup;
     }
 
+    VIR_FREE(script);
     return def;
 
 no_memory:
@@ -1045,6 +1095,7 @@ cleanup:
     virDomainDiskDefFree(disk);
     virDomainDefFree(def);
     VIR_FREE(script);
+    VIR_FREE(listenAddr);
     return NULL;
 }
 
@@ -1097,9 +1148,9 @@ static int xenFormatXMDisk(virConfValuePtr list,
 
     if(disk->src) {
         if (disk->driverName) {
-            virBufferVSprintf(&buf, "%s:", disk->driverName);
+            virBufferAsprintf(&buf, "%s:", disk->driverName);
             if (STREQ(disk->driverName, "tap"))
-                virBufferVSprintf(&buf, "%s:", disk->driverType ? disk->driverType : "aio");
+                virBufferAsprintf(&buf, "%s:", disk->driverType ? disk->driverType : "aio");
         } else {
             switch (disk->type) {
             case VIR_DOMAIN_DISK_TYPE_FILE:
@@ -1131,6 +1182,11 @@ static int xenFormatXMDisk(virConfValuePtr list,
         virBufferAddLit(&buf, ",!");
     else
         virBufferAddLit(&buf, ",w");
+    if (disk->transient) {
+        XENXS_ERROR(VIR_ERR_CONFIG_UNSUPPORTED,
+                    _("transient disks not supported yet"));
+        return -1;
+    }
 
     if (virBufferError(&buf)) {
         virReportOOMError();
@@ -1210,24 +1266,24 @@ static int xenFormatXMNet(virConnectPtr conn,
     virBuffer buf = VIR_BUFFER_INITIALIZER;
     virConfValuePtr val, tmp;
 
-    virBufferVSprintf(&buf, "mac=%02x:%02x:%02x:%02x:%02x:%02x",
+    virBufferAsprintf(&buf, "mac=%02x:%02x:%02x:%02x:%02x:%02x",
                       net->mac[0], net->mac[1],
                       net->mac[2], net->mac[3],
                       net->mac[4], net->mac[5]);
 
     switch (net->type) {
     case VIR_DOMAIN_NET_TYPE_BRIDGE:
-        virBufferVSprintf(&buf, ",bridge=%s", net->data.bridge.brname);
+        virBufferAsprintf(&buf, ",bridge=%s", net->data.bridge.brname);
         if (net->data.bridge.ipaddr)
-            virBufferVSprintf(&buf, ",ip=%s", net->data.bridge.ipaddr);
-        virBufferVSprintf(&buf, ",script=%s", DEFAULT_VIF_SCRIPT);
+            virBufferAsprintf(&buf, ",ip=%s", net->data.bridge.ipaddr);
+        virBufferAsprintf(&buf, ",script=%s", DEFAULT_VIF_SCRIPT);
         break;
 
     case VIR_DOMAIN_NET_TYPE_ETHERNET:
-        if (net->data.ethernet.script)
-            virBufferVSprintf(&buf, ",script=%s", net->data.ethernet.script);
+        if (net->script)
+            virBufferAsprintf(&buf, ",script=%s", net->script);
         if (net->data.ethernet.ipaddr)
-            virBufferVSprintf(&buf, ",ip=%s", net->data.ethernet.ipaddr);
+            virBufferAsprintf(&buf, ",ip=%s", net->data.ethernet.ipaddr);
         break;
 
     case VIR_DOMAIN_NET_TYPE_NETWORK:
@@ -1248,8 +1304,8 @@ static int xenFormatXMNet(virConnectPtr conn,
             return -1;
         }
 
-        virBufferVSprintf(&buf, ",bridge=%s", bridge);
-        virBufferVSprintf(&buf, ",script=%s", DEFAULT_VIF_SCRIPT);
+        virBufferAsprintf(&buf, ",bridge=%s", bridge);
+        virBufferAsprintf(&buf, ",script=%s", DEFAULT_VIF_SCRIPT);
     }
     break;
 
@@ -1262,7 +1318,7 @@ static int xenFormatXMNet(virConnectPtr conn,
 
     if (!hvm) {
         if (net->model != NULL)
-            virBufferVSprintf(&buf, ",model=%s", net->model);
+            virBufferAsprintf(&buf, ",model=%s", net->model);
     }
     else if (net->model == NULL) {
         /*
@@ -1276,12 +1332,12 @@ static int xenFormatXMNet(virConnectPtr conn,
         virBufferAddLit(&buf, ",type=netfront");
     }
     else {
-        virBufferVSprintf(&buf, ",model=%s", net->model);
+        virBufferAsprintf(&buf, ",model=%s", net->model);
         virBufferAddLit(&buf, ",type=ioemu");
     }
 
     if (net->ifname)
-        virBufferVSprintf(&buf, ",vifname=%s",
+        virBufferAsprintf(&buf, ",vifname=%s",
                           net->ifname);
 
     if (virBufferError(&buf)) {
@@ -1489,11 +1545,17 @@ virConfPtr xenFormatXM(virConnectPtr conn,
                                (1 << VIR_DOMAIN_FEATURE_APIC)) ? 1 : 0) < 0)
             goto no_memory;
 
-        if (xendConfigVersion >= 3)
+        if (xendConfigVersion >= 3) {
             if (xenXMConfigSetInt(conf, "hap",
                                   (def->features &
                                    (1 << VIR_DOMAIN_FEATURE_HAP)) ? 1 : 0) < 0)
                 goto no_memory;
+
+            if (xenXMConfigSetInt(conf, "viridian",
+                                  (def->features &
+                                   (1 << VIR_DOMAIN_FEATURE_VIRIDIAN)) ? 1 : 0) < 0)
+                goto no_memory;
+        }
 
         if (def->clock.offset == VIR_DOMAIN_CLOCK_OFFSET_LOCALTIME) {
             if (def->clock.data.timezone) {
@@ -1513,6 +1575,13 @@ virConfPtr xenFormatXM(virConnectPtr conn,
                        _("unsupported clock offset '%s'"),
                        virDomainClockOffsetTypeToString(def->clock.offset));
             goto cleanup;
+        }
+
+        for (i = 0; i < def->clock.ntimers; i++) {
+            if (def->clock.timers[i]->name == VIR_DOMAIN_TIMER_NAME_HPET &&
+                def->clock.timers[i]->present != -1 &&
+                xenXMConfigSetInt(conf, "hpet", def->clock.timers[i]->present) < 0)
+                    break;
         }
 
         if (xendConfigVersion == 1) {
@@ -1611,6 +1680,8 @@ virConfPtr xenFormatXM(virConnectPtr conn,
                                          def->graphics[0]->data.sdl.xauth) < 0)
                     goto no_memory;
             } else {
+                const char *listenAddr;
+
                 if (xenXMConfigSetInt(conf, "sdl", 0) < 0)
                     goto no_memory;
                 if (xenXMConfigSetInt(conf, "vnc", 1) < 0)
@@ -1622,9 +1693,9 @@ virConfPtr xenFormatXM(virConnectPtr conn,
                     xenXMConfigSetInt(conf, "vncdisplay",
                                   def->graphics[0]->data.vnc.port - 5900) < 0)
                     goto no_memory;
-                if (def->graphics[0]->data.vnc.listenAddr &&
-                    xenXMConfigSetString(conf, "vnclisten",
-                                    def->graphics[0]->data.vnc.listenAddr) < 0)
+                listenAddr = virDomainGraphicsListenGetAddress(def->graphics[0], 0);
+                if (listenAddr &&
+                    xenXMConfigSetString(conf, "vnclisten", listenAddr) < 0)
                     goto no_memory;
                 if (def->graphics[0]->data.vnc.auth.passwd &&
                     xenXMConfigSetString(conf, "vncpasswd",
@@ -1642,26 +1713,28 @@ virConfPtr xenFormatXM(virConnectPtr conn,
             if (def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_SDL) {
                 virBufferAddLit(&buf, "type=sdl");
                 if (def->graphics[0]->data.sdl.display)
-                    virBufferVSprintf(&buf, ",display=%s",
+                    virBufferAsprintf(&buf, ",display=%s",
                                       def->graphics[0]->data.sdl.display);
                 if (def->graphics[0]->data.sdl.xauth)
-                    virBufferVSprintf(&buf, ",xauthority=%s",
+                    virBufferAsprintf(&buf, ",xauthority=%s",
                                       def->graphics[0]->data.sdl.xauth);
             } else {
+                const char *listenAddr
+                    = virDomainGraphicsListenGetAddress(def->graphics[0], 0);
+
                 virBufferAddLit(&buf, "type=vnc");
-                virBufferVSprintf(&buf, ",vncunused=%d",
+                virBufferAsprintf(&buf, ",vncunused=%d",
                                   def->graphics[0]->data.vnc.autoport ? 1 : 0);
                 if (!def->graphics[0]->data.vnc.autoport)
-                    virBufferVSprintf(&buf, ",vncdisplay=%d",
+                    virBufferAsprintf(&buf, ",vncdisplay=%d",
                                       def->graphics[0]->data.vnc.port - 5900);
-                if (def->graphics[0]->data.vnc.listenAddr)
-                    virBufferVSprintf(&buf, ",vnclisten=%s",
-                                      def->graphics[0]->data.vnc.listenAddr);
+                if (listenAddr)
+                    virBufferAsprintf(&buf, ",vnclisten=%s", listenAddr);
                 if (def->graphics[0]->data.vnc.auth.passwd)
-                    virBufferVSprintf(&buf, ",vncpasswd=%s",
+                    virBufferAsprintf(&buf, ",vncpasswd=%s",
                                       def->graphics[0]->data.vnc.auth.passwd);
                 if (def->graphics[0]->data.vnc.keymap)
-                    virBufferVSprintf(&buf, ",keymap=%s",
+                    virBufferAsprintf(&buf, ",keymap=%s",
                                       def->graphics[0]->data.vnc.keymap);
             }
             if (virBufferError(&buf)) {

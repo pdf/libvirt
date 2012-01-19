@@ -31,21 +31,19 @@
 # include <sys/un.h>
 #endif
 #include <netinet/in.h>
-#include <signal.h>
 
 #include "fdstream.h"
 #include "virterror_internal.h"
 #include "datatypes.h"
 #include "logging.h"
 #include "memory.h"
-#include "event.h"
 #include "util.h"
-#include "files.h"
+#include "virfile.h"
 #include "configmake.h"
 
 #define VIR_FROM_THIS VIR_FROM_STREAMS
 #define streamsReportError(code, ...)                                \
-    virReportErrorHelper(NULL, VIR_FROM_THIS, code, __FILE__,        \
+    virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,              \
                          __FUNCTION__, __LINE__, __VA_ARGS__)
 
 /* Tunnelled migration stream support */
@@ -57,8 +55,9 @@ struct virFDStreamData {
     unsigned long long length;
 
     int watch;
-    unsigned int cbRemoved;
-    unsigned int dispatching;
+    bool cbRemoved;
+    bool dispatching;
+    bool closed;
     virStreamEventCallback cb;
     void *opaque;
     virFreeCallback ff;
@@ -86,7 +85,7 @@ static int virFDStreamRemoveCallback(virStreamPtr stream)
 
     virEventRemoveHandle(fdst->watch);
     if (fdst->dispatching)
-        fdst->cbRemoved = 1;
+        fdst->cbRemoved = true;
     else if (fdst->ff)
         (fdst->ff)(fdst->opaque);
 
@@ -139,6 +138,7 @@ static void virFDStreamEvent(int watch ATTRIBUTE_UNUSED,
     virStreamEventCallback cb;
     void *cbopaque;
     virFreeCallback ff;
+    bool closed;
 
     if (!fdst)
         return;
@@ -152,17 +152,30 @@ static void virFDStreamEvent(int watch ATTRIBUTE_UNUSED,
     cb = fdst->cb;
     cbopaque = fdst->opaque;
     ff = fdst->ff;
-    fdst->dispatching = 1;
+    fdst->dispatching = true;
     virMutexUnlock(&fdst->lock);
 
     cb(stream, events, cbopaque);
 
     virMutexLock(&fdst->lock);
-    fdst->dispatching = 0;
+    fdst->dispatching = false;
     if (fdst->cbRemoved && ff)
         (ff)(cbopaque);
+    closed = fdst->closed;
     virMutexUnlock(&fdst->lock);
+
+    if (closed) {
+        virMutexDestroy(&fdst->lock);
+        VIR_FREE(fdst);
+    }
 }
+
+static void virFDStreamCallbackFree(void *opaque)
+{
+    virStreamPtr st = opaque;
+    virStreamFree(st);
+}
+
 
 static int
 virFDStreamAddCallback(virStreamPtr st,
@@ -191,13 +204,13 @@ virFDStreamAddCallback(virStreamPtr st,
                                            events,
                                            virFDStreamEvent,
                                            st,
-                                           NULL)) < 0) {
+                                           virFDStreamCallbackFree)) < 0) {
         streamsReportError(VIR_ERR_INTERNAL_ERROR,
                            "%s", _("cannot register file watch on stream"));
         goto cleanup;
     }
 
-    fdst->cbRemoved = 0;
+    fdst->cbRemoved = false;
     fdst->cb = cb;
     fdst->opaque = opaque;
     fdst->ff = ff;
@@ -210,9 +223,20 @@ cleanup:
     return ret;
 }
 
-static int virFDStreamFree(struct virFDStreamData *fdst)
+
+static int
+virFDStreamClose(virStreamPtr st)
 {
+    struct virFDStreamData *fdst = st->privateData;
     int ret;
+
+    VIR_DEBUG("st=%p", st);
+
+    if (!fdst)
+        return 0;
+
+    virMutexLock(&fdst->lock);
+
     ret = VIR_CLOSE(fdst->fd);
     if (fdst->cmd) {
         char buf[1024];
@@ -242,30 +266,22 @@ static int virFDStreamFree(struct virFDStreamData *fdst)
             ret = -1;
         }
         virCommandFree(fdst->cmd);
+        fdst->cmd = NULL;
     }
-    VIR_FREE(fdst);
-    return ret;
-}
 
-
-static int
-virFDStreamClose(virStreamPtr st)
-{
-    struct virFDStreamData *fdst = st->privateData;
-    int ret;
-
-    VIR_DEBUG("st=%p", st);
-
-    if (!fdst)
-        return 0;
-
-    virMutexLock(&fdst->lock);
-
-    ret = virFDStreamFree(fdst);
+    if (VIR_CLOSE(fdst->errfd) < 0)
+        VIR_DEBUG("ignoring failed close on fd %d", fdst->errfd);
 
     st->privateData = NULL;
 
-    virMutexUnlock(&fdst->lock);
+    if (fdst->dispatching) {
+        fdst->closed = true;
+        virMutexUnlock(&fdst->lock);
+    } else {
+        virMutexUnlock(&fdst->lock);
+        virMutexDestroy(&fdst->lock);
+        VIR_FREE(fdst);
+    }
 
     return ret;
 }
@@ -492,7 +508,7 @@ virFDStreamOpenFileInternal(virStreamPtr st,
                             const char *path,
                             unsigned long long offset,
                             unsigned long long length,
-                            int flags,
+                            int oflags,
                             int mode)
 {
     int fd = -1;
@@ -500,15 +516,14 @@ virFDStreamOpenFileInternal(virStreamPtr st,
     struct stat sb;
     virCommandPtr cmd = NULL;
     int errfd = -1;
-    pid_t pid = 0;
 
-    VIR_DEBUG("st=%p path=%s flags=%d offset=%llu length=%llu mode=%d",
-              st, path, flags, offset, length, mode);
+    VIR_DEBUG("st=%p path=%s oflags=%x offset=%llu length=%llu mode=%o",
+              st, path, oflags, offset, length, mode);
 
-    if (flags & O_CREAT)
-        fd = open(path, flags, mode);
+    if (oflags & O_CREAT)
+        fd = open(path, oflags, mode);
     else
-        fd = open(path, flags);
+        fd = open(path, oflags);
     if (fd < 0) {
         virReportSystemError(errno,
                              _("Unable to open stream for '%s'"),
@@ -523,9 +538,17 @@ virFDStreamOpenFileInternal(virStreamPtr st,
         goto error;
     }
 
+    if (offset &&
+        lseek(fd, offset, SEEK_SET) != offset) {
+        virReportSystemError(errno,
+                             _("Unable to seek %s to %llu"),
+                             path, offset);
+        goto error;
+    }
+
     /* Thanks to the POSIX i/o model, we can't reliably get
      * non-blocking I/O on block devs/regular files. To
-     * support those we need to fork a helper process todo
+     * support those we need to fork a helper process to do
      * the I/O so we just have a fifo. Or use AIO :-(
      */
     if ((st->flags & VIR_STREAM_NONBLOCK) &&
@@ -533,14 +556,13 @@ virFDStreamOpenFileInternal(virStreamPtr st,
          !S_ISFIFO(sb.st_mode))) {
         int childfd;
 
-        if ((flags & O_RDWR) == O_RDWR) {
+        if ((oflags & O_ACCMODE) == O_RDWR) {
             streamsReportError(VIR_ERR_INTERNAL_ERROR,
                                _("%s: Cannot request read and write flags together"),
                                path);
             goto error;
         }
 
-        VIR_FORCE_CLOSE(fd);
         if (pipe(fds) < 0) {
             virReportSystemError(errno, "%s",
                                  _("Unable to create pipe"));
@@ -550,12 +572,11 @@ virFDStreamOpenFileInternal(virStreamPtr st,
         cmd = virCommandNewArgList(LIBEXECDIR "/libvirt_iohelper",
                                    path,
                                    NULL);
-        virCommandAddArgFormat(cmd, "%d", flags);
-        virCommandAddArgFormat(cmd, "%d", mode);
-        virCommandAddArgFormat(cmd, "%llu", offset);
         virCommandAddArgFormat(cmd, "%llu", length);
+        virCommandTransferFD(cmd, fd);
+        virCommandAddArgFormat(cmd, "%d", fd);
 
-        if (flags == O_RDONLY) {
+        if (oflags == O_RDONLY) {
             childfd = fds[1];
             fd = fds[0];
             virCommandSetOutputFD(cmd, &childfd);
@@ -566,18 +587,10 @@ virFDStreamOpenFileInternal(virStreamPtr st,
         }
         virCommandSetErrorFD(cmd, &errfd);
 
-        if (virCommandRunAsync(cmd, &pid) < 0)
+        if (virCommandRunAsync(cmd, NULL) < 0)
             goto error;
 
         VIR_FORCE_CLOSE(childfd);
-    } else {
-        if (offset &&
-            lseek(fd, offset, SEEK_SET) != offset) {
-                virReportSystemError(errno,
-                                     _("Unable to seek %s to %llu"),
-                                     path, offset);
-                goto error;
-        }
     }
 
     if (virFDStreamOpenInternal(st, fd, cmd, errfd, length) < 0)
@@ -586,14 +599,12 @@ virFDStreamOpenFileInternal(virStreamPtr st,
     return 0;
 
 error:
-#ifndef WIN32
-    if (pid)
-        kill(SIGTERM, pid);
-#endif
     virCommandFree(cmd);
     VIR_FORCE_CLOSE(fds[0]);
     VIR_FORCE_CLOSE(fds[1]);
     VIR_FORCE_CLOSE(fd);
+    if (oflags & O_CREAT)
+        unlink(path);
     return -1;
 }
 
@@ -601,9 +612,9 @@ int virFDStreamOpenFile(virStreamPtr st,
                         const char *path,
                         unsigned long long offset,
                         unsigned long long length,
-                        int flags)
+                        int oflags)
 {
-    if (flags & O_CREAT) {
+    if (oflags & O_CREAT) {
         streamsReportError(VIR_ERR_INTERNAL_ERROR,
                            _("Attempt to create %s without specifying mode"),
                            path);
@@ -611,17 +622,17 @@ int virFDStreamOpenFile(virStreamPtr st,
     }
     return virFDStreamOpenFileInternal(st, path,
                                        offset, length,
-                                       flags, 0);
+                                       oflags, 0);
 }
 
 int virFDStreamCreateFile(virStreamPtr st,
                           const char *path,
                           unsigned long long offset,
                           unsigned long long length,
-                          int flags,
+                          int oflags,
                           mode_t mode)
 {
     return virFDStreamOpenFileInternal(st, path,
                                        offset, length,
-                                       flags | O_CREAT, mode);
+                                       oflags | O_CREAT, mode);
 }

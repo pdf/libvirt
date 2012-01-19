@@ -1,7 +1,7 @@
 /*
  * console.c: A dumb serial console client
  *
- * Copyright (C) 2007, 2008, 2010 Red Hat, Inc.
+ * Copyright (C) 2007-2008, 2010-2011 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -39,14 +39,16 @@
 # include "console.h"
 # include "logging.h"
 # include "util.h"
-# include "files.h"
+# include "virfile.h"
 # include "memory.h"
+# include "threads.h"
 # include "virterror_internal.h"
 
-# include "event.h"
-
-/* ie  Ctrl-]  as per telnet */
-# define CTRL_CLOSE_BRACKET '\35'
+/*
+ * Convert given character to control character.
+ * Basically, we assume ASCII, and take lower 6 bits.
+ */
+# define CONTROL(c) ((c) ^ 0x40)
 
 # define VIR_FROM_THIS VIR_FROM_NONE
 
@@ -61,12 +63,16 @@ typedef virConsole *virConsolePtr;
 struct virConsole {
     virStreamPtr st;
     bool quit;
+    virMutex lock;
+    virCond cond;
 
     int stdinWatch;
     int stdoutWatch;
 
     struct virConsoleBuffer streamToTerminal;
     struct virConsoleBuffer terminalToStream;
+
+    char escapeChar;
 };
 
 static int got_signal = 0;
@@ -90,16 +96,21 @@ cfmakeraw (struct termios *attr)
 static void
 virConsoleShutdown(virConsolePtr con)
 {
-    con->quit = true;
-    virStreamEventRemoveCallback(con->st);
-    if (con->st)
+    if (con->st) {
+        virStreamEventRemoveCallback(con->st);
+        virStreamAbort(con->st);
         virStreamFree(con->st);
+    }
+    VIR_FREE(con->streamToTerminal.data);
+    VIR_FREE(con->terminalToStream.data);
     if (con->stdinWatch != -1)
         virEventRemoveHandle(con->stdinWatch);
-    if (con->stdinWatch != -1)
+    if (con->stdoutWatch != -1)
         virEventRemoveHandle(con->stdoutWatch);
     con->stdinWatch = -1;
     con->stdoutWatch = -1;
+    con->quit = true;
+    virCondSignal(&con->cond);
 }
 
 static void
@@ -214,7 +225,7 @@ virConsoleEventOnStdin(int watch ATTRIBUTE_UNUSED,
             virConsoleShutdown(con);
             return;
         }
-        if (con->terminalToStream.data[con->terminalToStream.offset] == CTRL_CLOSE_BRACKET) {
+        if (con->terminalToStream.data[con->terminalToStream.offset] == con->escapeChar) {
             virConsoleShutdown(con);
             return;
         }
@@ -277,7 +288,18 @@ virConsoleEventOnStdout(int watch ATTRIBUTE_UNUSED,
 }
 
 
-int vshRunConsole(virDomainPtr dom, const char *devname)
+static char
+vshGetEscapeChar(const char *s)
+{
+    if (*s == '^')
+        return CONTROL(s[1]);
+
+    return *s;
+}
+
+int vshRunConsole(virDomainPtr dom,
+                  const char *dev_name,
+                  const char *escape_seq)
 {
     int ret = -1;
     struct termios ttyattr, rawattr;
@@ -325,12 +347,16 @@ int vshRunConsole(virDomainPtr dom, const char *devname)
         goto cleanup;
     }
 
+    con->escapeChar = vshGetEscapeChar(escape_seq);
     con->st = virStreamNew(virDomainGetConnect(dom),
                            VIR_STREAM_NONBLOCK);
     if (!con->st)
         goto cleanup;
 
-    if (virDomainOpenConsole(dom, devname, con->st, 0) < 0)
+    if (virDomainOpenConsole(dom, dev_name, con->st, 0) < 0)
+        goto cleanup;
+
+    if (virCondInit(&con->cond) < 0 || virMutexInit(&con->lock) < 0)
         goto cleanup;
 
     con->stdinWatch = virEventAddHandle(STDIN_FILENO,
@@ -351,8 +377,10 @@ int vshRunConsole(virDomainPtr dom, const char *devname)
                               NULL);
 
     while (!con->quit) {
-        if (virEventRunDefaultImpl() < 0)
-            break;
+        if (virCondWait(&con->cond, &con->lock) < 0) {
+            VIR_ERROR(_("unable to wait on console condition"));
+            goto cleanup;
+        }
     }
 
     ret = 0;
@@ -362,6 +390,8 @@ int vshRunConsole(virDomainPtr dom, const char *devname)
     if (con) {
         if (con->st)
             virStreamFree(con->st);
+        virMutexDestroy(&con->lock);
+        ignore_value(virCondDestroy(&con->cond));
         VIR_FREE(con);
     }
 

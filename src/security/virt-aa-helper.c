@@ -3,7 +3,7 @@
  * virt-aa-helper: wrapper program used by AppArmor security driver.
  *
  * Copyright (C) 2010-2011 Red Hat, Inc.
- * Copyright (C) 2009-2010 Canonical Ltd.
+ * Copyright (C) 2009-2011 Canonical Ltd.
  *
  * See COPYING.LIB for the License of this software
  *
@@ -31,6 +31,7 @@
 #include "buf.h"
 #include "util.h"
 #include "memory.h"
+#include "command.h"
 
 #include "security_driver.h"
 #include "security_apparmor.h"
@@ -39,8 +40,10 @@
 #include "uuid.h"
 #include "hostusb.h"
 #include "pci.h"
-#include "files.h"
+#include "virfile.h"
 #include "configmake.h"
+
+#define VIR_FROM_THIS VIR_FROM_SECURITY
 
 static char *progname;
 
@@ -245,7 +248,7 @@ update_include_file(const char *include_file, const char *included_files,
                     bool append)
 {
     int rc = -1;
-    int plen, flen;
+    int plen, flen = 0;
     int fd;
     char *pcontent = NULL;
     char *existing = NULL;
@@ -565,9 +568,6 @@ valid_path(const char *path, const bool readonly)
             case S_IFDIR:
                 return 1;
                 break;
-            case S_IFIFO:
-                return 1;
-                break;
             case S_IFSOCK:
                 return 1;
                 break;
@@ -590,29 +590,6 @@ valid_path(const char *path, const bool readonly)
     }
 
     return 0;
-}
-
-/* Called from SAX on parsing errors in the XML. */
-static void
-catchXMLError (void *ctx, const char *msg ATTRIBUTE_UNUSED, ...)
-{
-    xmlParserCtxtPtr ctxt = (xmlParserCtxtPtr) ctx;
-
-    if (ctxt) {
-        if (virGetLastError() == NULL &&
-            ctxt->lastError.level == XML_ERR_FATAL &&
-            ctxt->lastError.message != NULL) {
-                char *err_str = NULL;
-                if (virAsprintf(&err_str, "XML error at line %d: %s",
-                                ctxt->lastError.line,
-                                ctxt->lastError.message) == -1)
-                    vah_error(NULL, 0, _("could not get XML error"));
-                else {
-                    vah_error(NULL, 0, err_str);
-                    VIR_FREE(err_str);
-                }
-        }
-    }
 }
 
 static int
@@ -658,41 +635,18 @@ static int
 caps_mockup(vahControl * ctl, const char *xmlStr)
 {
     int rc = -1;
-    xmlParserCtxtPtr pctxt = NULL;
     xmlDocPtr xml = NULL;
     xmlXPathContextPtr ctxt = NULL;
-    xmlNodePtr root;
 
-    /* Set up a parser context so we can catch the details of XML errors. */
-    pctxt = xmlNewParserCtxt ();
-    if (!pctxt || !pctxt->sax)
-        goto cleanup;
-    pctxt->sax->error = catchXMLError;
-
-    xml = xmlCtxtReadDoc (pctxt, BAD_CAST xmlStr, "domain.xml", NULL,
-                          XML_PARSE_NOENT | XML_PARSE_NONET |
-                          XML_PARSE_NOWARNING);
-    if (!xml) {
-        if (virGetLastError() == NULL)
-            vah_error(NULL, 0, _("failed to parse xml document"));
+    if (!(xml = virXMLParseStringCtxt(xmlStr, _("(domain_definition)"),
+                                      &ctxt))) {
         goto cleanup;
     }
 
-    if ((root = xmlDocGetRootElement(xml)) == NULL) {
-        vah_error(NULL, 0, _("missing root element"));
+    if (!xmlStrEqual(ctxt->node->name, BAD_CAST "domain")) {
+        vah_error(NULL, 0, _("unexpected root element, expecting <domain>"));
         goto cleanup;
     }
-
-    if (!xmlStrEqual(root->name, BAD_CAST "domain")) {
-        vah_error(NULL, 0, _("incorrect root element"));
-        goto cleanup;
-    }
-
-    if ((ctxt = xmlXPathNewContext(xml)) == NULL) {
-        vah_error(ctl, 0, _("could not allocate memory"));
-        goto cleanup;
-    }
-    ctxt->node = root;
 
     /* Quick sanity check for some required elements */
     if (verify_xpath_context(ctxt) != 0)
@@ -725,11 +679,15 @@ caps_mockup(vahControl * ctl, const char *xmlStr)
     rc = 0;
 
   cleanup:
-    xmlFreeParserCtxt (pctxt);
     xmlFreeDoc (xml);
     xmlXPathFreeContext(ctxt);
 
     return rc;
+}
+
+static int aaDefaultConsoleType(const char *ostype ATTRIBUTE_UNUSED)
+{
+    return VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_SERIAL;
 }
 
 static int
@@ -750,6 +708,8 @@ get_definition(vahControl * ctl, const char *xmlStr)
         goto exit;
     }
 
+    ctl->caps->defaultConsoleTargetType = aaDefaultConsoleType;
+
     if ((guest = virCapabilitiesAddGuest(ctl->caps,
                                          ctl->hvm,
                                          ctl->arch,
@@ -762,7 +722,7 @@ get_definition(vahControl * ctl, const char *xmlStr)
         goto exit;
     }
 
-    ctl->def = virDomainDefParseString(ctl->caps, xmlStr,
+    ctl->def = virDomainDefParseString(ctl->caps, xmlStr, -1,
                                        VIR_DOMAIN_XML_INACTIVE);
     if (ctl->def == NULL) {
         vah_error(ctl, 0, _("could not parse XML"));
@@ -827,15 +787,60 @@ vah_add_file(virBufferPtr buf, const char *path, const char *perms)
         goto clean;
     }
 
-    virBufferVSprintf(buf, "  \"%s\" %s,\n", tmp, perms);
+    virBufferAsprintf(buf, "  \"%s\" %s,\n", tmp, perms);
     if (readonly) {
-        virBufferVSprintf(buf, "  # don't audit writes to readonly files\n");
-        virBufferVSprintf(buf, "  deny \"%s\" w,\n", tmp);
+        virBufferAsprintf(buf, "  # don't audit writes to readonly files\n");
+        virBufferAsprintf(buf, "  deny \"%s\" w,\n", tmp);
     }
 
   clean:
     VIR_FREE(tmp);
 
+    return rc;
+}
+
+static int
+vah_add_file_chardev(virBufferPtr buf,
+                     const char *path,
+                     const char *perms,
+                     const int type)
+{
+    char *pipe_in;
+    char *pipe_out;
+    int rc = -1;
+
+    if (type == VIR_DOMAIN_CHR_TYPE_PIPE) {
+        /* add the pipe input */
+        if (virAsprintf(&pipe_in, "%s.in", path) == -1) {
+            vah_error(NULL, 0, _("could not allocate memory"));
+            goto clean;
+        }
+
+        if (vah_add_file(buf, pipe_in, perms) != 0)
+            goto clean_pipe_in;
+
+        /* add the pipe output */
+        if (virAsprintf(&pipe_out, "%s.out", path) == -1) {
+            vah_error(NULL, 0, _("could not allocate memory"));
+            goto clean_pipe_in;
+        }
+
+        if (vah_add_file(buf, pipe_out, perms) != 0)
+            goto clean_pipe_out;
+
+        rc = 0;
+      clean_pipe_out:
+        VIR_FREE(pipe_out);
+      clean_pipe_in:
+        VIR_FREE(pipe_in);
+    } else {
+        /* add the file */
+        if (vah_add_file(buf, path, perms) != 0)
+            goto clean;
+        rc = 0;
+    }
+
+  clean:
     return rc;
 }
 
@@ -879,7 +884,6 @@ add_file_path(virDomainDiskDefPtr disk,
     return ret;
 }
 
-
 static int
 get_files(vahControl * ctl)
 {
@@ -922,13 +926,22 @@ get_files(vahControl * ctl)
              ctl->def->serials[i]->source.type == VIR_DOMAIN_CHR_TYPE_FILE ||
              ctl->def->serials[i]->source.type == VIR_DOMAIN_CHR_TYPE_PIPE) &&
             ctl->def->serials[i]->source.data.file.path)
-            if (vah_add_file(&buf,
-                             ctl->def->serials[i]->source.data.file.path, "rw") != 0)
+            if (vah_add_file_chardev(&buf,
+                                     ctl->def->serials[i]->source.data.file.path,
+                                     "rw",
+                                     ctl->def->serials[i]->source.type) != 0)
                 goto clean;
 
-    if (ctl->def->console && ctl->def->console->source.data.file.path)
-        if (vah_add_file(&buf, ctl->def->console->source.data.file.path, "rw") != 0)
-            goto clean;
+    for (i = 0; i < ctl->def->nconsoles; i++)
+        if (ctl->def->consoles[i] &&
+            (ctl->def->consoles[i]->source.type == VIR_DOMAIN_CHR_TYPE_PTY ||
+             ctl->def->consoles[i]->source.type == VIR_DOMAIN_CHR_TYPE_DEV ||
+             ctl->def->consoles[i]->source.type == VIR_DOMAIN_CHR_TYPE_FILE ||
+             ctl->def->consoles[i]->source.type == VIR_DOMAIN_CHR_TYPE_PIPE) &&
+            ctl->def->consoles[i]->source.data.file.path)
+            if (vah_add_file(&buf,
+                             ctl->def->consoles[i]->source.data.file.path, "rw") != 0)
+                goto clean;
 
     for (i = 0 ; i < ctl->def->nparallels; i++)
         if (ctl->def->parallels[i] &&
@@ -937,9 +950,10 @@ get_files(vahControl * ctl)
              ctl->def->parallels[i]->source.type == VIR_DOMAIN_CHR_TYPE_FILE ||
              ctl->def->parallels[i]->source.type == VIR_DOMAIN_CHR_TYPE_PIPE) &&
             ctl->def->parallels[i]->source.data.file.path)
-            if (vah_add_file(&buf,
-                             ctl->def->parallels[i]->source.data.file.path,
-                             "rw") != 0)
+            if (vah_add_file_chardev(&buf,
+                                     ctl->def->parallels[i]->source.data.file.path,
+                                     "rw",
+                                     ctl->def->parallels[i]->source.type) != 0)
                 goto clean;
 
     for (i = 0 ; i < ctl->def->nchannels; i++)
@@ -949,9 +963,10 @@ get_files(vahControl * ctl)
              ctl->def->channels[i]->source.type == VIR_DOMAIN_CHR_TYPE_FILE ||
              ctl->def->channels[i]->source.type == VIR_DOMAIN_CHR_TYPE_PIPE) &&
             ctl->def->channels[i]->source.data.file.path)
-            if (vah_add_file(&buf,
-                             ctl->def->channels[i]->source.data.file.path,
-                             "rw") != 0)
+            if (vah_add_file_chardev(&buf,
+                                     ctl->def->channels[i]->source.data.file.path,
+                                     "rw",
+                                     ctl->def->channels[i]->source.type) != 0)
                 goto clean;
 
     if (ctl->def->os.kernel)
@@ -1197,12 +1212,18 @@ main(int argc, char **argv)
             if (vah_add_file(&buf, ctl->newfile, "rw") != 0)
                 goto clean;
         } else {
-            virBufferVSprintf(&buf, "  \"%s/log/libvirt/**/%s.log\" w,\n",
+            virBufferAsprintf(&buf, "  \"%s/log/libvirt/**/%s.log\" w,\n",
                               LOCALSTATEDIR, ctl->def->name);
-            virBufferVSprintf(&buf, "  \"%s/lib/libvirt/**/%s.monitor\" rw,\n",
+            virBufferAsprintf(&buf, "  \"%s/lib/libvirt/**/%s.monitor\" rw,\n",
                               LOCALSTATEDIR, ctl->def->name);
-            virBufferVSprintf(&buf, "  \"%s/run/libvirt/**/%s.pid\" rwk,\n",
+            virBufferAsprintf(&buf, "  \"%s/run/libvirt/**/%s.pid\" rwk,\n",
                               LOCALSTATEDIR, ctl->def->name);
+            virBufferAsprintf(&buf, "  \"/run/libvirt/**/%s.pid\" rwk,\n",
+                              ctl->def->name);
+            virBufferAsprintf(&buf, "  \"%s/run/libvirt/**/*.tunnelmigrate.dest.%s\" rw,\n",
+                              LOCALSTATEDIR, ctl->def->name);
+            virBufferAsprintf(&buf, "  \"/run/libvirt/**/*.tunnelmigrate.dest.%s\" rw,\n",
+                              ctl->def->name);
             if (ctl->files)
                 virBufferAdd(&buf, ctl->files, -1);
         }

@@ -25,7 +25,9 @@
 
 # ifndef WIN32
 
-int vshRunConsole(virDomainPtr dom, const char *devname);
+int vshRunConsole(virDomainPtr dom,
+                  const char *dev_name,
+                  const char *escape_seq);
 
 # endif /* !WIN32 */
 

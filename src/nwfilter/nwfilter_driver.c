@@ -2,7 +2,7 @@
  * nwfilter_driver.c: core driver for network filter APIs
  *                    (based on storage_driver.c)
  *
- * Copyright (C) 2006-2010 Red Hat, Inc.
+ * Copyright (C) 2006-2011 Red Hat, Inc.
  * Copyright (C) 2006-2008 Daniel P. Berrange
  * Copyright (C) 2010 IBM Corporation
  * Copyright (C) 2010 Stefan Berger
@@ -199,6 +199,8 @@ nwfilterDriverShutdown(void) {
     if (!driverState)
         return -1;
 
+    virNWFilterConfLayerShutdown();
+    virNWFilterTechDriversShutdown();
     virNWFilterLearnShutdown();
 
     nwfilterDriverLock(driverState);
@@ -269,8 +271,11 @@ cleanup:
 
 static virDrvOpenStatus
 nwfilterOpen(virConnectPtr conn,
-            virConnectAuthPtr auth ATTRIBUTE_UNUSED,
-            int flags ATTRIBUTE_UNUSED) {
+             virConnectAuthPtr auth ATTRIBUTE_UNUSED,
+             unsigned int flags)
+{
+    virCheckFlags(VIR_CONNECT_RO, VIR_DRV_OPEN_ERROR);
+
     if (!driverState)
         return VIR_DRV_OPEN_DECLINED;
 
@@ -325,8 +330,8 @@ nwfilterListNWFilters(virConnectPtr conn,
 
 static virNWFilterPtr
 nwfilterDefine(virConnectPtr conn,
-               const char *xml,
-               unsigned int flags ATTRIBUTE_UNUSED) {
+               const char *xml)
+{
     virNWFilterDriverStatePtr driver = conn->nwfilterPrivateData;
     virNWFilterDefPtr def;
     virNWFilterObjPtr nwfilter = NULL;
@@ -370,6 +375,8 @@ nwfilterUndefine(virNWFilterPtr obj) {
     nwfilterDriverLock(driver);
     virNWFilterCallbackDriversLock();
 
+    virNWFilterLockFilterUpdates();
+
     nwfilter = virNWFilterObjFindByUUID(&driver->nwfilters, obj->uuid);
     if (!nwfilter) {
         virNWFilterReportError(VIR_ERR_NO_NWFILTER,
@@ -377,7 +384,7 @@ nwfilterUndefine(virNWFilterPtr obj) {
         goto cleanup;
     }
 
-    if (virNWFilterTestUnassignDef(obj->conn, nwfilter)) {
+    if (virNWFilterTestUnassignDef(obj->conn, nwfilter) < 0) {
         virNWFilterReportError(VIR_ERR_OPERATION_INVALID,
                                "%s",
                                _("nwfilter is in use"));
@@ -397,6 +404,8 @@ cleanup:
     if (nwfilter)
         virNWFilterObjUnlock(nwfilter);
 
+    virNWFilterUnlockFilterUpdates();
+
     virNWFilterCallbackDriversUnlock();
     nwfilterDriverUnlock(driver);
     return ret;
@@ -404,8 +413,9 @@ cleanup:
 
 
 static char *
-nwfilterDumpXML(virNWFilterPtr obj,
-                unsigned int flags) {
+nwfilterGetXMLDesc(virNWFilterPtr obj,
+                   unsigned int flags)
+{
     virNWFilterDriverStatePtr driver = obj->conn->nwfilterPrivateData;
     virNWFilterObjPtr nwfilter;
     char *ret = NULL;
@@ -433,8 +443,10 @@ cleanup:
 
 static int
 nwfilterInstantiateFilter(virConnectPtr conn,
-                          virDomainNetDefPtr net) {
-    return virNWFilterInstantiateFilter(conn, net);
+                          const unsigned char *vmuuid,
+                          virDomainNetDefPtr net)
+{
+    return virNWFilterInstantiateFilter(conn, vmuuid, net);
 }
 
 
@@ -447,15 +459,15 @@ nwfilterTeardownFilter(virDomainNetDefPtr net) {
 
 static virNWFilterDriver nwfilterDriver = {
     .name = "nwfilter",
-    .open = nwfilterOpen,
-    .close = nwfilterClose,
-    .numOfNWFilters = nwfilterNumNWFilters,
-    .listNWFilters = nwfilterListNWFilters,
-    .nwfilterLookupByName = nwfilterLookupByName,
-    .nwfilterLookupByUUID = nwfilterLookupByUUID,
-    .defineXML = nwfilterDefine,
-    .undefine = nwfilterUndefine,
-    .getXMLDesc = nwfilterDumpXML,
+    .open = nwfilterOpen, /* 0.8.0 */
+    .close = nwfilterClose, /* 0.8.0 */
+    .numOfNWFilters = nwfilterNumNWFilters, /* 0.8.0 */
+    .listNWFilters = nwfilterListNWFilters, /* 0.8.0 */
+    .nwfilterLookupByName = nwfilterLookupByName, /* 0.8.0 */
+    .nwfilterLookupByUUID = nwfilterLookupByUUID, /* 0.8.0 */
+    .defineXML = nwfilterDefine, /* 0.8.0 */
+    .undefine = nwfilterUndefine, /* 0.8.0 */
+    .getXMLDesc = nwfilterGetXMLDesc, /* 0.8.0 */
 };
 
 

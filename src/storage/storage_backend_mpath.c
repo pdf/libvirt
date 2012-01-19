@@ -1,7 +1,7 @@
 /*
  * storage_backend_mpath.c: storage backend for multipath handling
  *
- * Copyright (C) 2009-2010 Red Hat, Inc.
+ * Copyright (C) 2009-2011 Red Hat, Inc.
  * Copyright (C) 2009-2008 Dave Allan
  *
  * This library is free software; you can redistribute it and/or
@@ -25,7 +25,6 @@
 
 #include <unistd.h>
 #include <stdio.h>
-#include <dirent.h>
 #include <fcntl.h>
 
 #include <libdevmapper.h>
@@ -35,7 +34,7 @@
 #include "storage_backend.h"
 #include "memory.h"
 #include "logging.h"
-#include "files.h"
+#include "virfile.h"
 
 #define VIR_FROM_THIS VIR_FROM_STORAGE
 
@@ -125,7 +124,7 @@ cleanup:
 
 
 static int
-virStorageBackendIsMultipath(const char *devname)
+virStorageBackendIsMultipath(const char *dev_name)
 {
     int ret = 0;
     struct dm_task *dmt = NULL;
@@ -140,7 +139,7 @@ virStorageBackendIsMultipath(const char *devname)
         goto out;
     }
 
-    if (dm_task_set_name(dmt, devname) == 0) {
+    if (dm_task_set_name(dmt, dev_name) == 0) {
         ret = -1;
         goto out;
     }
@@ -172,7 +171,7 @@ out:
 
 
 static int
-virStorageBackendGetMinorNumber(const char *devname, uint32_t *minor)
+virStorageBackendGetMinorNumber(const char *dev_name, uint32_t *minor)
 {
     int ret = -1;
     struct dm_task *dmt;
@@ -182,7 +181,7 @@ virStorageBackendGetMinorNumber(const char *devname, uint32_t *minor)
         goto out;
     }
 
-    if (!dm_task_set_name(dmt, devname)) {
+    if (!dm_task_set_name(dmt, dev_name)) {
         goto out;
     }
 

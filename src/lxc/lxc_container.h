@@ -46,12 +46,15 @@ enum {
 # define LXC_DEV_MAJ_PTY     136
 
 int lxcContainerSendContinue(int control);
+int lxcContainerWaitForContinue(int control);
 
 int lxcContainerStart(virDomainDefPtr def,
                       unsigned int nveths,
                       char **veths,
                       int control,
-                      char *ttyPath);
+                      int handshakefd,
+                      char **ttyPaths,
+                      size_t nttyPaths);
 
 int lxcContainerAvailable(int features);
 

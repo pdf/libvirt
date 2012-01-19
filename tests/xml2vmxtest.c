@@ -11,12 +11,13 @@
 # include "testutils.h"
 # include "vmx/vmx.h"
 
-static char *progname = NULL;
-static char *abs_srcdir = NULL;
-static virCapsPtr caps = NULL;
+static virCapsPtr caps;
 static virVMXContext ctx;
 
-# define MAX_FILE 4096
+static int testDefaultConsoleType(const char *ostype ATTRIBUTE_UNUSED)
+{
+    return VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_SERIAL;
+}
 
 static void
 testCapsInit(void)
@@ -28,6 +29,8 @@ testCapsInit(void)
     if (caps == NULL) {
         return;
     }
+
+    caps->defaultConsoleTargetType = testDefaultConsoleType;
 
     virCapabilitiesSetMacPrefix(caps, (unsigned char[]){ 0x00, 0x0c, 0x29 });
     virCapabilitiesAddHostMigrateTransport(caps, "esx");
@@ -71,22 +74,21 @@ static int
 testCompareFiles(const char *xml, const char *vmx, int virtualHW_version)
 {
     int result = -1;
-    char xmlData[MAX_FILE];
-    char vmxData[MAX_FILE];
+    char *xmlData = NULL;
+    char *vmxData = NULL;
     char *formatted = NULL;
-    char *xmlPtr = &(xmlData[0]);
-    char *vmxPtr = &(vmxData[0]);
     virDomainDefPtr def = NULL;
 
-    if (virtTestLoadFile(xml, &xmlPtr, MAX_FILE) < 0) {
+    if (virtTestLoadFile(xml, &xmlData) < 0) {
         goto failure;
     }
 
-    if (virtTestLoadFile(vmx, &vmxPtr, MAX_FILE) < 0) {
+    if (virtTestLoadFile(vmx, &vmxData) < 0) {
         goto failure;
     }
 
-    def = virDomainDefParseString(caps, xmlData, VIR_DOMAIN_XML_INACTIVE);
+    def = virDomainDefParseString(caps, xmlData, 1 << VIR_DOMAIN_VIRT_VMWARE,
+                                  VIR_DOMAIN_XML_INACTIVE);
 
     if (def == NULL) {
         goto failure;
@@ -106,6 +108,8 @@ testCompareFiles(const char *xml, const char *vmx, int virtualHW_version)
     result = 0;
 
   failure:
+    VIR_FREE(xmlData);
+    VIR_FREE(vmxData);
     VIR_FREE(formatted);
     virDomainDefFree(def);
 
@@ -121,23 +125,32 @@ struct testInfo {
 static int
 testCompareHelper(const void *data)
 {
+    int result = -1;
     const struct testInfo *info = data;
-    char xml[PATH_MAX];
-    char vmx[PATH_MAX];
+    char *xml = NULL;
+    char *vmx = NULL;
 
-    snprintf(xml, PATH_MAX, "%s/xml2vmxdata/xml2vmx-%s.xml", abs_srcdir,
-             info->input);
-    snprintf(vmx, PATH_MAX, "%s/xml2vmxdata/xml2vmx-%s.vmx", abs_srcdir,
-             info->output);
+    if (virAsprintf(&xml, "%s/xml2vmxdata/xml2vmx-%s.xml", abs_srcdir,
+                    info->input) < 0 ||
+        virAsprintf(&vmx, "%s/xml2vmxdata/xml2vmx-%s.vmx", abs_srcdir,
+                    info->output) < 0) {
+        goto cleanup;
+    }
 
-    return testCompareFiles(xml, vmx, info->virtualHW_version);
+    result = testCompareFiles(xml, vmx, info->virtualHW_version);
+
+  cleanup:
+    VIR_FREE(xml);
+    VIR_FREE(vmx);
+
+    return result;
 }
 
 static int
 testAutodetectSCSIControllerModel(virDomainDiskDefPtr def ATTRIBUTE_UNUSED,
                                   int *model, void *opaque ATTRIBUTE_UNUSED)
 {
-    *model = VIR_DOMAIN_CONTROLLER_MODEL_LSILOGIC;
+    *model = VIR_DOMAIN_CONTROLLER_MODEL_SCSI_LSILOGIC;
 
     return 0;
 }
@@ -198,28 +211,9 @@ testFormatVMXFileName(const char *src, void *opaque ATTRIBUTE_UNUSED)
 }
 
 static int
-mymain(int argc, char **argv)
+mymain(void)
 {
     int result = 0;
-    char cwd[PATH_MAX];
-
-    progname = argv[0];
-
-    if (argc > 1) {
-        fprintf(stderr, "Usage: %s\n", progname);
-        return EXIT_FAILURE;
-    }
-
-    abs_srcdir = getenv("abs_srcdir");
-
-    if (abs_srcdir == NULL) {
-        abs_srcdir = getcwd(cwd, sizeof(cwd));
-    }
-
-    if (argc > 1) {
-        fprintf(stderr, "Usage: %s\n", progname);
-        return EXIT_FAILURE;
-    }
 
 # define DO_TEST(_in, _out, _version)                                         \
         do {                                                                  \
@@ -286,6 +280,7 @@ mymain(int argc, char **argv)
     DO_TEST("esx-in-the-wild-3", "esx-in-the-wild-3", 4);
     DO_TEST("esx-in-the-wild-4", "esx-in-the-wild-4", 4);
     DO_TEST("esx-in-the-wild-5", "esx-in-the-wild-5", 4);
+    DO_TEST("esx-in-the-wild-6", "esx-in-the-wild-6", 4);
 
     DO_TEST("gsx-in-the-wild-1", "gsx-in-the-wild-1", 4);
     DO_TEST("gsx-in-the-wild-2", "gsx-in-the-wild-2", 4);
@@ -306,10 +301,11 @@ mymain(int argc, char **argv)
 VIRT_TEST_MAIN(mymain)
 
 #else
+# include "testutils.h"
 
-int main (void)
+int main(void)
 {
-    return 77; /* means 'test skipped' for automake */
+    return EXIT_AM_SKIP;
 }
 
 #endif /* WITH_VMX */

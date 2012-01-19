@@ -506,7 +506,7 @@
       Usage of the <code>fdopen()</code>, <code>close()</code>, <code>fclose()</code>
       APIs is deprecated in libvirt code base to help avoiding double-closing of files
       or file descriptors, which is particulary dangerous in a multi-threaded
-      applications. Instead of these APIs, use the macros from files.h
+      applications. Instead of these APIs, use the macros from virfile.h
     </p>
 
    <ul>
@@ -587,6 +587,12 @@
   STRPREFIX(a,b)
 </pre>
       </li>
+      <li><p>To avoid having to check if a or b are NULL:</p>
+<pre>
+  STREQ_NULLABLE(a, b)
+  STRNEQ_NULLABLE(a, b)
+</pre>
+      </li>
     </ul>
 
 
@@ -654,7 +660,7 @@
      ...
 
      virBufferAddLit(&amp;buf, "&lt;domain&gt;\n");
-     virBufferVSprintf(&amp;buf, "  &lt;memory&gt;%d&lt;/memory&gt;\n", memory);
+     virBufferAsprintf(&amp;buf, "  &lt;memory&gt;%d&lt;/memory&gt;\n", memory);
      ...
      virBufferAddLit(&amp;buf, "&lt;/domain&gt;\n");
 

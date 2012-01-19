@@ -1,7 +1,7 @@
 /*
  * qemu_conf.h: QEMU configuration management
  *
- * Copyright (C) 2006-2007, 2009-2010 Red Hat, Inc.
+ * Copyright (C) 2006-2007, 2009-2012 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -28,7 +28,6 @@
 
 # include "ebtables.h"
 # include "internal.h"
-# include "bridge.h"
 # include "capabilities.h"
 # include "network_conf.h"
 # include "domain_conf.h"
@@ -37,12 +36,13 @@
 # include "security/security_manager.h"
 # include "cgroup.h"
 # include "pci.h"
+# include "hostusb.h"
 # include "cpu_conf.h"
 # include "driver.h"
 # include "bitmap.h"
-# include "macvtap.h"
 # include "command.h"
 # include "threadpool.h"
+# include "locking/lock_manager.h"
 
 # define QEMUD_CPUMASK_LEN CPU_SETSIZE
 
@@ -68,7 +68,6 @@ struct qemud_driver {
 
     virDomainObjList domains;
 
-    brControl *brctl;
     /* These four directories are ones libvirtd uses (so must be root:root
      * to avoid security risk from QEMU processes */
     char *configDir;
@@ -81,6 +80,7 @@ struct qemud_driver {
     char *cacheDir;
     char *saveDir;
     char *snapshotDir;
+    char *qemuImgBinary;
     unsigned int vncAutoUnixSocket : 1;
     unsigned int vncTLS : 1;
     unsigned int vncTLSx509verify : 1;
@@ -106,14 +106,13 @@ struct qemud_driver {
     unsigned int setProcessName : 1;
 
     int maxProcesses;
+    int maxFiles;
+
+    int max_queued;
 
     virCapsPtr caps;
 
-    /* An array of callbacks */
-    virDomainEventCallbackListPtr domainEventCallbacks;
-    virDomainEventQueuePtr domainEventQueue;
-    int domainEventTimer;
-    int domainEventDispatching;
+    virDomainEventStatePtr domainEventState;
 
     char *securityDriverName;
     virSecurityManagerPtr securityManager;
@@ -122,12 +121,29 @@ struct qemud_driver {
     char *dumpImageFormat;
 
     char *autoDumpPath;
+    bool autoDumpBypassCache;
+
+    bool autoStartBypassCache;
 
     pciDeviceList *activePciHostdevs;
+    usbDeviceList *activeUsbHostdevs;
+
+    /* The devices which is are not in use by the host or any guest. */
+    pciDeviceList *inactivePciHostdevs;
 
     virBitmapPtr reservedVNCPorts;
 
     virSysinfoDefPtr hostsysinfo;
+
+    virLockManagerPluginPtr lockManager;
+
+    /* Mapping of 'char *uuidstr' -> virConnectPtr
+     * of guests which will be automatically killed
+     * when the virConnectPtr is closed*/
+    virHashTablePtr autodestroy;
+
+    int keepAliveInterval;
+    unsigned int keepAliveCount;
 };
 
 typedef struct _qemuDomainCmdlineDef qemuDomainCmdlineDef;
@@ -146,7 +162,7 @@ struct _qemuDomainCmdlineDef {
 # define QEMUD_MIGRATION_NUM_PORTS 64
 
 # define qemuReportError(code, ...)                                      \
-    virReportErrorHelper(NULL, VIR_FROM_QEMU, code, __FILE__,           \
+    virReportErrorHelper(VIR_FROM_QEMU, code, __FILE__,                  \
                          __FUNCTION__, __LINE__, __VA_ARGS__)
 
 
@@ -154,5 +170,11 @@ void qemuDriverLock(struct qemud_driver *driver);
 void qemuDriverUnlock(struct qemud_driver *driver);
 int qemudLoadDriverConfig(struct qemud_driver *driver,
                           const char *filename);
+
+struct qemuDomainDiskInfo {
+    bool removable;
+    bool locked;
+    bool tray_open;
+};
 
 #endif /* __QEMUD_CONF_H */

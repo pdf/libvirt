@@ -37,6 +37,16 @@ static virEventAddTimeoutFunc addTimeoutImpl = NULL;
 static virEventUpdateTimeoutFunc updateTimeoutImpl = NULL;
 static virEventRemoveTimeoutFunc removeTimeoutImpl = NULL;
 
+/**
+ * virEventAddHandle: register a callback for monitoring file handle events
+ *
+ * @fd: file handle to monitor for events
+ * @events: bitset of events to watch from virEventHandleType constants
+ * @cb: callback to invoke when an event occurs
+ * @opaque: user data to pass to callback
+ *
+ * returns -1 if the file handle cannot be registered, 0 upon success
+ */
 int virEventAddHandle(int fd,
                       int events,
                       virEventHandleCallback cb,
@@ -48,10 +58,25 @@ int virEventAddHandle(int fd,
     return addHandleImpl(fd, events, cb, opaque, ff);
 }
 
+/**
+ * virEventUpdateHandle: change event set for a monitored file handle
+ *
+ * @watch: watch whose file handle to update
+ * @events: bitset of events to watch from virEventHandleType constants
+ *
+ * Will not fail if fd exists
+ */
 void virEventUpdateHandle(int watch, int events) {
     updateHandleImpl(watch, events);
 }
 
+/**
+ * virEventRemoveHandle: unregister a callback from a file handle
+ *
+ * @watch: watch whose file handle to remove
+ *
+ * returns -1 if the file handle was not registered, 0 upon success
+ */
 int virEventRemoveHandle(int watch) {
     if (!removeHandleImpl)
         return -1;
@@ -59,6 +84,19 @@ int virEventRemoveHandle(int watch) {
     return removeHandleImpl(watch);
 }
 
+/**
+ * virEventAddTimeout: register a callback for a timer event
+ *
+ * @timeout: time between events in milliseconds
+ * @cb: callback to invoke when an event occurs
+ * @opaque: user data to pass to callback
+ *
+ * Setting timeout to -1 will disable the timer. Setting the timeout
+ * to zero will cause it to fire on every event loop iteration.
+ *
+ * returns -1 if the timer cannot be registered, a positive
+ * integer timer id upon success
+ */
 int virEventAddTimeout(int timeout,
                        virEventTimeoutCallback cb,
                        void *opaque,
@@ -69,10 +107,28 @@ int virEventAddTimeout(int timeout,
     return addTimeoutImpl(timeout, cb, opaque, ff);
 }
 
+/**
+ * virEventUpdateTimeoutImpl: change frequency for a timer
+ *
+ * @timer: timer id to change
+ * @frequency: time between events in milliseconds
+ *
+ * Setting frequency to -1 will disable the timer. Setting the frequency
+ * to zero will cause it to fire on every event loop iteration.
+ *
+ * Will not fail if timer exists
+ */
 void virEventUpdateTimeout(int timer, int timeout) {
     updateTimeoutImpl(timer, timeout);
 }
 
+/**
+ * virEventRemoveTimeout: unregister a callback for a timer
+ *
+ * @timer: the timer id to remove
+ *
+ * returns -1 if the timer was not registered, 0 upon success
+ */
 int virEventRemoveTimeout(int timer) {
     if (!removeTimeoutImpl)
         return -1;
@@ -137,15 +193,15 @@ void virEventRegisterImpl(virEventAddHandleFunc addHandle,
  * not have a need to integrate with an external event
  * loop impl.
  *
- * Once registered, the application can invoke
- * virEventRunDefaultImpl in a loop to process
- * events
+ * Once registered, the application has to invoke virEventRunDefaultImpl in
+ * a loop to process events.  Failure to do so may result in connections being
+ * closed unexpectedly as a result of keepalive timeout.
  *
  * Returns 0 on success, -1 on failure.
  */
 int virEventRegisterDefaultImpl(void)
 {
-    VIR_DEBUG0("");
+    VIR_DEBUG("registering default event implementation");
 
     virResetLastError();
 
@@ -185,7 +241,7 @@ int virEventRegisterDefaultImpl(void)
  */
 int virEventRunDefaultImpl(void)
 {
-    VIR_DEBUG0("");
+    VIR_DEBUG("running default event implementation");
     virResetLastError();
 
     if (virEventPollRunOnce() < 0) {

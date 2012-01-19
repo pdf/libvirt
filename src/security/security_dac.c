@@ -110,7 +110,7 @@ virSecurityDACSetOwnership(const char *path, int uid, int gid)
             }
         }
 
-        if (chown_errno == EOPNOTSUPP) {
+        if (chown_errno == EOPNOTSUPP || chown_errno == EINVAL) {
             VIR_INFO("Setting user and group to '%d:%d' on '%s' not supported by filesystem",
                      uid, gid, path);
         } else if (chown_errno == EPERM) {
@@ -171,13 +171,16 @@ virSecurityDACSetSecurityFileLabel(virDomainDiskDefPtr disk ATTRIBUTE_UNUSED,
 
 static int
 virSecurityDACSetSecurityImageLabel(virSecurityManagerPtr mgr,
-                                    virDomainObjPtr vm ATTRIBUTE_UNUSED,
+                                    virDomainDefPtr def ATTRIBUTE_UNUSED,
                                     virDomainDiskDefPtr disk)
 
 {
     virSecurityDACDataPtr priv = virSecurityManagerGetPrivateData(mgr);
 
     if (!priv->dynamicOwnership)
+        return 0;
+
+    if (disk->type == VIR_DOMAIN_DISK_TYPE_NETWORK)
         return 0;
 
     return virDomainDiskDefForeachPath(disk,
@@ -190,13 +193,16 @@ virSecurityDACSetSecurityImageLabel(virSecurityManagerPtr mgr,
 
 static int
 virSecurityDACRestoreSecurityImageLabelInt(virSecurityManagerPtr mgr,
-                                           virDomainObjPtr vm ATTRIBUTE_UNUSED,
+                                           virDomainDefPtr def ATTRIBUTE_UNUSED,
                                            virDomainDiskDefPtr disk,
                                            int migrated)
 {
     virSecurityDACDataPtr priv = virSecurityManagerGetPrivateData(mgr);
 
     if (!priv->dynamicOwnership)
+        return 0;
+
+    if (disk->type == VIR_DOMAIN_DISK_TYPE_NETWORK)
         return 0;
 
     /* Don't restore labels on readoly/shared disks, because
@@ -235,10 +241,10 @@ virSecurityDACRestoreSecurityImageLabelInt(virSecurityManagerPtr mgr,
 
 static int
 virSecurityDACRestoreSecurityImageLabel(virSecurityManagerPtr mgr,
-                                        virDomainObjPtr vm,
+                                        virDomainDefPtr def,
                                         virDomainDiskDefPtr disk)
 {
-    return virSecurityDACRestoreSecurityImageLabelInt(mgr, vm, disk, 0);
+    return virSecurityDACRestoreSecurityImageLabelInt(mgr, def, disk, 0);
 }
 
 
@@ -268,7 +274,7 @@ virSecurityDACSetSecurityUSBLabel(usbDevice *dev ATTRIBUTE_UNUSED,
 
 static int
 virSecurityDACSetSecurityHostdevLabel(virSecurityManagerPtr mgr,
-                                      virDomainObjPtr vm ATTRIBUTE_UNUSED,
+                                      virDomainDefPtr def ATTRIBUTE_UNUSED,
                                       virDomainHostdevDefPtr dev)
 {
     virSecurityDACDataPtr priv = virSecurityManagerGetPrivateData(mgr);
@@ -338,7 +344,7 @@ virSecurityDACRestoreSecurityUSBLabel(usbDevice *dev ATTRIBUTE_UNUSED,
 
 static int
 virSecurityDACRestoreSecurityHostdevLabel(virSecurityManagerPtr mgr,
-                                           virDomainObjPtr vm ATTRIBUTE_UNUSED,
+                                           virDomainDefPtr def ATTRIBUTE_UNUSED,
                                            virDomainHostdevDefPtr dev)
 
 {
@@ -411,9 +417,15 @@ virSecurityDACSetChardevLabel(virSecurityManagerPtr mgr,
             virReportOOMError();
             goto done;
         }
-        if ((virSecurityDACSetOwnership(in, priv->user, priv->group) < 0) ||
-            (virSecurityDACSetOwnership(out, priv->user, priv->group) < 0))
+        if (virFileExists(in) && virFileExists(out)) {
+            if ((virSecurityDACSetOwnership(in, priv->user, priv->group) < 0) ||
+                (virSecurityDACSetOwnership(out, priv->user, priv->group) < 0)) {
+                goto done;
+            }
+        } else if (virSecurityDACSetOwnership(dev->data.file.path,
+                                              priv->user, priv->group) < 0) {
             goto done;
+        }
         ret = 0;
         break;
 
@@ -447,9 +459,14 @@ virSecurityDACRestoreChardevLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
             virReportOOMError();
             goto done;
         }
-        if ((virSecurityDACRestoreSecurityFileLabel(out) < 0) ||
-            (virSecurityDACRestoreSecurityFileLabel(in) < 0))
+        if (virFileExists(in) && virFileExists(out)) {
+            if ((virSecurityDACRestoreSecurityFileLabel(out) < 0) ||
+                (virSecurityDACRestoreSecurityFileLabel(in) < 0)) {
             goto done;
+            }
+        } else if (virSecurityDACRestoreSecurityFileLabel(dev->data.file.path) < 0) {
+            goto done;
+        }
         ret = 0;
         break;
 
@@ -478,7 +495,7 @@ virSecurityDACRestoreChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
 
 static int
 virSecurityDACRestoreSecurityAllLabel(virSecurityManagerPtr mgr,
-                                      virDomainObjPtr vm,
+                                      virDomainDefPtr def,
                                       int migrated)
 {
     virSecurityDACDataPtr priv = virSecurityManagerGetPrivateData(mgr);
@@ -490,34 +507,34 @@ virSecurityDACRestoreSecurityAllLabel(virSecurityManagerPtr mgr,
 
 
     VIR_DEBUG("Restoring security label on %s migrated=%d",
-              vm->def->name, migrated);
+              def->name, migrated);
 
-    for (i = 0 ; i < vm->def->nhostdevs ; i++) {
+    for (i = 0 ; i < def->nhostdevs ; i++) {
         if (virSecurityDACRestoreSecurityHostdevLabel(mgr,
-                                                      vm,
-                                                      vm->def->hostdevs[i]) < 0)
+                                                      def,
+                                                      def->hostdevs[i]) < 0)
             rc = -1;
     }
-    for (i = 0 ; i < vm->def->ndisks ; i++) {
+    for (i = 0 ; i < def->ndisks ; i++) {
         if (virSecurityDACRestoreSecurityImageLabelInt(mgr,
-                                                       vm,
-                                                       vm->def->disks[i],
+                                                       def,
+                                                       def->disks[i],
                                                        migrated) < 0)
             rc = -1;
     }
 
-    if (virDomainChrDefForeach(vm->def,
+    if (virDomainChrDefForeach(def,
                                false,
                                virSecurityDACRestoreChardevCallback,
                                mgr) < 0)
         rc = -1;
 
-    if (vm->def->os.kernel &&
-        virSecurityDACRestoreSecurityFileLabel(vm->def->os.kernel) < 0)
+    if (def->os.kernel &&
+        virSecurityDACRestoreSecurityFileLabel(def->os.kernel) < 0)
         rc = -1;
 
-    if (vm->def->os.initrd &&
-        virSecurityDACRestoreSecurityFileLabel(vm->def->os.initrd) < 0)
+    if (def->os.initrd &&
+        virSecurityDACRestoreSecurityFileLabel(def->os.initrd) < 0)
         rc = -1;
 
     return rc;
@@ -537,7 +554,7 @@ virSecurityDACSetChardevCallback(virDomainDefPtr def ATTRIBUTE_UNUSED,
 
 static int
 virSecurityDACSetSecurityAllLabel(virSecurityManagerPtr mgr,
-                                  virDomainObjPtr vm,
+                                  virDomainDefPtr def,
                                   const char *stdin_path ATTRIBUTE_UNUSED)
 {
     virSecurityDACDataPtr priv = virSecurityManagerGetPrivateData(mgr);
@@ -546,36 +563,36 @@ virSecurityDACSetSecurityAllLabel(virSecurityManagerPtr mgr,
     if (!priv->dynamicOwnership)
         return 0;
 
-    for (i = 0 ; i < vm->def->ndisks ; i++) {
+    for (i = 0 ; i < def->ndisks ; i++) {
         /* XXX fixme - we need to recursively label the entire tree :-( */
-        if (vm->def->disks[i]->type == VIR_DOMAIN_DISK_TYPE_DIR)
+        if (def->disks[i]->type == VIR_DOMAIN_DISK_TYPE_DIR)
             continue;
         if (virSecurityDACSetSecurityImageLabel(mgr,
-                                                vm,
-                                                vm->def->disks[i]) < 0)
+                                                def,
+                                                def->disks[i]) < 0)
             return -1;
     }
-    for (i = 0 ; i < vm->def->nhostdevs ; i++) {
+    for (i = 0 ; i < def->nhostdevs ; i++) {
         if (virSecurityDACSetSecurityHostdevLabel(mgr,
-                                                  vm,
-                                                  vm->def->hostdevs[i]) < 0)
+                                                  def,
+                                                  def->hostdevs[i]) < 0)
             return -1;
     }
 
-    if (virDomainChrDefForeach(vm->def,
+    if (virDomainChrDefForeach(def,
                                true,
                                virSecurityDACSetChardevCallback,
                                mgr) < 0)
         return -1;
 
-    if (vm->def->os.kernel &&
-        virSecurityDACSetOwnership(vm->def->os.kernel,
+    if (def->os.kernel &&
+        virSecurityDACSetOwnership(def->os.kernel,
                                     priv->user,
                                     priv->group) < 0)
         return -1;
 
-    if (vm->def->os.initrd &&
-        virSecurityDACSetOwnership(vm->def->os.initrd,
+    if (def->os.initrd &&
+        virSecurityDACSetOwnership(def->os.initrd,
                                     priv->user,
                                     priv->group) < 0)
         return -1;
@@ -586,7 +603,7 @@ virSecurityDACSetSecurityAllLabel(virSecurityManagerPtr mgr,
 
 static int
 virSecurityDACSetSavedStateLabel(virSecurityManagerPtr mgr,
-                                 virDomainObjPtr vm ATTRIBUTE_UNUSED,
+                                 virDomainDefPtr def ATTRIBUTE_UNUSED,
                                  const char *savefile)
 {
     virSecurityDACDataPtr priv = virSecurityManagerGetPrivateData(mgr);
@@ -597,7 +614,7 @@ virSecurityDACSetSavedStateLabel(virSecurityManagerPtr mgr,
 
 static int
 virSecurityDACRestoreSavedStateLabel(virSecurityManagerPtr mgr,
-                                     virDomainObjPtr vm ATTRIBUTE_UNUSED,
+                                     virDomainDefPtr def ATTRIBUTE_UNUSED,
                                      const char *savefile)
 {
     virSecurityDACDataPtr priv = virSecurityManagerGetPrivateData(mgr);
@@ -611,11 +628,11 @@ virSecurityDACRestoreSavedStateLabel(virSecurityManagerPtr mgr,
 
 static int
 virSecurityDACSetProcessLabel(virSecurityManagerPtr mgr,
-                              virDomainObjPtr vm ATTRIBUTE_UNUSED)
+                              virDomainDefPtr def ATTRIBUTE_UNUSED)
 {
     virSecurityDACDataPtr priv = virSecurityManagerGetPrivateData(mgr);
 
-    VIR_DEBUG("Dropping privileges of VM to %u:%u",
+    VIR_DEBUG("Dropping privileges of DEF to %u:%u",
               (unsigned int) priv->user, (unsigned int) priv->group);
 
     if (virSetUIDGID(priv->user, priv->group) < 0)
@@ -634,36 +651,46 @@ virSecurityDACVerify(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
 
 static int
 virSecurityDACGenLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
-                       virDomainObjPtr vm ATTRIBUTE_UNUSED)
+                       virDomainDefPtr def ATTRIBUTE_UNUSED)
 {
     return 0;
 }
 
 static int
 virSecurityDACReleaseLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
-                           virDomainObjPtr vm ATTRIBUTE_UNUSED)
+                           virDomainDefPtr def ATTRIBUTE_UNUSED)
 {
     return 0;
 }
 
 static int
 virSecurityDACReserveLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
-                           virDomainObjPtr vm ATTRIBUTE_UNUSED)
+                           virDomainDefPtr def ATTRIBUTE_UNUSED,
+                           pid_t pid ATTRIBUTE_UNUSED)
 {
     return 0;
 }
 
 static int
 virSecurityDACGetProcessLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
-                              virDomainObjPtr vm ATTRIBUTE_UNUSED,
+                              virDomainDefPtr def ATTRIBUTE_UNUSED,
+                              pid_t pid ATTRIBUTE_UNUSED,
                               virSecurityLabelPtr seclabel ATTRIBUTE_UNUSED)
 {
     return 0;
 }
 
 static int
+virSecurityDACSetDaemonSocketLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
+                                   virDomainDefPtr vm ATTRIBUTE_UNUSED)
+{
+    return 0;
+}
+
+
+static int
 virSecurityDACSetSocketLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
-                               virDomainObjPtr vm ATTRIBUTE_UNUSED)
+                             virDomainDefPtr def ATTRIBUTE_UNUSED)
 {
     return 0;
 }
@@ -671,19 +698,18 @@ virSecurityDACSetSocketLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
 
 static int
 virSecurityDACClearSocketLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
-                                 virDomainObjPtr vm ATTRIBUTE_UNUSED)
+                               virDomainDefPtr def ATTRIBUTE_UNUSED)
 {
     return 0;
 }
 
 static int
-virSecurityDACSetFDLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
-                         virDomainObjPtr vm ATTRIBUTE_UNUSED,
-                         int fd ATTRIBUTE_UNUSED)
+virSecurityDACSetImageFDLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
+                              virDomainDefPtr def ATTRIBUTE_UNUSED,
+                              int fd ATTRIBUTE_UNUSED)
 {
     return 0;
 }
-
 
 virSecurityDriver virSecurityDriverDAC = {
     sizeof(virSecurityDACData),
@@ -701,6 +727,7 @@ virSecurityDriver virSecurityDriverDAC = {
     virSecurityDACSetSecurityImageLabel,
     virSecurityDACRestoreSecurityImageLabel,
 
+    virSecurityDACSetDaemonSocketLabel,
     virSecurityDACSetSocketLabel,
     virSecurityDACClearSocketLabel,
 
@@ -720,5 +747,5 @@ virSecurityDriver virSecurityDriverDAC = {
     virSecurityDACSetSavedStateLabel,
     virSecurityDACRestoreSavedStateLabel,
 
-    virSecurityDACSetFDLabel,
+    virSecurityDACSetImageFDLabel,
 };

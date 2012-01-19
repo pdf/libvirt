@@ -3,7 +3,7 @@
  * esx_network_driver.c: network driver functions for managing VMware ESX
  *                       host networks
  *
- * Copyright (C) 2010 Red Hat, Inc.
+ * Copyright (C) 2010-2011 Red Hat, Inc.
  * Copyright (C) 2010 Matthias Bolte <matthias.bolte@googlemail.com>
  *
  * This library is free software; you can redistribute it and/or
@@ -42,8 +42,10 @@
 static virDrvOpenStatus
 esxNetworkOpen(virConnectPtr conn,
                virConnectAuthPtr auth ATTRIBUTE_UNUSED,
-               int flags ATTRIBUTE_UNUSED)
+               unsigned int flags)
 {
+    virCheckFlags(VIR_CONNECT_RO, VIR_DRV_OPEN_ERROR);
+
     if (conn->driver->no != VIR_DRV_ESX) {
         return VIR_DRV_OPEN_DECLINED;
     }
@@ -66,26 +68,9 @@ esxNetworkClose(virConnectPtr conn)
 
 
 static virNetworkDriver esxNetworkDriver = {
-    "ESX",                                 /* name */
-    esxNetworkOpen,                        /* open */
-    esxNetworkClose,                       /* close */
-    NULL,                                  /* numOfNetworks */
-    NULL,                                  /* listNetworks */
-    NULL,                                  /* numOfDefinedNetworks */
-    NULL,                                  /* listDefinedNetworks */
-    NULL,                                  /* networkLookupByUUID */
-    NULL,                                  /* networkLookupByName */
-    NULL,                                  /* networkCreateXML */
-    NULL,                                  /* networkDefineXML */
-    NULL,                                  /* networkUndefine */
-    NULL,                                  /* networkCreate */
-    NULL,                                  /* networkDestroy */
-    NULL,                                  /* networkDumpXML */
-    NULL,                                  /* networkGetBridgeName */
-    NULL,                                  /* networkGetAutostart */
-    NULL,                                  /* networkSetAutostart */
-    NULL,                                  /* networkIsActive */
-    NULL,                                  /* networkIsPersistent */
+    .name = "ESX",
+    .open = esxNetworkOpen, /* 0.7.6 */
+    .close = esxNetworkClose, /* 0.7.6 */
 };
 
 

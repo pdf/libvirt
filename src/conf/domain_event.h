@@ -30,66 +30,8 @@
 typedef struct _virDomainEventCallback virDomainEventCallback;
 typedef virDomainEventCallback *virDomainEventCallbackPtr;
 
-struct _virDomainEventCallbackList {
-    unsigned int nextID;
-    unsigned int count;
-    virDomainEventCallbackPtr *callbacks;
-};
 typedef struct _virDomainEventCallbackList virDomainEventCallbackList;
 typedef virDomainEventCallbackList *virDomainEventCallbackListPtr;
-
-void virDomainEventCallbackListFree(virDomainEventCallbackListPtr list);
-
-int virDomainEventCallbackListAdd(virConnectPtr conn,
-                                  virDomainEventCallbackListPtr cbList,
-                                  virConnectDomainEventCallback callback,
-                                  void *opaque,
-                                  virFreeCallback freecb)
-    ATTRIBUTE_NONNULL(1);
-int virDomainEventCallbackListAddID(virConnectPtr conn,
-                                    virDomainEventCallbackListPtr cbList,
-                                    virDomainPtr dom,
-                                    int eventID,
-                                    virConnectDomainEventGenericCallback cb,
-                                    void *opaque,
-                                    virFreeCallback freecb)
-    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(5);
-
-
-int virDomainEventCallbackListRemove(virConnectPtr conn,
-                                     virDomainEventCallbackListPtr cbList,
-                                     virConnectDomainEventCallback callback)
-    ATTRIBUTE_NONNULL(1);
-int virDomainEventCallbackListRemoveID(virConnectPtr conn,
-                                       virDomainEventCallbackListPtr cbList,
-                                       int callbackID)
-    ATTRIBUTE_NONNULL(1);
-int virDomainEventCallbackListRemoveConn(virConnectPtr conn,
-                                         virDomainEventCallbackListPtr cbList)
-    ATTRIBUTE_NONNULL(1);
-
-
-int virDomainEventCallbackListMarkDelete(virConnectPtr conn,
-                                         virDomainEventCallbackListPtr cbList,
-                                         virConnectDomainEventCallback callback)
-    ATTRIBUTE_NONNULL(1);
-int virDomainEventCallbackListMarkDeleteID(virConnectPtr conn,
-                                           virDomainEventCallbackListPtr cbList,
-                                           int callbackID)
-    ATTRIBUTE_NONNULL(1);
-
-
-int virDomainEventCallbackListPurgeMarked(virDomainEventCallbackListPtr cbList);
-
-int virDomainEventCallbackListCount(virDomainEventCallbackListPtr cbList);
-int virDomainEventCallbackListCountID(virConnectPtr conn,
-                                      virDomainEventCallbackListPtr cbList,
-                                      int eventID)
-    ATTRIBUTE_NONNULL(1);
-int virDomainEventCallbackListEventID(virConnectPtr conn,
-                                      virDomainEventCallbackListPtr cbList,
-                                      int callbackID)
-    ATTRIBUTE_NONNULL(1);
 
 /**
  * Dispatching domain events that come in while
@@ -98,20 +40,18 @@ int virDomainEventCallbackListEventID(virConnectPtr conn,
 typedef struct _virDomainEvent virDomainEvent;
 typedef virDomainEvent *virDomainEventPtr;
 
-struct _virDomainEventQueue {
-    unsigned int count;
-    virDomainEventPtr *events;
-};
 typedef struct _virDomainEventQueue virDomainEventQueue;
 typedef virDomainEventQueue *virDomainEventQueuePtr;
 
-virDomainEventQueuePtr virDomainEventQueueNew(void);
+typedef struct _virDomainEventState virDomainEventState;
+typedef virDomainEventState *virDomainEventStatePtr;
 
 virDomainEventPtr virDomainEventNew(int id, const char *name, const unsigned char *uuid, int type, int detail);
 virDomainEventPtr virDomainEventNewFromDom(virDomainPtr dom, int type, int detail);
 virDomainEventPtr virDomainEventNewFromObj(virDomainObjPtr obj, int type, int detail);
 virDomainEventPtr virDomainEventNewFromDef(virDomainDefPtr def, int type, int detail);
 
+virDomainEventPtr virDomainEventRebootNew(int id, const char *name, const unsigned char *uuid);
 virDomainEventPtr virDomainEventRebootNewFromDom(virDomainPtr dom);
 virDomainEventPtr virDomainEventRebootNewFromObj(virDomainObjPtr obj);
 
@@ -152,36 +92,72 @@ virDomainEventPtr virDomainEventGraphicsNewFromObj(virDomainObjPtr obj,
                                                    virDomainEventGraphicsAddressPtr remote,
                                                    const char *authScheme,
                                                    virDomainEventGraphicsSubjectPtr subject);
+virDomainEventPtr virDomainEventControlErrorNewFromDom(virDomainPtr dom);
+virDomainEventPtr virDomainEventControlErrorNewFromObj(virDomainObjPtr obj);
 
+virDomainEventPtr virDomainEventBlockJobNewFromObj(virDomainObjPtr obj,
+                                                    const char *path,
+                                                    int type,
+                                                    int status);
+virDomainEventPtr virDomainEventBlockJobNewFromDom(virDomainPtr dom,
+                                                    const char *path,
+                                                    int type,
+                                                    int status);
 
-
-int virDomainEventQueuePush(virDomainEventQueuePtr evtQueue,
-                            virDomainEventPtr event);
-
-virDomainEventPtr
-virDomainEventQueuePop(virDomainEventQueuePtr evtQueue);
+virDomainEventPtr virDomainEventDiskChangeNewFromObj(virDomainObjPtr obj,
+                                                     const char *oldSrcPath,
+                                                     const char *newSrcPath,
+                                                     const char *devAlias,
+                                                     int reason);
+virDomainEventPtr virDomainEventDiskChangeNewFromDom(virDomainPtr dom,
+                                                     const char *oldSrcPath,
+                                                     const char *newSrcPath,
+                                                     const char *devAlias,
+                                                     int reason);
 
 void virDomainEventFree(virDomainEventPtr event);
-void virDomainEventQueueFree(virDomainEventQueuePtr queue);
 
-typedef void (*virDomainEventDispatchFunc)(virConnectPtr conn,
-                                           virDomainEventPtr event,
-                                           virConnectDomainEventGenericCallback cb,
-                                           void *cbopaque,
-                                           void *opaque);
-void virDomainEventDispatchDefaultFunc(virConnectPtr conn,
-                                       virDomainEventPtr event,
-                                       virConnectDomainEventGenericCallback cb,
-                                       void *cbopaque,
-                                       void *opaque);
+void virDomainEventStateFree(virDomainEventStatePtr state);
+virDomainEventStatePtr
+virDomainEventStateNew(void);
 
-void virDomainEventDispatch(virDomainEventPtr event,
-                            virDomainEventCallbackListPtr cbs,
-                            virDomainEventDispatchFunc dispatch,
-                            void *opaque);
-void virDomainEventQueueDispatch(virDomainEventQueuePtr queue,
-                                 virDomainEventCallbackListPtr cbs,
-                                 virDomainEventDispatchFunc dispatch,
-                                 void *opaque);
+void
+virDomainEventStateQueue(virDomainEventStatePtr state,
+                         virDomainEventPtr event)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
+int virDomainEventStateRegister(virConnectPtr conn,
+                                virDomainEventStatePtr state,
+                                virConnectDomainEventCallback callback,
+                                void *opaque,
+                                virFreeCallback freecb)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3);
+int virDomainEventStateRegisterID(virConnectPtr conn,
+                                  virDomainEventStatePtr state,
+                                  virDomainPtr dom,
+                                  int eventID,
+                                  virConnectDomainEventGenericCallback cb,
+                                  void *opaque,
+                                  virFreeCallback freecb,
+                                  int *callbackID)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(5);
+int
+virDomainEventStateDeregister(virConnectPtr conn,
+                              virDomainEventStatePtr state,
+                              virConnectDomainEventCallback callback)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3);
+int
+virDomainEventStateDeregisterID(virConnectPtr conn,
+                                virDomainEventStatePtr state,
+                                int callbackID)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
+int
+virDomainEventStateDeregisterConn(virConnectPtr conn,
+                                  virDomainEventStatePtr state)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
+int
+virDomainEventStateEventID(virConnectPtr conn,
+                           virDomainEventStatePtr state,
+                           int callbackID)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
 
 #endif

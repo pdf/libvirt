@@ -30,6 +30,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <sys/utsname.h>
+#include <sched.h>
 
 #if HAVE_NUMACTL
 # define NUMA_VERSION1_COMPATIBILITY 1
@@ -45,26 +46,43 @@
 #include "virterror_internal.h"
 #include "count-one-bits.h"
 #include "intprops.h"
-#include "files.h"
+#include "virfile.h"
 
 
 #define VIR_FROM_THIS VIR_FROM_NONE
 
 #define nodeReportError(code, ...)                                      \
-    virReportErrorHelper(NULL, VIR_FROM_NONE, code, __FILE__,           \
+    virReportErrorHelper(VIR_FROM_NONE, code, __FILE__,                 \
                          __FUNCTION__, __LINE__, __VA_ARGS__)
 
 #ifdef __linux__
 # define CPUINFO_PATH "/proc/cpuinfo"
 # define CPU_SYS_PATH "/sys/devices/system/cpu"
+# define PROCSTAT_PATH "/proc/stat"
+# define MEMINFO_PATH "/proc/meminfo"
+# define NODE_SYS_PATH "/sys/devices/system/node"
+
+# define LINUX_NB_CPU_STATS 4
+# define LINUX_NB_MEMORY_STATS_ALL 4
+# define LINUX_NB_MEMORY_STATS_CELL 2
 
 /* NB, this is not static as we need to call it from the testsuite */
 int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
-                             virNodeInfoPtr nodeinfo,
-                             bool need_hyperthreads);
+                             const char *sysfs_cpudir,
+                             virNodeInfoPtr nodeinfo);
 
+static int linuxNodeGetCPUStats(FILE *procstat,
+                                int cpuNum,
+                                virNodeCPUStatsPtr params,
+                                int *nparams);
+static int linuxNodeGetMemoryStats(FILE *meminfo,
+                                   int cellNum,
+                                   virNodeMemoryStatsPtr params,
+                                   int *nparams);
+
+static char sysfs_path[1024];
 /* Return the positive decimal contents of the given
- * CPU_SYS_PATH/cpu%u/FILE, or -1 on error.  If MISSING_OK and the
+ * (*sysfs_path)/cpu%u/FILE, or -1 on error.  If MISSING_OK and the
  * file could not be found, return 1 instead of an error; this is
  * because some machines cannot hot-unplug cpu0, or because
  * hot-unplugging is disabled.  */
@@ -77,7 +95,7 @@ get_cpu_value(unsigned int cpu, const char *file, bool missing_ok)
     char value_str[INT_BUFSIZE_BOUND(value)];
     char *tmp;
 
-    if (virAsprintf(&path, CPU_SYS_PATH "/cpu%u/%s", cpu, file) < 0) {
+    if (virAsprintf(&path, "%s/cpu%u/%s", sysfs_path, cpu, file) < 0) {
         virReportOOMError();
         return -1;
     }
@@ -109,7 +127,7 @@ cleanup:
     return value;
 }
 
-/* Check if CPU is online via CPU_SYS_PATH/cpu%u/online.  Return 1 if online,
+/* Check if CPU is online via sysfs_path/cpu%u/online.  Return 1 if online,
    0 if offline, and -1 on error.  */
 static int
 cpu_online(unsigned int cpu)
@@ -125,8 +143,8 @@ static unsigned long count_thread_siblings(unsigned int cpu)
     char str[1024];
     int i;
 
-    if (virAsprintf(&path, CPU_SYS_PATH "/cpu%u/topology/thread_siblings",
-                    cpu) < 0) {
+    if (virAsprintf(&path, "%s/cpu%u/topology/thread_siblings",
+                    sysfs_path, cpu) < 0) {
         virReportOOMError();
         return 0;
     }
@@ -165,31 +183,37 @@ static int parse_socket(unsigned int cpu)
 {
     int ret = get_cpu_value(cpu, "topology/physical_package_id", false);
 # if defined(__powerpc__) || \
-    defined(__powerpc64__)
-    /* ppc has -1 */
+    defined(__powerpc64__) || \
+    defined(__s390__) || \
+    defined(__s390x__)
+    /* ppc and s390(x) has -1 */
     if (ret < 0)
         ret = 0;
 # endif
     return ret;
 }
 
+static int parse_core(unsigned int cpu)
+{
+    return get_cpu_value(cpu, "topology/core_id", false);
+}
+
 int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
-                             virNodeInfoPtr nodeinfo,
-                             bool need_hyperthreads)
+                             const char *sysfs_cpudir,
+                             virNodeInfoPtr nodeinfo)
 {
     char line[1024];
     DIR *cpudir = NULL;
     struct dirent *cpudirent = NULL;
     unsigned int cpu;
-    unsigned long cur_threads;
-    int socket;
-    unsigned long long socket_mask = 0;
-    unsigned int remaining;
+    unsigned long core, socket, cur_threads;
+    cpu_set_t core_mask;
+    cpu_set_t socket_mask;
     int online;
 
     nodeinfo->cpus = 0;
     nodeinfo->mhz = 0;
-    nodeinfo->cores = 1;
+    nodeinfo->cores = 0;
 
     nodeinfo->nodes = 1;
 # if HAVE_NUMACTL
@@ -197,26 +221,20 @@ int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
         nodeinfo->nodes = numa_max_node() + 1;
 # endif
 
+    if (!virStrcpyStatic(sysfs_path, sysfs_cpudir)) {
+        virReportSystemError(errno, _("cannot copy %s"), sysfs_cpudir);
+        return -1;
+    }
     /* NB: It is impossible to fill our nodes, since cpuinfo
      * has no knowledge of NUMA nodes */
 
     /* NOTE: hyperthreads are ignored here; they are parsed out of /sys */
     while (fgets(line, sizeof(line), cpuinfo) != NULL) {
         char *buf = line;
-        if (STRPREFIX(buf, "processor")) { /* aka a single logical CPU */
-            buf += 9;
-            while (*buf && c_isspace(*buf))
-                buf++;
-            if (*buf != ':') {
-                nodeReportError(VIR_ERR_INTERNAL_ERROR,
-                                "%s", _("parsing cpuinfo processor"));
-                return -1;
-            }
-            nodeinfo->cpus++;
 # if defined(__x86_64__) || \
     defined(__amd64__)  || \
     defined(__i386__)
-        } else if (STRPREFIX(buf, "cpu MHz")) {
+        if (STRPREFIX(buf, "cpu MHz")) {
             char *p;
             unsigned int ui;
             buf += 9;
@@ -231,25 +249,10 @@ int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
                 /* Accept trailing fractional part.  */
                 && (*p == '\0' || *p == '.' || c_isspace(*p)))
                 nodeinfo->mhz = ui;
-        } else if (STRPREFIX(buf, "cpu cores")) { /* aka cores */
-            char *p;
-            unsigned int id;
-            buf += 9;
-            while (*buf && c_isspace(*buf))
-                buf++;
-            if (*buf != ':' || !buf[1]) {
-                nodeReportError(VIR_ERR_INTERNAL_ERROR,
-                                "parsing cpuinfo cpu cores %c", *buf);
-                return -1;
-            }
-            if (virStrToLong_ui(buf+1, &p, 10, &id) == 0
-                && (*p == '\0' || c_isspace(*p))
-                && id > nodeinfo->cores)
-                nodeinfo->cores = id;
         }
 # elif defined(__powerpc__) || \
       defined(__powerpc64__)
-        } else if (STRPREFIX(buf, "clock")) {
+        if (STRPREFIX(buf, "clock")) {
             char *p;
             unsigned int ui;
             buf += 5;
@@ -264,31 +267,30 @@ int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
                 /* Accept trailing fractional part.  */
                 && (*p == '\0' || *p == '.' || c_isspace(*p)))
                 nodeinfo->mhz = ui;
+            /* No other interesting infos are available in /proc/cpuinfo.
+             * However, there is a line identifying processor's version,
+             * identification and machine, but we don't want it to be caught
+             * and parsed in next iteration, because it is not in expected
+             * format and thus lead to error. */
         }
 # else
 #  warning Parser for /proc/cpuinfo needs to be adapted for your architecture
 # endif
     }
 
-    if (!nodeinfo->cpus) {
-        nodeReportError(VIR_ERR_INTERNAL_ERROR,
-                        "%s", _("no cpus found"));
-        return -1;
-    }
-
-    if (!need_hyperthreads)
-        return 0;
-
-    /* OK, we've parsed what we can out of /proc/cpuinfo.  Get the socket
-     * and thread information from /sys
+    /* OK, we've parsed clock speed out of /proc/cpuinfo. Get the core, socket
+     * thread and topology information from /sys
      */
-    remaining = nodeinfo->cpus;
-    cpudir = opendir(CPU_SYS_PATH);
+    cpudir = opendir(sysfs_cpudir);
     if (cpudir == NULL) {
-        virReportSystemError(errno, _("cannot opendir %s"), CPU_SYS_PATH);
+        virReportSystemError(errno, _("cannot opendir %s"), sysfs_cpudir);
         return -1;
     }
-    while ((errno = 0), remaining && (cpudirent = readdir(cpudir))) {
+
+    CPU_ZERO(&core_mask);
+    CPU_ZERO(&socket_mask);
+
+    while ((cpudirent = readdir(cpudir))) {
         if (sscanf(cpudirent->d_name, "cpu%u", &cpu) != 1)
             continue;
 
@@ -299,15 +301,19 @@ int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
         }
         if (!online)
             continue;
-        remaining--;
+        nodeinfo->cpus++;
 
-        socket = parse_socket(cpu);
-        if (socket < 0) {
-            closedir(cpudir);
-            return -1;
+        /* Parse core */
+        core = parse_core(cpu);
+        if (!CPU_ISSET(core, &core_mask)) {
+            CPU_SET(core, &core_mask);
+            nodeinfo->cores++;
         }
-        if (!(socket_mask & (1 << socket))) {
-            socket_mask |= (1 << socket);
+
+        /* Parse socket */
+        socket = parse_socket(cpu);
+        if (!CPU_ISSET(socket, &socket_mask)) {
+            CPU_SET(socket, &socket_mask);
             nodeinfo->sockets++;
         }
 
@@ -321,14 +327,19 @@ int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
     }
     if (errno) {
         virReportSystemError(errno,
-                             _("problem reading %s"), CPU_SYS_PATH);
+                             _("problem reading %s"), sysfs_path);
         closedir(cpudir);
         return -1;
     }
 
     closedir(cpudir);
 
-    /* there should always be at least one socket and one thread */
+    /* there should always be at least one cpu, socket and one thread */
+    if (nodeinfo->cpus == 0) {
+        nodeReportError(VIR_ERR_INTERNAL_ERROR,
+                        "%s", _("no CPUs found"));
+        return -1;
+    }
     if (nodeinfo->sockets == 0) {
         nodeReportError(VIR_ERR_INTERNAL_ERROR,
                         "%s", _("no sockets found"));
@@ -353,6 +364,211 @@ int linuxNodeInfoCPUPopulate(FILE *cpuinfo,
     return 0;
 }
 
+# define TICK_TO_NSEC (1000ull * 1000ull * 1000ull / sysconf(_SC_CLK_TCK))
+
+int linuxNodeGetCPUStats(FILE *procstat,
+                         int cpuNum,
+                         virNodeCPUStatsPtr params,
+                         int *nparams)
+{
+    int ret = -1;
+    char line[1024];
+    unsigned long long usr, ni, sys, idle, iowait;
+    unsigned long long irq, softirq, steal, guest, guest_nice;
+    char cpu_header[3 + INT_BUFSIZE_BOUND(cpuNum)];
+
+    if ((*nparams) == 0) {
+        /* Current number of cpu stats supported by linux */
+        *nparams = LINUX_NB_CPU_STATS;
+        ret = 0;
+        goto cleanup;
+    }
+
+    if ((*nparams) != LINUX_NB_CPU_STATS) {
+        nodeReportError(VIR_ERR_INVALID_ARG,
+                        "%s", _("Invalid parameter count"));
+        goto cleanup;
+    }
+
+    if (cpuNum == VIR_NODE_CPU_STATS_ALL_CPUS) {
+        strcpy(cpu_header, "cpu");
+    } else {
+        snprintf(cpu_header, sizeof(cpu_header), "cpu%d", cpuNum);
+    }
+
+    while (fgets(line, sizeof(line), procstat) != NULL) {
+        char *buf = line;
+
+        if (STRPREFIX(buf, cpu_header)) { /* aka logical CPU time */
+            int i;
+
+            if (sscanf(buf,
+                       "%*s %llu %llu %llu %llu %llu" // user ~ iowait
+                       "%llu %llu %llu %llu %llu",    // irq  ~ guest_nice
+                       &usr, &ni, &sys, &idle, &iowait,
+                       &irq, &softirq, &steal, &guest, &guest_nice) < 4) {
+                continue;
+            }
+
+            for (i = 0; i < *nparams; i++) {
+                virNodeCPUStatsPtr param = &params[i];
+
+                switch (i) {
+                case 0: /* fill kernel cpu time here */
+                    if (virStrcpyStatic(param->field, VIR_NODE_CPU_STATS_KERNEL) == NULL) {
+                        nodeReportError(VIR_ERR_INTERNAL_ERROR,
+                                        "%s", _("Field kernel cpu time too long for destination"));
+                        goto cleanup;
+                    }
+                    param->value = (sys + irq + softirq) * TICK_TO_NSEC;
+                    break;
+
+                case 1: /* fill user cpu time here */
+                    if (virStrcpyStatic(param->field, VIR_NODE_CPU_STATS_USER) == NULL) {
+                        nodeReportError(VIR_ERR_INTERNAL_ERROR,
+                                        "%s", _("Field kernel cpu time too long for destination"));
+                        goto cleanup;
+                    }
+                    param->value = (usr + ni) * TICK_TO_NSEC;
+                    break;
+
+                case 2: /* fill idle cpu time here */
+                    if (virStrcpyStatic(param->field, VIR_NODE_CPU_STATS_IDLE) == NULL) {
+                        nodeReportError(VIR_ERR_INTERNAL_ERROR,
+                                        "%s", _("Field kernel cpu time too long for destination"));
+                        goto cleanup;
+                    }
+                    param->value = idle * TICK_TO_NSEC;
+                    break;
+
+                case 3: /* fill iowait cpu time here */
+                    if (virStrcpyStatic(param->field, VIR_NODE_CPU_STATS_IOWAIT) == NULL) {
+                        nodeReportError(VIR_ERR_INTERNAL_ERROR,
+                                        "%s", _("Field kernel cpu time too long for destination"));
+                        goto cleanup;
+                    }
+                    param->value = iowait * TICK_TO_NSEC;
+                    break;
+
+                default:
+                    break;
+                    /* should not hit here */
+                }
+            }
+            ret = 0;
+            goto cleanup;
+        }
+    }
+
+    nodeReportError(VIR_ERR_INVALID_ARG, "%s", _("Invalid cpu number"));
+
+cleanup:
+    return ret;
+}
+
+int linuxNodeGetMemoryStats(FILE *meminfo,
+                            int cellNum,
+                            virNodeMemoryStatsPtr params,
+                            int *nparams)
+{
+    int ret = -1;
+    int i = 0, j = 0, k = 0;
+    int found = 0;
+    int nr_param;
+    char line[1024];
+    char meminfo_hdr[VIR_NODE_MEMORY_STATS_FIELD_LENGTH];
+    unsigned long val;
+    struct field_conv {
+        const char *meminfo_hdr;  // meminfo header
+        const char *field;        // MemoryStats field name
+    } field_conv[] = {
+        {"MemTotal:", VIR_NODE_MEMORY_STATS_TOTAL},
+        {"MemFree:",  VIR_NODE_MEMORY_STATS_FREE},
+        {"Buffers:",  VIR_NODE_MEMORY_STATS_BUFFERS},
+        {"Cached:",   VIR_NODE_MEMORY_STATS_CACHED},
+        {NULL,        NULL}
+    };
+
+    if (cellNum == VIR_NODE_MEMORY_STATS_ALL_CELLS) {
+        nr_param = LINUX_NB_MEMORY_STATS_ALL;
+    } else {
+        nr_param = LINUX_NB_MEMORY_STATS_CELL;
+    }
+
+    if ((*nparams) == 0) {
+        /* Current number of memory stats supported by linux */
+        *nparams = nr_param;
+        ret = 0;
+        goto cleanup;
+    }
+
+    if ((*nparams) != nr_param) {
+        nodeReportError(VIR_ERR_INVALID_ARG,
+                        "%s", _("Invalid stats count"));
+        goto cleanup;
+    }
+
+    while (fgets(line, sizeof(line), meminfo) != NULL) {
+        char *buf = line;
+
+        if (STRPREFIX(buf, "Node ")) {
+            /*
+             * /sys/devices/system/node/nodeX/meminfo format is below.
+             * So, skip prefix "Node XX ".
+             *
+             * Node 0 MemTotal:        8386980 kB
+             * Node 0 MemFree:         5300920 kB
+             *         :
+             */
+            char *p;
+
+            p = buf;
+            for (i = 0; i < 2; i++) {
+                p = strchr(p, ' ');
+                if (p == NULL) {
+                    nodeReportError(VIR_ERR_INTERNAL_ERROR,
+                                    "%s", _("no prefix found"));
+                    goto cleanup;
+                }
+                p++;
+            }
+            buf = p;
+        }
+
+        if (sscanf(buf, "%s %lu kB", meminfo_hdr, &val) < 2)
+            continue;
+
+        for (j = 0; field_conv[j].meminfo_hdr != NULL; j++) {
+            struct field_conv *convp = &field_conv[j];
+
+            if (STREQ(meminfo_hdr, convp->meminfo_hdr)) {
+                virNodeMemoryStatsPtr param = &params[k++];
+
+                if (virStrcpyStatic(param->field, convp->field) == NULL) {
+                    nodeReportError(VIR_ERR_INTERNAL_ERROR,
+                                    "%s", _("Field kernel memory too long for destination"));
+                    goto cleanup;
+                }
+                param->value = val;
+                found++;
+                break;
+            }
+        }
+        if (found >= nr_param)
+            break;
+    }
+
+    if (found == 0) {
+        nodeReportError(VIR_ERR_INTERNAL_ERROR,
+                        "%s", _("no available memory line found"));
+        goto cleanup;
+    }
+
+    ret = 0;
+
+cleanup:
+    return ret;
+}
 #endif
 
 int nodeGetInfo(virConnectPtr conn ATTRIBUTE_UNUSED, virNodeInfoPtr nodeinfo) {
@@ -367,17 +583,27 @@ int nodeGetInfo(virConnectPtr conn ATTRIBUTE_UNUSED, virNodeInfoPtr nodeinfo) {
 #ifdef __linux__
     {
     int ret;
+    char *sysfs_cpuinfo;
     FILE *cpuinfo = fopen(CPUINFO_PATH, "r");
     if (!cpuinfo) {
         virReportSystemError(errno,
                              _("cannot open %s"), CPUINFO_PATH);
         return -1;
     }
-    ret = linuxNodeInfoCPUPopulate(cpuinfo, nodeinfo, true);
-    VIR_FORCE_FCLOSE(cpuinfo);
-    if (ret < 0)
-        return -1;
 
+    if (virAsprintf(&sysfs_cpuinfo, CPU_SYS_PATH) < 0) {
+        virReportOOMError();
+        return -1;
+    }
+
+    ret = linuxNodeInfoCPUPopulate(cpuinfo, sysfs_cpuinfo, nodeinfo);
+    VIR_FORCE_FCLOSE(cpuinfo);
+    if (ret < 0) {
+        VIR_FREE(sysfs_cpuinfo);
+        return -1;
+    }
+
+    VIR_FREE(sysfs_cpuinfo);
     /* Convert to KB. */
     nodeinfo->memory = physmem_total () / 1024;
 
@@ -387,6 +613,101 @@ int nodeGetInfo(virConnectPtr conn ATTRIBUTE_UNUSED, virNodeInfoPtr nodeinfo) {
     /* XXX Solaris will need an impl later if they port QEMU driver */
     nodeReportError(VIR_ERR_NO_SUPPORT, "%s",
                     _("node info not implemented on this platform"));
+    return -1;
+#endif
+}
+
+int nodeGetCPUStats(virConnectPtr conn ATTRIBUTE_UNUSED,
+                    int cpuNum ATTRIBUTE_UNUSED,
+                    virNodeCPUStatsPtr params ATTRIBUTE_UNUSED,
+                    int *nparams ATTRIBUTE_UNUSED,
+                    unsigned int flags)
+{
+    virCheckFlags(0, -1);
+
+#ifdef __linux__
+    {
+        int ret;
+        FILE *procstat = fopen(PROCSTAT_PATH, "r");
+        if (!procstat) {
+            virReportSystemError(errno,
+                                 _("cannot open %s"), PROCSTAT_PATH);
+            return -1;
+        }
+        ret = linuxNodeGetCPUStats(procstat, cpuNum, params, nparams);
+        VIR_FORCE_FCLOSE(procstat);
+
+        return ret;
+    }
+#else
+    nodeReportError(VIR_ERR_NO_SUPPORT, "%s",
+                    _("node CPU stats not implemented on this platform"));
+    return -1;
+#endif
+}
+
+int nodeGetMemoryStats(virConnectPtr conn ATTRIBUTE_UNUSED,
+                       int cellNum ATTRIBUTE_UNUSED,
+                       virNodeMemoryStatsPtr params ATTRIBUTE_UNUSED,
+                       int *nparams ATTRIBUTE_UNUSED,
+                       unsigned int flags)
+{
+    virCheckFlags(0, -1);
+
+#ifdef __linux__
+    {
+        int ret;
+        char *meminfo_path = NULL;
+        FILE *meminfo;
+
+        if (cellNum == VIR_NODE_MEMORY_STATS_ALL_CELLS) {
+            meminfo_path = strdup(MEMINFO_PATH);
+            if (!meminfo_path) {
+                virReportOOMError();
+                return -1;
+            }
+        } else {
+# if HAVE_NUMACTL
+            if (numa_available() < 0) {
+# endif
+                nodeReportError(VIR_ERR_INTERNAL_ERROR,
+                                "%s", _("NUMA not supported on this host"));
+                return -1;
+# if HAVE_NUMACTL
+            }
+# endif
+
+# if HAVE_NUMACTL
+            if (cellNum > numa_max_node()) {
+                nodeReportError(VIR_ERR_INVALID_ARG, "%s",
+                                _("Invalid cell number"));
+                return -1;
+            }
+# endif
+
+            if (virAsprintf(&meminfo_path, "%s/node%d/meminfo",
+                            NODE_SYS_PATH, cellNum) < 0) {
+                virReportOOMError();
+                return -1;
+            }
+        }
+        meminfo = fopen(meminfo_path, "r");
+
+        if (!meminfo) {
+            virReportSystemError(errno,
+                                 _("cannot open %s"), meminfo_path);
+            VIR_FREE(meminfo_path);
+            return -1;
+        }
+        ret = linuxNodeGetMemoryStats(meminfo, cellNum, params, nparams);
+        VIR_FORCE_FCLOSE(meminfo);
+        VIR_FREE(meminfo_path);
+
+        return ret;
+    }
+#else
+    nodeReportError(VIR_ERR_NO_SUPPORT, "%s",
+                    _("node memory stats not implemented on this platform"));
     return -1;
 #endif
 }
@@ -479,7 +800,7 @@ nodeGetCellsFreeMemory(virConnectPtr conn ATTRIBUTE_UNUSED,
     int maxCell;
 
     if (numa_available() < 0) {
-        nodeReportError(VIR_ERR_NO_SUPPORT,
+        nodeReportError(VIR_ERR_INTERNAL_ERROR,
                         "%s", _("NUMA not supported on this host"));
         goto cleanup;
     }
@@ -517,7 +838,7 @@ nodeGetFreeMemory(virConnectPtr conn ATTRIBUTE_UNUSED)
     int n;
 
     if (numa_available() < 0) {
-        nodeReportError(VIR_ERR_NO_SUPPORT,
+        nodeReportError(VIR_ERR_INTERNAL_ERROR,
                         "%s", _("NUMA not supported on this host"));
         goto cleanup;
     }

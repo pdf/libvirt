@@ -61,6 +61,10 @@
                 <span>Configure authentication for the libvirt daemon</span>
               </li>
               <li>
+                <a href="migration.html">Migration</a>
+                <span>Migrating guests between machines</span>
+              </li>
+              <li>
                 <a href="windows.html">Windows port</a>
                 <span>Access the libvirt daemon from a native Windows client</span>
               </li>
@@ -71,6 +75,10 @@
               <li>
                 <a href="firewall.html">Firewall</a>
                 <span>Firewall and network filter configuration</span>
+              </li>
+              <li>
+                <a href="locking.html">Disk locking</a>
+                <span>Ensuring exclusive guest access to disks</span>
               </li>
               <li>
                 <a href="hooks.html">Hooks</a>
@@ -198,6 +206,10 @@
                 <a href="drvvmware.html">VMware Workstation / Player</a>
                 <span>Driver for VMware Workstation / Player</span>
               </li>
+              <li>
+                <a href="drvhyperv.html">Microsoft Hyper-V</a>
+                <span>Driver for Microsoft Hyper-V</span>
+              </li>
             </ul>
           </li>
           <li>
@@ -284,6 +296,14 @@
                 <a href="internals/command.html">Spawning commands</a>
                 <span>Spawning commands from libvirt driver code</span>
               </li>
+              <li>
+                <a href="internals/rpc.html">RPC protocol &amp; APIs</a>
+                <span>RPC protocol information and API / dispatch guide</span>
+              </li>
+              <li>
+                <a href="internals/locking.html">Lock managers</a>
+                <span>Use lock managers to protect disk content</span>
+              </li>
             </ul>
           </li>
           <li>
@@ -317,6 +337,20 @@
       <li>
         <a href="contact.html">Contact</a>
         <span>How to contact the developers via email and IRC</span>
+      </li>
+      <li>
+        <a href="testsuites.html">Test suites</a>
+        <span>Available test suites for libvirt</span>
+        <ul>
+          <li>
+            <a href="testtck.html">TCK test suite</a>
+            <span>Virtualization functional test suite in Perl</span>
+          </li>
+          <li>
+            <a href="testapi.html">Libvirt-test-API</a>
+            <span>Libvirt functional API test suite in Python</span>
+          </li>
+        </ul>
       </li>
       <li>
         <a href="relatedlinks.html">Related Links</a>

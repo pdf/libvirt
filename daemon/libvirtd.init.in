@@ -74,8 +74,9 @@ stop() {
     echo
     if [ $RETVAL -eq 0 ]; then
         rm -f @localstatedir@/lock/subsys/$SERVICE
-        rm -f $PIDFILE
         rm -rf @localstatedir@/cache/libvirt/*
+    else
+        exit $RETVAL
     fi
 }
 

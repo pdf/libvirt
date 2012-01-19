@@ -24,12 +24,13 @@
 #include <config.h>
 
 #include "qemu_cgroup.h"
+#include "qemu_domain.h"
 #include "cgroup.h"
 #include "logging.h"
 #include "memory.h"
 #include "virterror_internal.h"
 #include "util.h"
-#include "qemu_audit.h"
+#include "domain_audit.h"
 
 #define VIR_FROM_THIS VIR_FROM_QEMU
 
@@ -43,16 +44,18 @@ static const char *const defaultDeviceACL[] = {
 #define DEVICE_PTY_MAJOR 136
 #define DEVICE_SND_MAJOR 116
 
-int qemuCgroupControllerActive(struct qemud_driver *driver,
-                               int controller)
+bool qemuCgroupControllerActive(struct qemud_driver *driver,
+                                int controller)
 {
     if (driver->cgroup == NULL)
-        return 0;
+        return false;
+    if (controller < 0 || controller >= VIR_CGROUP_CONTROLLER_LAST)
+        return false;
     if (!virCgroupMounted(driver->cgroup, controller))
-        return 0;
+        return false;
     if (driver->cgroupControllers & (1 << controller))
-        return 1;
-    return 0;
+        return true;
+    return false;
 }
 
 static int
@@ -68,8 +71,8 @@ qemuSetupDiskPathAllow(virDomainDiskDefPtr disk,
     rc = virCgroupAllowDevicePath(data->cgroup, path,
                                   (disk->readonly ? VIR_CGROUP_DEVICE_READ
                                    : VIR_CGROUP_DEVICE_RW));
-    qemuAuditCgroupPath(data->vm, data->cgroup, "allow", path,
-                        disk->readonly ? "r" : "rw", rc);
+    virDomainAuditCgroupPath(data->vm, data->cgroup, "allow", path,
+                             disk->readonly ? "r" : "rw", rc);
     if (rc < 0) {
         if (rc == -EACCES) { /* Get this for root squash NFS */
             VIR_DEBUG("Ignoring EACCES for %s", path);
@@ -110,7 +113,7 @@ qemuTeardownDiskPathDeny(virDomainDiskDefPtr disk ATTRIBUTE_UNUSED,
     VIR_DEBUG("Process path %s for disk", path);
     rc = virCgroupDenyDevicePath(data->cgroup, path,
                                  VIR_CGROUP_DEVICE_RWM);
-    qemuAuditCgroupPath(data->vm, data->cgroup, "deny", path, "rwm", rc);
+    virDomainAuditCgroupPath(data->vm, data->cgroup, "deny", path, "rwm", rc);
     if (rc < 0) {
         if (rc == -EACCES) { /* Get this for root squash NFS */
             VIR_DEBUG("Ignoring EACCES for %s", path);
@@ -154,8 +157,8 @@ qemuSetupChardevCgroup(virDomainDefPtr def,
     VIR_DEBUG("Process path '%s' for disk", dev->source.data.file.path);
     rc = virCgroupAllowDevicePath(data->cgroup, dev->source.data.file.path,
                                   VIR_CGROUP_DEVICE_RW);
-    qemuAuditCgroupPath(data->vm, data->cgroup, "allow",
-                        dev->source.data.file.path, "rw", rc);
+    virDomainAuditCgroupPath(data->vm, data->cgroup, "allow",
+                             dev->source.data.file.path, "rw", rc);
     if (rc < 0) {
         virReportSystemError(-rc,
                              _("Unable to allow device %s for %s"),
@@ -177,7 +180,7 @@ int qemuSetupHostUsbDeviceCgroup(usbDevice *dev ATTRIBUTE_UNUSED,
     VIR_DEBUG("Process path '%s' for USB device", path);
     rc = virCgroupAllowDevicePath(data->cgroup, path,
                                   VIR_CGROUP_DEVICE_RW);
-    qemuAuditCgroupPath(data->vm, data->cgroup, "allow", path, "rw", rc);
+    virDomainAuditCgroupPath(data->vm, data->cgroup, "allow", path, "rw", rc);
     if (rc < 0) {
         virReportSystemError(-rc,
                              _("Unable to allow device %s"),
@@ -213,10 +216,10 @@ int qemuSetupCgroup(struct qemud_driver *driver,
     if (qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_DEVICES)) {
         qemuCgroupData data = { vm, cgroup };
         rc = virCgroupDenyAllDevices(cgroup);
-        qemuAuditCgroup(vm, cgroup, "deny", "all", rc == 0);
+        virDomainAuditCgroup(vm, cgroup, "deny", "all", rc == 0);
         if (rc != 0) {
             if (rc == -EPERM) {
-                VIR_WARN0("Group devices ACL is not accessible, disabling whitelisting");
+                VIR_WARN("Group devices ACL is not accessible, disabling whitelisting");
                 goto done;
             }
 
@@ -232,8 +235,8 @@ int qemuSetupCgroup(struct qemud_driver *driver,
 
         rc = virCgroupAllowDeviceMajor(cgroup, 'c', DEVICE_PTY_MAJOR,
                                        VIR_CGROUP_DEVICE_RW);
-        qemuAuditCgroupMajor(vm, cgroup, "allow", DEVICE_PTY_MAJOR,
-                             "pty", "rw", rc == 0);
+        virDomainAuditCgroupMajor(vm, cgroup, "allow", DEVICE_PTY_MAJOR,
+                                  "pty", "rw", rc == 0);
         if (rc != 0) {
             virReportSystemError(-rc, "%s",
                                  _("unable to allow /dev/pts/ devices"));
@@ -247,8 +250,8 @@ int qemuSetupCgroup(struct qemud_driver *driver,
               (vm->def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_SDL)))) {
             rc = virCgroupAllowDeviceMajor(cgroup, 'c', DEVICE_SND_MAJOR,
                                            VIR_CGROUP_DEVICE_RW);
-            qemuAuditCgroupMajor(vm, cgroup, "allow", DEVICE_SND_MAJOR,
-                                 "sound", "rw", rc == 0);
+            virDomainAuditCgroupMajor(vm, cgroup, "allow", DEVICE_SND_MAJOR,
+                                      "sound", "rw", rc == 0);
             if (rc != 0) {
                 virReportSystemError(-rc, "%s",
                                      _("unable to allow /dev/snd/ devices"));
@@ -259,7 +262,7 @@ int qemuSetupCgroup(struct qemud_driver *driver,
         for (i = 0; deviceACL[i] != NULL ; i++) {
             rc = virCgroupAllowDevicePath(cgroup, deviceACL[i],
                                           VIR_CGROUP_DEVICE_RW);
-            qemuAuditCgroupPath(vm, cgroup, "allow", deviceACL[i], "rw", rc);
+            virDomainAuditCgroupPath(vm, cgroup, "allow", deviceACL[i], "rw", rc);
             if (rc < 0 &&
                 rc != -ENOENT) {
                 virReportSystemError(-rc,
@@ -306,13 +309,37 @@ int qemuSetupCgroup(struct qemud_driver *driver,
         } else {
             qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                             _("Block I/O tuning is not available on this host"));
+            goto cleanup;
+        }
+    }
+
+    if (vm->def->blkio.ndevices) {
+        if (qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_BLKIO)) {
+            for (i = 0; i < vm->def->blkio.ndevices; i++) {
+                virBlkioDeviceWeightPtr dw = &vm->def->blkio.devices[i];
+                if (!dw->weight)
+                    continue;
+                rc = virCgroupSetBlkioDeviceWeight(cgroup, dw->path,
+                                                   dw->weight);
+                if (rc != 0) {
+                    virReportSystemError(-rc,
+                                         _("Unable to set io device weight "
+                                           "for domain %s"),
+                                         vm->def->name);
+                    goto cleanup;
+                }
+            }
+        } else {
+            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                            _("Block I/O tuning is not available on this host"));
+            goto cleanup;
         }
     }
 
     if (vm->def->mem.hard_limit != 0 ||
         vm->def->mem.soft_limit != 0 ||
         vm->def->mem.swap_hard_limit != 0) {
-        if ((rc = qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_MEMORY))) {
+        if (qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_MEMORY)) {
             if (vm->def->mem.hard_limit != 0) {
                 rc = virCgroupSetMemoryHardLimit(cgroup, vm->def->mem.hard_limit);
                 if (rc != 0) {
@@ -362,6 +389,25 @@ int qemuSetupCgroup(struct qemud_driver *driver,
         }
     }
 
+    if (vm->def->numatune.memory.nodemask &&
+        vm->def->numatune.memory.mode == VIR_DOMAIN_NUMATUNE_MEM_STRICT &&
+        qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_CPUSET)) {
+        char *mask = virDomainCpuSetFormat(vm->def->numatune.memory.nodemask, VIR_DOMAIN_CPUMASK_LEN);
+        if (!mask) {
+            qemuReportError(VIR_ERR_INTERNAL_ERROR,
+                            _("failed to convert memory nodemask"));
+            goto cleanup;
+        }
+
+        rc = virCgroupSetCpusetMems(cgroup, mask);
+        VIR_FREE(mask);
+        if (rc != 0) {
+            virReportSystemError(-rc,
+                                 _("Unable to set cpuset.mems for domain %s"),
+                                 vm->def->name);
+            goto cleanup;
+        }
+    }
 done:
     virCgroupFree(&cgroup);
     return 0;
@@ -371,6 +417,148 @@ cleanup:
         virCgroupRemove(cgroup);
         virCgroupFree(&cgroup);
     }
+    return -1;
+}
+
+int qemuSetupCgroupVcpuBW(virCgroupPtr cgroup, unsigned long long period,
+                          long long quota)
+{
+    int rc;
+    unsigned long long old_period;
+
+    if (period == 0 && quota == 0)
+        return 0;
+
+    if (period) {
+        /* get old period, and we can rollback if set quota failed */
+        rc = virCgroupGetCpuCfsPeriod(cgroup, &old_period);
+        if (rc < 0) {
+            virReportSystemError(-rc,
+                                 "%s", _("Unable to get cpu bandwidth period"));
+            return -1;
+        }
+
+        rc = virCgroupSetCpuCfsPeriod(cgroup, period);
+        if (rc < 0) {
+            virReportSystemError(-rc,
+                                 "%s", _("Unable to set cpu bandwidth period"));
+            return -1;
+        }
+    }
+
+    if (quota) {
+        rc = virCgroupSetCpuCfsQuota(cgroup, quota);
+        if (rc < 0) {
+            virReportSystemError(-rc,
+                                 "%s", _("Unable to set cpu bandwidth quota"));
+            goto cleanup;
+        }
+    }
+
+    return 0;
+
+cleanup:
+    if (period) {
+        rc = virCgroupSetCpuCfsPeriod(cgroup, old_period);
+        if (rc < 0)
+            virReportSystemError(-rc,
+                                 _("%s"),
+                                 "Unable to rollback cpu bandwidth period");
+    }
+
+    return -1;
+}
+
+int qemuSetupCgroupForVcpu(struct qemud_driver *driver, virDomainObjPtr vm)
+{
+    virCgroupPtr cgroup = NULL;
+    virCgroupPtr cgroup_vcpu = NULL;
+    qemuDomainObjPrivatePtr priv = vm->privateData;
+    int rc;
+    unsigned int i;
+    unsigned long long period = vm->def->cputune.period;
+    long long quota = vm->def->cputune.quota;
+    long long vm_quota = 0;
+
+    if (driver->cgroup == NULL)
+        return 0; /* Not supported, so claim success */
+
+    rc = virCgroupForDomain(driver->cgroup, vm->def->name, &cgroup, 0);
+    if (rc != 0) {
+        virReportSystemError(-rc,
+                             _("Unable to find cgroup for %s"),
+                             vm->def->name);
+        goto cleanup;
+    }
+
+    /* Set cpu bandwidth for the vm */
+    if (period || quota) {
+        if (qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_CPU)) {
+            /* Ensure that we can multiply by vcpus without overflowing. */
+            if (quota > LLONG_MAX / vm->def->vcpus) {
+                virReportSystemError(EINVAL,
+                                     _("%s"),
+                                     "Unable to set cpu bandwidth quota");
+                goto cleanup;
+            }
+
+            if (quota > 0)
+                vm_quota = quota * vm->def->vcpus;
+            else
+                vm_quota = quota;
+            if (qemuSetupCgroupVcpuBW(cgroup, period, vm_quota) < 0)
+                goto cleanup;
+        }
+    }
+
+    if (priv->nvcpupids == 0 || priv->vcpupids[0] == vm->pid) {
+        /* If we does not know VCPU<->PID mapping or all vcpu runs in the same
+         * thread, we cannot control each vcpu.
+         */
+        virCgroupFree(&cgroup);
+        return 0;
+    }
+
+    for (i = 0; i < priv->nvcpupids; i++) {
+        rc = virCgroupForVcpu(cgroup, i, &cgroup_vcpu, 1);
+        if (rc < 0) {
+            virReportSystemError(-rc,
+                                 _("Unable to create vcpu cgroup for %s(vcpu:"
+                                   " %d)"),
+                                 vm->def->name, i);
+            goto cleanup;
+        }
+
+        /* move the thread for vcpu to sub dir */
+        rc = virCgroupAddTask(cgroup_vcpu, priv->vcpupids[i]);
+        if (rc < 0) {
+            virReportSystemError(-rc,
+                                 _("unable to add vcpu %d task %d to cgroup"),
+                                 i, priv->vcpupids[i]);
+            goto cleanup;
+        }
+
+        if (period || quota) {
+            if (qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_CPU)) {
+                if (qemuSetupCgroupVcpuBW(cgroup_vcpu, period, quota) < 0)
+                    goto cleanup;
+            }
+        }
+
+        virCgroupFree(&cgroup_vcpu);
+    }
+
+    virCgroupFree(&cgroup_vcpu);
+    virCgroupFree(&cgroup);
+    return 0;
+
+cleanup:
+    virCgroupFree(&cgroup_vcpu);
+    if (cgroup) {
+        virCgroupRemove(cgroup);
+        virCgroupFree(&cgroup);
+    }
+
     return -1;
 }
 

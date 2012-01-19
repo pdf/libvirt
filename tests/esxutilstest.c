@@ -14,83 +14,12 @@
 # include "esx/esx_util.h"
 # include "esx/esx_vi_types.h"
 
-static char *progname;
-
-
 
 static void
 testQuietError(void *userData ATTRIBUTE_UNUSED,
                virErrorPtr error ATTRIBUTE_UNUSED)
 {
     /* nothing */
-}
-
-
-
-static const char* names[] = {
-    "sda",  "sdb",  "sdc",  "sdd",  "sde",  "sdf",  "sdg",  "sdh",  "sdi",  "sdj",  "sdk",  "sdl",  "sdm",  "sdn",  "sdo",  "sdp",  "sdq",  "sdr",  "sds",  "sdt",  "sdu",  "sdv",  "sdw",  "sdx",  "sdy",  "sdz",
-    "sdaa", "sdab", "sdac", "sdad", "sdae", "sdaf", "sdag", "sdah", "sdai", "sdaj", "sdak", "sdal", "sdam", "sdan", "sdao", "sdap", "sdaq", "sdar", "sdas", "sdat", "sdau", "sdav", "sdaw", "sdax", "sday", "sdaz",
-    "sdba", "sdbb", "sdbc", "sdbd", "sdbe", "sdbf", "sdbg", "sdbh", "sdbi", "sdbj", "sdbk", "sdbl", "sdbm", "sdbn", "sdbo", "sdbp", "sdbq", "sdbr", "sdbs", "sdbt", "sdbu", "sdbv", "sdbw", "sdbx", "sdby", "sdbz",
-    "sdca", "sdcb", "sdcc", "sdcd", "sdce", "sdcf", "sdcg", "sdch", "sdci", "sdcj", "sdck", "sdcl", "sdcm", "sdcn", "sdco", "sdcp", "sdcq", "sdcr", "sdcs", "sdct", "sdcu", "sdcv", "sdcw", "sdcx", "sdcy", "sdcz",
-    "sdda", "sddb", "sddc", "sddd", "sdde", "sddf", "sddg", "sddh", "sddi", "sddj", "sddk", "sddl", "sddm", "sddn", "sddo", "sddp", "sddq", "sddr", "sdds", "sddt", "sddu", "sddv", "sddw", "sddx", "sddy", "sddz",
-    "sdea", "sdeb", "sdec", "sded", "sdee", "sdef", "sdeg", "sdeh", "sdei", "sdej", "sdek", "sdel", "sdem", "sden", "sdeo", "sdep", "sdeq", "sder", "sdes", "sdet", "sdeu", "sdev", "sdew", "sdex", "sdey", "sdez",
-    "sdfa", "sdfb", "sdfc", "sdfd", "sdfe", "sdff", "sdfg", "sdfh", "sdfi", "sdfj", "sdfk", "sdfl", "sdfm", "sdfn", "sdfo", "sdfp", "sdfq", "sdfr", "sdfs", "sdft", "sdfu", "sdfv", "sdfw", "sdfx", "sdfy", "sdfz",
-    "sdga", "sdgb", "sdgc", "sdgd", "sdge", "sdgf", "sdgg", "sdgh", "sdgi", "sdgj", "sdgk", "sdgl", "sdgm", "sdgn", "sdgo", "sdgp", "sdgq", "sdgr", "sdgs", "sdgt", "sdgu", "sdgv", "sdgw", "sdgx", "sdgy", "sdgz",
-    "sdha", "sdhb", "sdhc", "sdhd", "sdhe", "sdhf", "sdhg", "sdhh", "sdhi", "sdhj", "sdhk", "sdhl", "sdhm", "sdhn", "sdho", "sdhp", "sdhq", "sdhr", "sdhs", "sdht", "sdhu", "sdhv", "sdhw", "sdhx", "sdhy", "sdhz",
-    "sdia", "sdib", "sdic", "sdid", "sdie", "sdif", "sdig", "sdih", "sdii", "sdij", "sdik", "sdil", "sdim", "sdin", "sdio", "sdip", "sdiq", "sdir", "sdis", "sdit", "sdiu", "sdiv", "sdiw", "sdix", "sdiy", "sdiz"
-};
-
-static int
-testIndexToDiskName(const void *data ATTRIBUTE_UNUSED)
-{
-    int i;
-    char *name = NULL;
-
-    for (i = 0; i < ARRAY_CARDINALITY(names); ++i) {
-        VIR_FREE(name);
-
-        name = virIndexToDiskName(i, "sd");
-
-        if (STRNEQ(names[i], name)) {
-            virtTestDifference(stderr, names[i], name);
-            VIR_FREE(name);
-
-            return -1;
-        }
-    }
-
-    VIR_FREE(name);
-
-    return 0;
-}
-
-static int
-testDiskNameToIndex(const void *data ATTRIBUTE_UNUSED)
-{
-    int i, k;
-    char *name = NULL;
-
-    for (i = 0; i < 100000; ++i) {
-        VIR_FREE(name);
-
-        name = virIndexToDiskName(i, "sd");
-        k = virDiskNameToIndex(name);
-
-        if (k != i) {
-            if (virTestGetDebug() > 0) {
-                fprintf(stderr, "\nExpect [%d]\n", i);
-                fprintf(stderr, "Actual [%d]\n", k);
-            }
-
-            VIR_FREE(name);
-
-            return -1;
-        }
-    }
-
-    VIR_FREE(name);
-
-    return 0;
 }
 
 
@@ -172,7 +101,7 @@ testParseDatastorePath(const void *data ATTRIBUTE_UNUSED)
 
 struct testDateTime {
     const char *dateTime;
-    time_t calendarTime;
+    long long calendarTime;
 };
 
 static struct testDateTime times[] = {
@@ -208,7 +137,7 @@ testConvertDateTimeToCalendarTime(const void *data ATTRIBUTE_UNUSED)
 {
     int i;
     esxVI_DateTime dateTime;
-    time_t calendarTime;
+    long long calendarTime;
 
     for (i = 0; i < ARRAY_CARDINALITY(times); ++i) {
         dateTime.value = (char *)times[i].dateTime;
@@ -276,6 +205,7 @@ testEscapeDatastoreItem(const void *data ATTRIBUTE_UNUSED)
         }
     }
 
+    VIR_FREE(escaped);
     return 0;
 }
 
@@ -317,27 +247,16 @@ testConvertWindows1252ToUTF8(const void *data ATTRIBUTE_UNUSED)
         }
     }
 
+    VIR_FREE(utf8);
     return 0;
 }
 
 
 
 static int
-mymain(int argc, char **argv)
+mymain(void)
 {
     int result = 0;
-
-    progname = argv[0];
-
-    if (argc > 1) {
-        fprintf(stderr, "Usage: %s\n", progname);
-        return EXIT_FAILURE;
-    }
-
-    if (argc > 1) {
-        fprintf(stderr, "Usage: %s\n", progname);
-        return EXIT_FAILURE;
-    }
 
     virSetErrorFunc(NULL, testQuietError);
 
@@ -349,8 +268,6 @@ mymain(int argc, char **argv)
             }                                                                 \
         } while (0)
 
-    DO_TEST(IndexToDiskName);
-    DO_TEST(DiskNameToIndex);
     DO_TEST(ParseDatastorePath);
     DO_TEST(ConvertDateTimeToCalendarTime);
     DO_TEST(EscapeDatastoreItem);
@@ -362,10 +279,11 @@ mymain(int argc, char **argv)
 VIRT_TEST_MAIN(mymain)
 
 #else
+# include "testutils.h"
 
-int main (void)
+int main(void)
 {
-    return 77; /* means 'test skipped' for automake */
+    return EXIT_AM_SKIP;
 }
 
 #endif /* WITH_ESX */

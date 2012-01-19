@@ -40,6 +40,11 @@ void virThreadOnExit(void)
 {
 }
 
+int virOnce(virOnceControlPtr once, virOnceFunc init)
+{
+    return pthread_once(&once->once, init);
+}
+
 
 int virMutexInit(virMutexPtr m)
 {
@@ -211,7 +216,7 @@ int virThreadSelfID(void)
     tid = syscall(SYS_gettid);
     return (int)tid;
 #else
-    return (int)(void *)pthread_self();
+    return (int)(intptr_t)(void *)pthread_self();
 #endif
 }
 

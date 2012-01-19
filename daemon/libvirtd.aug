@@ -48,6 +48,7 @@ module Libvirtd =
                          | str_entry "crl_file"
 
    let authorization_entry = bool_entry "tls_no_verify_certificate"
+                           | bool_entry "tls_no_sanity_certificate"
                            | str_array_entry "tls_allowed_dn_list"
                            | str_array_entry "sasl_allowed_username_list"
 
@@ -56,6 +57,7 @@ module Libvirtd =
                         | int_entry "max_clients"
                         | int_entry "max_requests"
                         | int_entry "max_client_requests"
+                        | int_entry "prio_workers"
 
    let logging_entry = int_entry "log_level"
                      | str_entry "log_filters"
@@ -63,6 +65,10 @@ module Libvirtd =
 
    let auditing_entry = int_entry "audit_level"
                       | bool_entry "audit_logging"
+
+   let keepalive_entry = int_entry "keepalive_interval"
+                       | int_entry "keepalive_count"
+                       | bool_entry "keepalive_required"
 
    (* Each enty in the config is one of the following three ... *)
    let entry = network_entry
@@ -73,6 +79,7 @@ module Libvirtd =
              | processing_entry
              | logging_entry
              | auditing_entry
+             | keepalive_entry
    let comment = [ label "#comment" . del /#[ \t]*/ "# " .  store /([^ \t\n][^\n]*)?/ . del /\n/ "\n" ]
    let empty = [ label "#empty" . eol ]
 

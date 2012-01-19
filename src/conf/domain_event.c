@@ -1,7 +1,7 @@
 /*
  * domain_event.c: domain event queue processing helpers
  *
- * Copyright (C) 2010 Red Hat, Inc.
+ * Copyright (C) 2010-2011 Red Hat, Inc.
  * Copyright (C) 2008 VirtualIron
  *
  * This library is free software; you can redistribute it and/or
@@ -32,7 +32,7 @@
 #define VIR_FROM_THIS VIR_FROM_NONE
 
 #define eventReportError(code, ...)                                 \
-    virReportErrorHelper(NULL, VIR_FROM_THIS, code, __FILE__,       \
+    virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,             \
                          __FUNCTION__, __LINE__, __VA_ARGS__)
 
 struct _virDomainMeta {
@@ -42,6 +42,29 @@ struct _virDomainMeta {
 };
 typedef struct _virDomainMeta virDomainMeta;
 typedef virDomainMeta *virDomainMetaPtr;
+
+struct _virDomainEventCallbackList {
+    unsigned int nextID;
+    unsigned int count;
+    virDomainEventCallbackPtr *callbacks;
+};
+
+struct _virDomainEventQueue {
+    unsigned int count;
+    virDomainEventPtr *events;
+};
+
+struct _virDomainEventState {
+    /* The list of domain event callbacks */
+    virDomainEventCallbackListPtr callbacks;
+    /* The queue of domain events */
+    virDomainEventQueuePtr queue;
+    /* Timer for flushing events queue */
+    int timer;
+    /* Flag if we're in process of dispatching */
+    bool isDispatching;
+    virMutex lock;
+};
 
 struct _virDomainEventCallback {
     int callbackID;
@@ -83,6 +106,17 @@ struct _virDomainEvent {
             char *authScheme;
             virDomainEventGraphicsSubjectPtr subject;
         } graphics;
+        struct {
+            char *path;
+            int type;
+            int status;
+        } blockJob;
+        struct {
+            char *oldSrcPath;
+            char *newSrcPath;
+            char *devAlias;
+            int reason;
+        } diskChange;
     } data;
 };
 
@@ -92,7 +126,7 @@ struct _virDomainEvent {
  *
  * Free the memory in the domain event callback list
  */
-void
+static void
 virDomainEventCallbackListFree(virDomainEventCallbackListPtr list)
 {
     int i;
@@ -117,11 +151,12 @@ virDomainEventCallbackListFree(virDomainEventCallbackListPtr list)
  *
  * Internal function to remove a callback from a virDomainEventCallbackListPtr
  */
-int
+static int
 virDomainEventCallbackListRemove(virConnectPtr conn,
                                  virDomainEventCallbackListPtr cbList,
                                  virConnectDomainEventCallback callback)
 {
+    int ret = 0;
     int i;
     for (i = 0 ; i < cbList->count ; i++) {
         if (cbList->callbacks[i]->cb == VIR_DOMAIN_EVENT_CALLBACK(callback) &&
@@ -145,7 +180,11 @@ virDomainEventCallbackListRemove(virConnectPtr conn,
             }
             cbList->count--;
 
-            return 0;
+            for (i = 0 ; i < cbList->count ; i++) {
+                if (!cbList->callbacks[i]->deleted)
+                    ret++;
+            }
+            return ret;
         }
     }
 
@@ -163,11 +202,12 @@ virDomainEventCallbackListRemove(virConnectPtr conn,
  *
  * Internal function to remove a callback from a virDomainEventCallbackListPtr
  */
-int
+static int
 virDomainEventCallbackListRemoveID(virConnectPtr conn,
                                    virDomainEventCallbackListPtr cbList,
                                    int callbackID)
 {
+    int ret = 0;
     int i;
     for (i = 0 ; i < cbList->count ; i++) {
         if (cbList->callbacks[i]->callbackID == callbackID &&
@@ -190,7 +230,11 @@ virDomainEventCallbackListRemoveID(virConnectPtr conn,
             }
             cbList->count--;
 
-            return 0;
+            for (i = 0 ; i < cbList->count ; i++) {
+                if (!cbList->callbacks[i]->deleted)
+                    ret++;
+            }
+            return ret;
         }
     }
 
@@ -208,7 +252,7 @@ virDomainEventCallbackListRemoveID(virConnectPtr conn,
  * Internal function to remove all of a given connection's callback
  * from a virDomainEventCallbackListPtr
  */
-int
+static int
 virDomainEventCallbackListRemoveConn(virConnectPtr conn,
                                      virDomainEventCallbackListPtr cbList)
 {
@@ -239,17 +283,23 @@ virDomainEventCallbackListRemoveConn(virConnectPtr conn,
 }
 
 
-int virDomainEventCallbackListMarkDelete(virConnectPtr conn,
-                                         virDomainEventCallbackListPtr cbList,
-                                         virConnectDomainEventCallback callback)
+static int
+virDomainEventCallbackListMarkDelete(virConnectPtr conn,
+                                     virDomainEventCallbackListPtr cbList,
+                                     virConnectDomainEventCallback callback)
 {
+    int ret = 0;
     int i;
     for (i = 0 ; i < cbList->count ; i++) {
         if (cbList->callbacks[i]->cb == VIR_DOMAIN_EVENT_CALLBACK(callback) &&
             cbList->callbacks[i]->eventID == VIR_DOMAIN_EVENT_ID_LIFECYCLE &&
             cbList->callbacks[i]->conn == conn) {
             cbList->callbacks[i]->deleted = 1;
-            return 0;
+            for (i = 0 ; i < cbList->count ; i++) {
+                if (!cbList->callbacks[i]->deleted)
+                    ret++;
+            }
+            return ret;
         }
     }
 
@@ -259,16 +309,22 @@ int virDomainEventCallbackListMarkDelete(virConnectPtr conn,
 }
 
 
-int virDomainEventCallbackListMarkDeleteID(virConnectPtr conn,
-                                           virDomainEventCallbackListPtr cbList,
-                                           int callbackID)
+static int
+virDomainEventCallbackListMarkDeleteID(virConnectPtr conn,
+                                       virDomainEventCallbackListPtr cbList,
+                                       int callbackID)
 {
+    int ret = 0;
     int i;
     for (i = 0 ; i < cbList->count ; i++) {
         if (cbList->callbacks[i]->callbackID == callbackID &&
             cbList->callbacks[i]->conn == conn) {
             cbList->callbacks[i]->deleted = 1;
-            return 0;
+            for (i = 0 ; i < cbList->count ; i++) {
+                if (!cbList->callbacks[i]->deleted)
+                    ret++;
+            }
+            return ret;
         }
     }
 
@@ -278,7 +334,8 @@ int virDomainEventCallbackListMarkDeleteID(virConnectPtr conn,
 }
 
 
-int virDomainEventCallbackListPurgeMarked(virDomainEventCallbackListPtr cbList)
+static int
+virDomainEventCallbackListPurgeMarked(virDomainEventCallbackListPtr cbList)
 {
     int old_count = cbList->count;
     int i;
@@ -308,49 +365,29 @@ int virDomainEventCallbackListPurgeMarked(virDomainEventCallbackListPtr cbList)
 
 
 /**
- * virDomainEventCallbackListAdd:
- * @conn: pointer to the connection
- * @cbList: the list
- * @callback: the callback to add
- * @opaque: opaque data tio pass to callback
- *
- * Internal function to add a callback from a virDomainEventCallbackListPtr
- */
-int
-virDomainEventCallbackListAdd(virConnectPtr conn,
-                              virDomainEventCallbackListPtr cbList,
-                              virConnectDomainEventCallback callback,
-                              void *opaque,
-                              virFreeCallback freecb)
-{
-    return virDomainEventCallbackListAddID(conn, cbList, NULL,
-                                           VIR_DOMAIN_EVENT_ID_LIFECYCLE,
-                                           VIR_DOMAIN_EVENT_CALLBACK(callback),
-                                           opaque, freecb);
-}
-
-
-/**
  * virDomainEventCallbackListAddID:
  * @conn: pointer to the connection
  * @cbList: the list
  * @eventID: the event ID
  * @callback: the callback to add
  * @opaque: opaque data tio pass to callback
+ * @callbackID: filled with callback ID
  *
  * Internal function to add a callback from a virDomainEventCallbackListPtr
  */
-int
+static int
 virDomainEventCallbackListAddID(virConnectPtr conn,
                                 virDomainEventCallbackListPtr cbList,
                                 virDomainPtr dom,
                                 int eventID,
                                 virConnectDomainEventGenericCallback callback,
                                 void *opaque,
-                                virFreeCallback freecb)
+                                virFreeCallback freecb,
+                                int *callbackID)
 {
     virDomainEventCallbackPtr event;
     int i;
+    int ret = 0;
 
     /* Check incoming */
     if ( !cbList ) {
@@ -360,7 +397,7 @@ virDomainEventCallbackListAddID(virConnectPtr conn,
     /* check if we already have this callback on our list */
     for (i = 0 ; i < cbList->count ; i++) {
         if (cbList->callbacks[i]->cb == VIR_DOMAIN_EVENT_CALLBACK(callback) &&
-            cbList->callbacks[i]->eventID == VIR_DOMAIN_EVENT_ID_LIFECYCLE &&
+            cbList->callbacks[i]->eventID == eventID &&
             cbList->callbacks[i]->conn == conn) {
             eventReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                              _("event callback already tracked"));
@@ -396,7 +433,17 @@ virDomainEventCallbackListAddID(virConnectPtr conn,
 
     event->callbackID = cbList->nextID++;
 
-    return event->callbackID;
+    for (i = 0 ; i < cbList->count ; i++) {
+        if (cbList->callbacks[i]->eventID == eventID &&
+            cbList->callbacks[i]->conn == conn &&
+            !cbList->callbacks[i]->deleted)
+            ret++;
+    }
+
+    if (callbackID)
+        *callbackID = event->callbackID;
+
+    return ret;
 
 no_memory:
     virReportOOMError();
@@ -411,29 +458,34 @@ no_memory:
 }
 
 
-int virDomainEventCallbackListCountID(virConnectPtr conn,
-                                      virDomainEventCallbackListPtr cbList,
-                                      int eventID)
+/**
+ * virDomainEventCallbackListAdd:
+ * @conn: pointer to the connection
+ * @cbList: the list
+ * @callback: the callback to add
+ * @opaque: opaque data tio pass to callback
+ *
+ * Internal function to add a callback from a virDomainEventCallbackListPtr
+ */
+static int
+virDomainEventCallbackListAdd(virConnectPtr conn,
+                              virDomainEventCallbackListPtr cbList,
+                              virConnectDomainEventCallback callback,
+                              void *opaque,
+                              virFreeCallback freecb)
 {
-    int i;
-    int count = 0;
-
-    for (i = 0 ; i < cbList->count ; i++) {
-        if (cbList->callbacks[i]->deleted)
-            continue;
-
-        if (cbList->callbacks[i]->eventID == eventID &&
-            cbList->callbacks[i]->conn == conn)
-            count++;
-    }
-
-    return count;
+    return virDomainEventCallbackListAddID(conn, cbList, NULL,
+                                           VIR_DOMAIN_EVENT_ID_LIFECYCLE,
+                                           VIR_DOMAIN_EVENT_CALLBACK(callback),
+                                           opaque, freecb, NULL);
 }
 
 
-int virDomainEventCallbackListEventID(virConnectPtr conn,
-                                      virDomainEventCallbackListPtr cbList,
-                                      int callbackID)
+
+static int
+virDomainEventCallbackListEventID(virConnectPtr conn,
+                                  virDomainEventCallbackListPtr cbList,
+                                  int callbackID)
 {
     int i;
 
@@ -447,22 +499,6 @@ int virDomainEventCallbackListEventID(virConnectPtr conn,
     }
 
     return -1;
-}
-
-
-int virDomainEventCallbackListCount(virDomainEventCallbackListPtr cbList)
-{
-    int i;
-    int count = 0;
-
-    for (i = 0 ; i < cbList->count ; i++) {
-        if (cbList->callbacks[i]->deleted)
-            continue;
-        if (cbList->callbacks[i]->eventID == VIR_DOMAIN_EVENT_ID_LIFECYCLE)
-            count++;
-    }
-
-    return count;
 }
 
 
@@ -499,14 +535,45 @@ void virDomainEventFree(virDomainEventPtr event)
             }
             VIR_FREE(event->data.graphics.subject);
         }
+        break;
+
+    case VIR_DOMAIN_EVENT_ID_BLOCK_JOB:
+        VIR_FREE(event->data.blockJob.path);
+        break;
+
+    case VIR_DOMAIN_EVENT_ID_DISK_CHANGE:
+        VIR_FREE(event->data.diskChange.oldSrcPath);
+        VIR_FREE(event->data.diskChange.newSrcPath);
+        VIR_FREE(event->data.diskChange.devAlias);
+        break;
     }
 
     VIR_FREE(event->dom.name);
     VIR_FREE(event);
 }
 
+/**
+ * virDomainEventQueueFree:
+ * @queue: pointer to the queue
+ *
+ * Free the memory in the queue. We process this like a list here
+ */
+static void
+virDomainEventQueueFree(virDomainEventQueuePtr queue)
+{
+    int i;
+    if (!queue)
+        return;
 
-virDomainEventQueuePtr virDomainEventQueueNew(void)
+    for (i = 0; i < queue->count ; i++) {
+        virDomainEventFree(queue->events[i]);
+    }
+    VIR_FREE(queue->events);
+    VIR_FREE(queue);
+}
+
+static virDomainEventQueuePtr
+virDomainEventQueueNew(void)
 {
     virDomainEventQueuePtr ret;
 
@@ -516,6 +583,88 @@ virDomainEventQueuePtr virDomainEventQueueNew(void)
     }
 
     return ret;
+}
+
+static void
+virDomainEventStateLock(virDomainEventStatePtr state)
+{
+    virMutexLock(&state->lock);
+}
+
+static void
+virDomainEventStateUnlock(virDomainEventStatePtr state)
+{
+    virMutexUnlock(&state->lock);
+}
+
+/**
+ * virDomainEventStateFree:
+ * @list: virDomainEventStatePtr to free
+ *
+ * Free a virDomainEventStatePtr and its members, and unregister the timer.
+ */
+void
+virDomainEventStateFree(virDomainEventStatePtr state)
+{
+    if (!state)
+        return;
+
+    virDomainEventCallbackListFree(state->callbacks);
+    virDomainEventQueueFree(state->queue);
+
+    if (state->timer != -1)
+        virEventRemoveTimeout(state->timer);
+
+    virMutexDestroy(&state->lock);
+    VIR_FREE(state);
+}
+
+
+static void virDomainEventStateFlush(virDomainEventStatePtr state);
+
+static void
+virDomainEventTimer(int timer ATTRIBUTE_UNUSED, void *opaque)
+{
+    virDomainEventStatePtr state = opaque;
+
+    virDomainEventStateFlush(state);
+}
+
+/**
+ * virDomainEventStateNew:
+ */
+virDomainEventStatePtr
+virDomainEventStateNew(void)
+{
+    virDomainEventStatePtr state = NULL;
+
+    if (VIR_ALLOC(state) < 0) {
+        virReportOOMError();
+        goto error;
+    }
+
+    if (virMutexInit(&state->lock) < 0) {
+        virReportSystemError(errno, "%s",
+                             _("unable to initialize state mutex"));
+        VIR_FREE(state);
+        goto error;
+    }
+
+    if (VIR_ALLOC(state->callbacks) < 0) {
+        virReportOOMError();
+        goto error;
+    }
+
+    if (!(state->queue = virDomainEventQueueNew()))
+        goto error;
+
+    state->timer = -1;
+
+    return state;
+
+error:
+    virDomainEventStateFree(state);
+    return NULL;
 }
 
 static virDomainEventPtr virDomainEventNewInternal(int eventID,
@@ -572,11 +721,19 @@ virDomainEventPtr virDomainEventNewFromDef(virDomainDefPtr def, int type, int de
     return virDomainEventNew(def->id, def->name, def->uuid, type, detail);
 }
 
+virDomainEventPtr virDomainEventRebootNew(int id, const char *name,
+                                          const unsigned char *uuid)
+{
+    return virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_REBOOT,
+                                     id, name, uuid);
+}
+
 virDomainEventPtr virDomainEventRebootNewFromDom(virDomainPtr dom)
 {
     return virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_REBOOT,
                                      dom->id, dom->name, dom->uuid);
 }
+
 virDomainEventPtr virDomainEventRebootNewFromObj(virDomainObjPtr obj)
 {
     return virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_REBOOT,
@@ -774,73 +931,129 @@ virDomainEventPtr virDomainEventGraphicsNewFromObj(virDomainObjPtr obj,
     return ev;
 }
 
-
-/**
- * virDomainEventQueueFree:
- * @queue: pointer to the queue
- *
- * Free the memory in the queue. We process this like a list here
- */
-void
-virDomainEventQueueFree(virDomainEventQueuePtr queue)
+static virDomainEventPtr
+virDomainEventBlockJobNew(int id, const char *name, unsigned char *uuid,
+                          const char *path, int type, int status)
 {
-    int i;
-    if (!queue)
-        return;
+    virDomainEventPtr ev =
+        virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_BLOCK_JOB,
+                                  id, name, uuid);
 
-    for (i = 0; i < queue->count ; i++) {
-        virDomainEventFree(queue->events[i]);
+    if (ev) {
+        if (!(ev->data.blockJob.path = strdup(path))) {
+            virReportOOMError();
+            virDomainEventFree(ev);
+            return NULL;
+        }
+        ev->data.blockJob.type = type;
+        ev->data.blockJob.status = status;
     }
-    VIR_FREE(queue->events);
-    VIR_FREE(queue);
+
+    return ev;
 }
 
-/**
- * virDomainEventQueuePop:
- * @evtQueue: the queue of events
- *
- * Internal function to pop off, and return the front of the queue
- * NOTE: The caller is responsible for freeing the returned object
- *
- * Returns: virDomainEventPtr on success NULL on failure.
- */
-virDomainEventPtr
-virDomainEventQueuePop(virDomainEventQueuePtr evtQueue)
+virDomainEventPtr virDomainEventBlockJobNewFromObj(virDomainObjPtr obj,
+                                                   const char *path,
+                                                   int type,
+                                                   int status)
 {
-    virDomainEventPtr ret;
-
-    if (!evtQueue || evtQueue->count == 0 ) {
-        eventReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                         _("event queue is empty, nothing to pop"));
-        return NULL;
-    }
-
-    ret = evtQueue->events[0];
-
-    memmove(evtQueue->events,
-            evtQueue->events + 1,
-            sizeof(*(evtQueue->events)) *
-                    (evtQueue->count - 1));
-
-    if (VIR_REALLOC_N(evtQueue->events,
-                        evtQueue->count - 1) < 0) {
-        ; /* Failure to reduce memory allocation isn't fatal */
-    }
-    evtQueue->count--;
-
-    return ret;
+    return virDomainEventBlockJobNew(obj->def->id, obj->def->name,
+                                     obj->def->uuid, path, type, status);
 }
+
+virDomainEventPtr virDomainEventBlockJobNewFromDom(virDomainPtr dom,
+                                                   const char *path,
+                                                   int type,
+                                                   int status)
+{
+    return virDomainEventBlockJobNew(dom->id, dom->name, dom->uuid,
+                                     path, type, status);
+}
+
+virDomainEventPtr virDomainEventControlErrorNewFromDom(virDomainPtr dom)
+{
+    virDomainEventPtr ev =
+        virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_CONTROL_ERROR,
+                                  dom->id, dom->name, dom->uuid);
+    return ev;
+}
+
+
+virDomainEventPtr virDomainEventControlErrorNewFromObj(virDomainObjPtr obj)
+{
+    virDomainEventPtr ev =
+        virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_CONTROL_ERROR,
+                                  obj->def->id, obj->def->name, obj->def->uuid);
+    return ev;
+}
+
+static virDomainEventPtr
+virDomainEventDiskChangeNew(int id, const char *name,
+                            unsigned char *uuid,
+                            const char *oldSrcPath,
+                            const char *newSrcPath,
+                            const char *devAlias, int reason)
+{
+    virDomainEventPtr ev =
+        virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_DISK_CHANGE,
+                                  id, name, uuid);
+
+    if (ev) {
+        if (!(ev->data.diskChange.devAlias = strdup(devAlias)))
+            goto error;
+
+        if (oldSrcPath &&
+            !(ev->data.diskChange.oldSrcPath = strdup(oldSrcPath)))
+            goto error;
+
+        if (newSrcPath &&
+            !(ev->data.diskChange.newSrcPath = strdup(newSrcPath)))
+            goto error;
+
+        ev->data.diskChange.reason = reason;
+    }
+
+    return ev;
+
+error:
+    virReportOOMError();
+    virDomainEventFree(ev);
+    return NULL;
+}
+
+virDomainEventPtr virDomainEventDiskChangeNewFromObj(virDomainObjPtr obj,
+                                                     const char *oldSrcPath,
+                                                     const char *newSrcPath,
+                                                     const char *devAlias,
+                                                     int reason)
+{
+    return virDomainEventDiskChangeNew(obj->def->id, obj->def->name,
+                                       obj->def->uuid, oldSrcPath,
+                                       newSrcPath, devAlias, reason);
+}
+
+virDomainEventPtr virDomainEventDiskChangeNewFromDom(virDomainPtr dom,
+                                                     const char *oldSrcPath,
+                                                     const char *newSrcPath,
+                                                     const char *devAlias,
+                                                     int reason)
+{
+    return virDomainEventDiskChangeNew(dom->id, dom->name, dom->uuid,
+                                       oldSrcPath, newSrcPath,
+                                       devAlias, reason);
+}
+
 
 /**
  * virDomainEventQueuePush:
  * @evtQueue: the dom event queue
  * @event: the event to add
  *
- * Internal function to push onto the back of an virDomainEventQueue
+ * Internal function to push onto the back of a virDomainEventQueue
  *
  * Returns: 0 on success, -1 on failure
  */
-int
+static int
 virDomainEventQueuePush(virDomainEventQueuePtr evtQueue,
                         virDomainEventPtr event)
 {
@@ -861,11 +1074,19 @@ virDomainEventQueuePush(virDomainEventQueuePtr evtQueue,
 }
 
 
-void virDomainEventDispatchDefaultFunc(virConnectPtr conn,
-                                       virDomainEventPtr event,
-                                       virConnectDomainEventGenericCallback cb,
-                                       void *cbopaque,
-                                       void *opaque ATTRIBUTE_UNUSED)
+typedef void (*virDomainEventDispatchFunc)(virConnectPtr conn,
+                                           virDomainEventPtr event,
+                                           virConnectDomainEventGenericCallback cb,
+                                           void *cbopaque,
+                                           void *opaque);
+
+
+static void
+virDomainEventDispatchDefaultFunc(virConnectPtr conn,
+                                  virDomainEventPtr event,
+                                  virConnectDomainEventGenericCallback cb,
+                                  void *cbopaque,
+                                  void *opaque ATTRIBUTE_UNUSED)
 {
     virDomainPtr dom = virGetDomain(conn, event->dom.name, event->dom.uuid);
     if (!dom)
@@ -924,6 +1145,28 @@ void virDomainEventDispatchDefaultFunc(virConnectPtr conn,
                                                     cbopaque);
         break;
 
+    case VIR_DOMAIN_EVENT_ID_CONTROL_ERROR:
+        (cb)(conn, dom,
+             cbopaque);
+        break;
+
+    case VIR_DOMAIN_EVENT_ID_BLOCK_JOB:
+        ((virConnectDomainEventBlockJobCallback)cb)(conn, dom,
+                                                    event->data.blockJob.path,
+                                                    event->data.blockJob.type,
+                                                    event->data.blockJob.status,
+                                                    cbopaque);
+        break;
+
+    case VIR_DOMAIN_EVENT_ID_DISK_CHANGE:
+        ((virConnectDomainEventDiskChangeCallback)cb)(conn, dom,
+                                                      event->data.diskChange.oldSrcPath,
+                                                      event->data.diskChange.newSrcPath,
+                                                      event->data.diskChange.devAlias,
+                                                      event->data.diskChange.reason,
+                                                      cbopaque);
+        break;
+
     default:
         VIR_WARN("Unexpected event ID %d", event->eventID);
         break;
@@ -944,11 +1187,11 @@ static int virDomainEventDispatchMatchCallback(virDomainEventPtr event,
         return 0;
 
     if (cb->dom) {
-        /* Delibrately ignoring 'id' for matching, since that
+        /* Deliberately ignoring 'id' for matching, since that
          * will cause problems when a domain switches between
          * running & shutoff states & ignoring 'name' since
          * Xen sometimes renames guests during migration, thus
-         * leaving 'uuid' as the only truely reliable ID we can use*/
+         * leaving 'uuid' as the only truly reliable ID we can use*/
 
         if (memcmp(event->dom.uuid, cb->dom->uuid, VIR_UUID_BUFLEN) == 0)
             return 1;
@@ -959,14 +1202,16 @@ static int virDomainEventDispatchMatchCallback(virDomainEventPtr event,
     }
 }
 
-void virDomainEventDispatch(virDomainEventPtr event,
-                            virDomainEventCallbackListPtr callbacks,
-                            virDomainEventDispatchFunc dispatch,
-                            void *opaque)
+
+static void
+virDomainEventDispatch(virDomainEventPtr event,
+                       virDomainEventCallbackListPtr callbacks,
+                       virDomainEventDispatchFunc dispatch,
+                       void *opaque)
 {
     int i;
     /* Cache this now, since we may be dropping the lock,
-       and have more callbacks added. We're guarenteed not
+       and have more callbacks added. We're guaranteed not
        to have any removed */
     int cbCount = callbacks->count;
 
@@ -983,10 +1228,11 @@ void virDomainEventDispatch(virDomainEventPtr event,
 }
 
 
-void virDomainEventQueueDispatch(virDomainEventQueuePtr queue,
-                                 virDomainEventCallbackListPtr callbacks,
-                                 virDomainEventDispatchFunc dispatch,
-                                 void *opaque)
+static void
+virDomainEventQueueDispatch(virDomainEventQueuePtr queue,
+                            virDomainEventCallbackListPtr callbacks,
+                            virDomainEventDispatchFunc dispatch,
+                            void *opaque)
 {
     int i;
 
@@ -996,4 +1242,299 @@ void virDomainEventQueueDispatch(virDomainEventQueuePtr queue,
     }
     VIR_FREE(queue->events);
     queue->count = 0;
+}
+
+void
+virDomainEventStateQueue(virDomainEventStatePtr state,
+                         virDomainEventPtr event)
+{
+    if (state->timer < 0) {
+        virDomainEventFree(event);
+        return;
+    }
+
+    virDomainEventStateLock(state);
+
+    if (virDomainEventQueuePush(state->queue, event) < 0) {
+        VIR_DEBUG("Error adding event to queue");
+        virDomainEventFree(event);
+    }
+
+    if (state->queue->count == 1)
+        virEventUpdateTimeout(state->timer, 0);
+    virDomainEventStateUnlock(state);
+}
+
+
+static void
+virDomainEventStateDispatchFunc(virConnectPtr conn,
+                                virDomainEventPtr event,
+                                virConnectDomainEventGenericCallback cb,
+                                void *cbopaque,
+                                void *opaque)
+{
+    virDomainEventStatePtr state = opaque;
+
+    /* Drop the lock whle dispatching, for sake of re-entrancy */
+    virDomainEventStateUnlock(state);
+    virDomainEventDispatchDefaultFunc(conn, event, cb, cbopaque, NULL);
+    virDomainEventStateLock(state);
+}
+
+
+static void
+virDomainEventStateFlush(virDomainEventStatePtr state)
+{
+    virDomainEventQueue tempQueue;
+
+    virDomainEventStateLock(state);
+    state->isDispatching = true;
+
+    /* Copy the queue, so we're reentrant safe when dispatchFunc drops the
+     * driver lock */
+    tempQueue.count = state->queue->count;
+    tempQueue.events = state->queue->events;
+    state->queue->count = 0;
+    state->queue->events = NULL;
+    virEventUpdateTimeout(state->timer, -1);
+
+    virDomainEventQueueDispatch(&tempQueue,
+                                state->callbacks,
+                                virDomainEventStateDispatchFunc,
+                                state);
+
+    /* Purge any deleted callbacks */
+    virDomainEventCallbackListPurgeMarked(state->callbacks);
+
+    state->isDispatching = false;
+    virDomainEventStateUnlock(state);
+}
+
+
+/**
+ * virDomainEventStateRegister:
+ * @conn: connection to associate with callback
+ * @state: domain event state
+ * @callback: function to remove from event
+ * @opaque: data blob to pass to callback
+ * @freecb: callback to free @opaque
+ *
+ * Register the function @callback with connection @conn,
+ * from @state, for lifecycle events.
+ *
+ * Returns: the number of lifecycle callbacks now registered, or -1 on error
+ */
+int
+virDomainEventStateRegister(virConnectPtr conn,
+                            virDomainEventStatePtr state,
+                            virConnectDomainEventCallback callback,
+                            void *opaque,
+                            virFreeCallback freecb)
+{
+    int ret = -1;
+
+    virDomainEventStateLock(state);
+
+    if ((state->callbacks->count == 0) &&
+        (state->timer == -1) &&
+        (state->timer = virEventAddTimeout(-1,
+                                           virDomainEventTimer,
+                                           state,
+                                           NULL)) < 0) {
+        eventReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                         _("could not initialize domain event timer"));
+        goto cleanup;
+    }
+
+    ret = virDomainEventCallbackListAdd(conn, state->callbacks,
+                                        callback, opaque, freecb);
+
+    if (ret == -1 &&
+        state->callbacks->count == 0 &&
+        state->timer != -1) {
+        virEventRemoveTimeout(state->timer);
+        state->timer = -1;
+    }
+
+cleanup:
+    virDomainEventStateUnlock(state);
+    return ret;
+}
+
+
+/**
+ * virDomainEventStateRegisterID:
+ * @conn: connection to associate with callback
+ * @state: domain event state
+ * @eventID: ID of the event type to register for
+ * @cb: function to remove from event
+ * @opaque: data blob to pass to callback
+ * @freecb: callback to free @opaque
+ * @callbackID: filled with callback ID
+ *
+ * Register the function @callbackID with connection @conn,
+ * from @state, for events of type @eventID.
+ *
+ * Returns: the number of callbacks now registered, or -1 on error
+ */
+int
+virDomainEventStateRegisterID(virConnectPtr conn,
+                              virDomainEventStatePtr state,
+                              virDomainPtr dom,
+                              int eventID,
+                              virConnectDomainEventGenericCallback cb,
+                              void *opaque,
+                              virFreeCallback freecb,
+                              int *callbackID)
+{
+    int ret = -1;
+
+    virDomainEventStateLock(state);
+
+    if ((state->callbacks->count == 0) &&
+        (state->timer == -1) &&
+        (state->timer = virEventAddTimeout(-1,
+                                           virDomainEventTimer,
+                                           state,
+                                           NULL)) < 0) {
+        eventReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                         _("could not initialize domain event timer"));
+        goto cleanup;
+    }
+
+    ret = virDomainEventCallbackListAddID(conn, state->callbacks,
+                                          dom, eventID, cb, opaque, freecb,
+                                          callbackID);
+
+    if (ret == -1 &&
+        state->callbacks->count == 0 &&
+        state->timer != -1) {
+        virEventRemoveTimeout(state->timer);
+        state->timer = -1;
+    }
+
+cleanup:
+    virDomainEventStateUnlock(state);
+    return ret;
+}
+
+
+/**
+ * virDomainEventStateDeregister:
+ * @conn: connection to associate with callback
+ * @state: domain event state
+ * @callback: function to remove from event
+ *
+ * Unregister the function @callback with connection @conn,
+ * from @state, for lifecycle events.
+ *
+ * Returns: the number of lifecycle callbacks still registered, or -1 on error
+ */
+int
+virDomainEventStateDeregister(virConnectPtr conn,
+                              virDomainEventStatePtr state,
+                              virConnectDomainEventCallback callback)
+{
+    int ret;
+
+    virDomainEventStateLock(state);
+    if (state->isDispatching)
+        ret = virDomainEventCallbackListMarkDelete(conn,
+                                                   state->callbacks, callback);
+    else
+        ret = virDomainEventCallbackListRemove(conn, state->callbacks, callback);
+
+    if (state->callbacks->count == 0 &&
+        state->timer != -1) {
+        virEventRemoveTimeout(state->timer);
+        state->timer = -1;
+    }
+
+    virDomainEventStateUnlock(state);
+    return ret;
+}
+
+
+/**
+ * virDomainEventStateDeregisterID:
+ * @conn: connection to associate with callback
+ * @state: domain event state
+ * @callbackID: ID of the function to remove from event
+ *
+ * Unregister the function @callbackID with connection @conn,
+ * from @state, for events.
+ *
+ * Returns: the number of callbacks still registered, or -1 on error
+ */
+int
+virDomainEventStateDeregisterID(virConnectPtr conn,
+                                virDomainEventStatePtr state,
+                                int callbackID)
+{
+    int ret;
+
+    virDomainEventStateLock(state);
+    if (state->isDispatching)
+        ret = virDomainEventCallbackListMarkDeleteID(conn,
+                                                     state->callbacks, callbackID);
+    else
+        ret = virDomainEventCallbackListRemoveID(conn,
+                                                 state->callbacks, callbackID);
+
+    if (state->callbacks->count == 0 &&
+        state->timer != -1) {
+        virEventRemoveTimeout(state->timer);
+        state->timer = -1;
+    }
+
+    virDomainEventStateUnlock(state);
+    return ret;
+}
+
+
+/**
+ * virDomainEventStateDeregisterConn:
+ * @conn: connection to associate with callbacks
+ * @state: domain event state
+ *
+ * Remove all callbacks from @state associated with the
+ * connection @conn
+ *
+ * Returns 0 on success, -1 on error
+ */
+int
+virDomainEventStateDeregisterConn(virConnectPtr conn,
+                                  virDomainEventStatePtr state)
+{
+    int ret;
+    virDomainEventStateLock(state);
+    ret = virDomainEventCallbackListRemoveConn(conn, state->callbacks);
+    virDomainEventStateUnlock(state);
+    return ret;
+}
+
+
+/**
+ * virDomainEventStateEventID:
+ * @conn: connection associated with the callback
+ * @state: domain event state
+ * @callbackID: the callback to query
+ *
+ * Query what event ID type is associated with the
+ * callback @callbackID for connection @conn
+ *
+ * Returns 0 on success, -1 on error
+ */
+int
+virDomainEventStateEventID(virConnectPtr conn,
+                           virDomainEventStatePtr state,
+                           int callbackID)
+{
+    int ret;
+
+    virDomainEventStateLock(state);
+    ret = virDomainEventCallbackListEventID(conn,
+                                            state->callbacks, callbackID);
+    virDomainEventStateUnlock(state);
+    return ret;
 }

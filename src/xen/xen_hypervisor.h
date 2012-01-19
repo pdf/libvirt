@@ -1,7 +1,7 @@
 /*
  * xen_internal.h: internal API for direct access to Xen hypervisor level
  *
- * Copyright (C) 2005, 2010 Red Hat, Inc.
+ * Copyright (C) 2005, 2010-2011 Red Hat, Inc.
  *
  * See COPYING.LIB for the License of this software
  *
@@ -17,8 +17,16 @@
 # include "capabilities.h"
 # include "driver.h"
 
+/* See xenHypervisorInit() for details. */
+struct xenHypervisorVersions {
+    int hv; /* u16 major,minor hypervisor version */
+    int hypervisor; /* -1,0,1,2,3 */
+    int sys_interface; /* -1,2,3,4,6,7,8 */
+    int dom_interface; /* -1,3,4,5,6,7 */
+};
+
 extern struct xenUnifiedDriver xenHypervisorDriver;
-int    xenHypervisorInit                 (void);
+int xenHypervisorInit(struct xenHypervisorVersions *override_versions);
 
 virCapsPtr xenHypervisorMakeCapabilities (virConnectPtr conn);
 
@@ -37,7 +45,7 @@ char *
 virDrvOpenStatus
         xenHypervisorOpen               (virConnectPtr conn,
                                          virConnectAuthPtr auth,
-                                         int flags);
+                                         unsigned int flags);
 int     xenHypervisorClose              (virConnectPtr conn);
 int     xenHypervisorGetVersion         (virConnectPtr conn,
                                          unsigned long *hvVer);
@@ -59,12 +67,20 @@ int     xenHypervisorGetMaxVcpus        (virConnectPtr conn,
                                          const char *type);
 int     xenHypervisorDestroyDomain      (virDomainPtr domain)
           ATTRIBUTE_NONNULL (1);
+int     xenHypervisorDestroyDomainFlags (virDomainPtr domain,
+                                         unsigned int flags)
+          ATTRIBUTE_NONNULL (1);
 int     xenHypervisorResumeDomain       (virDomainPtr domain)
           ATTRIBUTE_NONNULL (1);
 int     xenHypervisorPauseDomain        (virDomainPtr domain)
           ATTRIBUTE_NONNULL (1);
 int     xenHypervisorGetDomainInfo        (virDomainPtr domain,
                                            virDomainInfoPtr info)
+          ATTRIBUTE_NONNULL (1);
+int     xenHypervisorGetDomainState     (virDomainPtr domain,
+                                         int *state,
+                                         int *reason,
+                                         unsigned int flags)
           ATTRIBUTE_NONNULL (1);
 int     xenHypervisorGetDomInfo         (virConnectPtr conn,
                                          int id,
@@ -96,12 +112,12 @@ char *  xenHypervisorGetSchedulerType   (virDomainPtr domain,
           ATTRIBUTE_NONNULL (1);
 
 int     xenHypervisorGetSchedulerParameters(virDomainPtr domain,
-                                         virSchedParameterPtr params,
+                                         virTypedParameterPtr params,
                                          int *nparams)
           ATTRIBUTE_NONNULL (1);
 
 int     xenHypervisorSetSchedulerParameters(virDomainPtr domain,
-                                         virSchedParameterPtr params,
+                                         virTypedParameterPtr params,
                                          int nparams)
           ATTRIBUTE_NONNULL (1);
 

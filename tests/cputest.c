@@ -1,7 +1,7 @@
 /*
  * cputest.c: Test the libvirtd internal CPU APIs
  *
- * Copyright (C) 2010 Red Hat, Inc.
+ * Copyright (C) 2010-2011 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -39,12 +39,9 @@
 #include "cpu/cpu.h"
 #include "cpu/cpu_map.h"
 
-static const char *progname;
-static const char *abs_srcdir;
 static const char *abs_top_srcdir;
 
 #define VIR_FROM_THIS VIR_FROM_CPU
-#define MAX_FILE 4096
 
 enum compResultShadow {
     ERROR           = VIR_CPU_COMPARE_ERROR,
@@ -91,25 +88,23 @@ struct data {
 static virCPUDefPtr
 cpuTestLoadXML(const char *arch, const char *name)
 {
-    char xml[PATH_MAX];
+    char *xml = NULL;
     xmlDocPtr doc = NULL;
     xmlXPathContextPtr ctxt = NULL;
     virCPUDefPtr cpu = NULL;
 
-    snprintf(xml, PATH_MAX,
-             "%s/cputestdata/%s-%s.xml",
-             abs_srcdir, arch, name);
-
-    if (!(doc = virXMLParseFile(xml)) ||
-        !(ctxt = xmlXPathNewContext(doc)))
+    if (virAsprintf(&xml, "%s/cputestdata/%s-%s.xml", abs_srcdir, arch, name) < 0)
         goto cleanup;
 
-    ctxt->node = xmlDocGetRootElement(doc);
+    if (!(doc = virXMLParseFileCtxt(xml, &ctxt)))
+        goto cleanup;
+
     cpu = virCPUDefParseXML(ctxt->node, ctxt, VIR_CPU_TYPE_AUTO);
 
 cleanup:
     xmlXPathFreeContext(ctxt);
     xmlFreeDoc(doc);
+    free(xml);
     return cpu;
 }
 
@@ -119,7 +114,7 @@ cpuTestLoadMultiXML(const char *arch,
                     const char *name,
                     unsigned int *count)
 {
-    char xml[PATH_MAX];
+    char *xml = NULL;
     xmlDocPtr doc = NULL;
     xmlXPathContextPtr ctxt = NULL;
     xmlNodePtr *nodes = NULL;
@@ -127,15 +122,11 @@ cpuTestLoadMultiXML(const char *arch,
     int n;
     int i;
 
-    snprintf(xml, PATH_MAX,
-             "%s/cputestdata/%s-%s.xml",
-             abs_srcdir, arch, name);
+    if (virAsprintf(&xml, "%s/cputestdata/%s-%s.xml", abs_srcdir, arch, name) < 0)
+        goto cleanup;
 
-    if (!(doc = virXMLParseFile(xml)) ||
-        !(ctxt = xmlXPathNewContext(doc)))
+    if (!(doc = virXMLParseFileCtxt(xml, &ctxt)))
         goto error;
-
-    ctxt->node = xmlDocGetRootElement(doc);
 
     n = virXPathNodeSet("/cpuTest/cpu", ctxt, &nodes);
     if (n <= 0 || !(cpus = calloc(n, sizeof(virCPUDefPtr))))
@@ -151,6 +142,7 @@ cpuTestLoadMultiXML(const char *arch,
     *count = n;
 
 cleanup:
+    free(xml);
     free(nodes);
     xmlXPathFreeContext(ctxt);
     xmlFreeDoc(doc);
@@ -170,25 +162,27 @@ error:
 static int
 cpuTestCompareXML(const char *arch,
                   const virCPUDefPtr cpu,
-                  const char *name)
+                  const char *name,
+                  unsigned int flags)
 {
-    char xml[PATH_MAX];
-    char expected[MAX_FILE];
-    char *expectedPtr = &(expected[0]);
+    char *xml = NULL;
+    char *expected = NULL;
     char *actual = NULL;
     int ret = -1;
 
-    snprintf(xml, PATH_MAX,
-             "%s/cputestdata/%s-%s.xml",
-             abs_srcdir, arch, name);
-
-    if (virtTestLoadFile(xml, &expectedPtr, MAX_FILE) < 0)
+    if (virAsprintf(&xml, "%s/cputestdata/%s-%s.xml",
+                    abs_srcdir, arch, name) < 0)
         goto cleanup;
 
-    if (!(actual = virCPUDefFormat(cpu, NULL, 0)))
+    if (virtTestLoadFile(xml, &expected) < 0)
+        goto cleanup;
+
+    if (!(actual = virCPUDefFormat(cpu, flags)))
         goto cleanup;
 
     if (STRNEQ(expected, actual)) {
+        if (virTestGetVerbose())
+            fprintf(stderr, "\nCompared to %s-%s.xml", arch, name);
         virtTestDifference(stderr, expected, actual);
         goto cleanup;
     }
@@ -196,6 +190,8 @@ cpuTestCompareXML(const char *arch,
     ret = 0;
 
 cleanup:
+    free(xml);
+    free(expected);
     free(actual);
     return ret;
 }
@@ -292,6 +288,7 @@ cpuTestGuestData(const void *arg)
 
     guest->type = VIR_CPU_TYPE_GUEST;
     guest->match = VIR_CPU_MATCH_EXACT;
+    guest->fallback = cpu->fallback;
     if (cpuDecode(guest, guestData, data->models,
                   data->nmodels, data->preferred) < 0) {
         if (data->result < 0) {
@@ -301,11 +298,11 @@ cpuTestGuestData(const void *arg)
         goto cleanup;
     }
 
-    virBufferVSprintf(&buf, "%s+%s", data->host, data->name);
+    virBufferAsprintf(&buf, "%s+%s", data->host, data->name);
     if (data->nmodels)
-        virBufferVSprintf(&buf, ",%s", data->modelsName);
+        virBufferAsprintf(&buf, ",%s", data->modelsName);
     if (data->preferred)
-        virBufferVSprintf(&buf, ",%s", data->preferred);
+        virBufferAsprintf(&buf, ",%s", data->preferred);
     virBufferAddLit(&buf, "-result");
 
     if (virBufferError(&buf)) {
@@ -314,7 +311,7 @@ cpuTestGuestData(const void *arg)
     }
     result = virBufferContentAndReset(&buf);
 
-    ret = cpuTestCompareXML(data->arch, guest, result);
+    ret = cpuTestCompareXML(data->arch, guest, result, 0);
 
 cleanup:
     VIR_FREE(result);
@@ -335,7 +332,7 @@ cpuTestBaseline(const void *arg)
     virCPUDefPtr *cpus = NULL;
     virCPUDefPtr baseline = NULL;
     unsigned int ncpus = 0;
-    char result[PATH_MAX];
+    char *result = NULL;
     unsigned int i;
 
     if (!(cpus = cpuTestLoadMultiXML(data->arch, data->name, &ncpus)))
@@ -355,8 +352,10 @@ cpuTestBaseline(const void *arg)
     if (!baseline)
         goto cleanup;
 
-    snprintf(result, PATH_MAX, "%s-result", data->name);
-    if (cpuTestCompareXML(data->arch, baseline, result) < 0)
+    if (virAsprintf(&result, "%s-result", data->name) < 0)
+        goto cleanup;
+
+    if (cpuTestCompareXML(data->arch, baseline, result, 0) < 0)
         goto cleanup;
 
     for (i = 0; i < ncpus; i++) {
@@ -384,6 +383,7 @@ cleanup:
         free(cpus);
     }
     virCPUDefFree(baseline);
+    free(result);
     return ret;
 }
 
@@ -395,7 +395,7 @@ cpuTestUpdate(const void *arg)
     int ret = -1;
     virCPUDefPtr host = NULL;
     virCPUDefPtr cpu = NULL;
-    char result[PATH_MAX];
+    char *result = NULL;
 
     if (!(host = cpuTestLoadXML(data->arch, data->host)) ||
         !(cpu = cpuTestLoadXML(data->arch, data->name)))
@@ -404,12 +404,16 @@ cpuTestUpdate(const void *arg)
     if (cpuUpdate(cpu, host) < 0)
         goto cleanup;
 
-    snprintf(result, PATH_MAX, "%s+%s", data->host, data->name);
-    ret = cpuTestCompareXML(data->arch, cpu, result);
+    if (virAsprintf(&result, "%s+%s", data->host, data->name) < 0)
+        goto cleanup;
+
+    ret = cpuTestCompareXML(data->arch, cpu, result,
+                            VIR_DOMAIN_XML_UPDATE_CPU);
 
 cleanup:
     virCPUDefFree(host);
     virCPUDefFree(cpu);
+    free(result);
     return ret;
 }
 
@@ -467,10 +471,10 @@ static int (*cpuTest[])(const void *) = {
 static int
 cpuTestRun(const char *name, const struct data *data)
 {
-    char label[PATH_MAX];
+    char *label = NULL;
 
-    snprintf(label, PATH_MAX, "CPU %s(%s): %s",
-             apis[data->api], data->arch, name);
+    if (virAsprintf(&label, "CPU %s(%s): %s", apis[data->api], data->arch, name) < 0)
+        return -1;
 
     free(virtTestLogContentAndReset());
 
@@ -482,9 +486,12 @@ cpuTestRun(const char *name, const struct data *data)
                 fprintf(stderr, "\n%s\n", log);
             free(log);
         }
+
+        free(label);
         return -1;
     }
 
+    free(label);
     return 0;
 }
 
@@ -494,30 +501,20 @@ static const char *nomodel[]    = { "nomodel" };
 static const char *models[]     = { "qemu64", "core2duo", "Nehalem" };
 
 static int
-mymain(int argc, char **argv)
+mymain(void)
 {
     int ret = 0;
-    char cwd[PATH_MAX];
-    char map[PATH_MAX];
-
-    progname = argv[0];
-
-    if (argc > 1) {
-        fprintf(stderr, "Usage: %s\n", progname);
-        return EXIT_FAILURE;
-    }
-
-    abs_srcdir = getenv("abs_srcdir");
-    if (!abs_srcdir)
-        abs_srcdir = getcwd(cwd, sizeof(cwd));
+    char *map = NULL;
 
     abs_top_srcdir = getenv("abs_top_srcdir");
     if (!abs_top_srcdir)
         abs_top_srcdir = "..";
 
-    snprintf(map, PATH_MAX, "%s/src/cpu/cpu_map.xml", abs_top_srcdir);
-    if (cpuMapOverride(map) < 0)
+    if (virAsprintf(&map, "%s/src/cpu/cpu_map.xml", abs_top_srcdir) < 0 ||
+        cpuMapOverride(map) < 0) {
+        free(map);
         return EXIT_FAILURE;
+    }
 
 #define DO_TEST(arch, api, name, host, cpu,                             \
                 models, nmodels, preferred, result)                     \
@@ -597,6 +594,9 @@ mymain(int argc, char **argv)
     DO_TEST_UPDATE("x86", "host", "min", IDENTICAL);
     DO_TEST_UPDATE("x86", "host", "pentium3", IDENTICAL);
     DO_TEST_UPDATE("x86", "host", "guest", SUPERSET);
+    DO_TEST_UPDATE("x86", "host", "host-model", IDENTICAL);
+    DO_TEST_UPDATE("x86", "host", "host-model-nofallback", IDENTICAL);
+    DO_TEST_UPDATE("x86", "host", "host-passthrough", IDENTICAL);
 
     /* computing baseline CPUs */
     DO_TEST_BASELINE("x86", "incompatible-vendors", -1);
@@ -626,7 +626,12 @@ mymain(int argc, char **argv)
     DO_TEST_GUESTDATA("x86", "host", "guest", models, "Penryn", 0);
     DO_TEST_GUESTDATA("x86", "host", "guest", models, "qemu64", 0);
     DO_TEST_GUESTDATA("x86", "host", "guest", nomodel, NULL, -1);
+    DO_TEST_GUESTDATA("x86", "host", "guest-nofallback", models, "Penryn", -1);
+    DO_TEST_GUESTDATA("x86", "host", "host+host-model", models, "Penryn", 0);
+    DO_TEST_GUESTDATA("x86", "host", "host+host-model-nofallback",
+                      models, "Penryn", -1);
 
+    free(map);
     return (ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
 }
 

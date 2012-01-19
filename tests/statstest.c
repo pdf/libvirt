@@ -3,11 +3,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/utsname.h>
 
 #include "stats_linux.h"
 #include "internal.h"
 #include "xen/block_stats.h"
 #include "testutils.h"
+#include "command.h"
 
 static void testQuietError(void *userData ATTRIBUTE_UNUSED,
                            virErrorPtr error ATTRIBUTE_UNUSED)
@@ -17,7 +19,7 @@ static void testQuietError(void *userData ATTRIBUTE_UNUSED,
 
 static int testDevice(const char *path, int expect)
 {
-    int actual = xenLinuxDomainDeviceID(NULL, 1, path);
+    int actual = xenLinuxDomainDeviceID(1, path);
 
     if (actual == expect) {
         return 0;
@@ -41,11 +43,27 @@ static int testDeviceHelper(const void *data)
 }
 
 static int
-mymain(int argc ATTRIBUTE_UNUSED,
-       char **argv ATTRIBUTE_UNUSED)
+mymain(void)
 {
     int ret = 0;
-    /* Some of our tests delibrately test failure cases, so
+    int status;
+    virCommandPtr cmd;
+    struct utsname ut;
+
+    /* Skip test if xend is not running.  Calling xend on a non-xen
+       kernel causes some versions of xend to issue a crash report, so
+       we first probe uname results.  */
+    uname(&ut);
+    if (strstr(ut.release, "xen") == NULL)
+        return EXIT_AM_SKIP;
+    cmd = virCommandNewArgList("/usr/sbin/xend", "status", NULL);
+    if (virCommandRun(cmd, &status) != 0 || status != 0) {
+        virCommandFree(cmd);
+        return EXIT_AM_SKIP;
+    }
+    virCommandFree(cmd);
+
+    /* Some of our tests deliberately test failure cases, so
      * register a handler to stop error messages cluttering
      * up display
      */

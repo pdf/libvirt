@@ -5,9 +5,17 @@
 The libvirt LXC driver manages "Linux Containers".  Containers are sets of processes
 with private namespaces which can (but don't always) look like separate machines, but
 do not have their own OS.  Here are two example configurations.  The first is a very
-light-weight "application container" which does not have it's own root image.  You would
-start it using
+light-weight "application container" which does not have its own root image.
 </p>
+
+    <h2><a name="project">Project Links</a></h2>
+
+    <ul>
+      <li>
+        The <a href="http://lxc.sourceforge.net/">LXC</a> Linux
+        container system
+      </li>
+    </ul>
 
 <h2>Cgroups Requirements</h2>
 
@@ -29,6 +37,23 @@ NB, the blkio controller in some kernels will not allow creation of nested
 sub-directories which will prevent correct operation of the libvirt LXC
 driver. On such kernels, it may be neccessary to unmount the blkio controller.
 </p>
+
+
+<h2>Environment setup for the container init</h2>
+
+<p>
+When the container "init" process is started, it will be given several useful
+environment variables.
+</p>
+
+<dl>
+<dt>LIBVIRT_LXC_NAME</dt>
+<dd>The name assigned to the container by libvirt</dd>
+<dt>LIBVIRT_LXC_UUID</dt>
+<dd>The UUID assigned to the container by libvirt</dd>
+<dt>LIBVIRT_LXC_CMDLINE</dt>
+<dd>The unparsed command line arguments specified in the container configuration</dd>
+</dl>
 
 
 <h3>Example config version 1</h3>

@@ -5,6 +5,27 @@
 %define __find_provides %{_mingw32_findprovides}
 %define __debug_install_post %{_mingw32_debug_install_post}
 
+# Default to skipping autoreconf.  Distros can change just this one line
+# (or provide a command-line override) if they backport any patches that
+# touch configure.ac or Makefile.am.
+%{!?enable_autotools:%define enable_autotools 0}
+
+# The mingw build is client only.  Set up defaults for hypervisor drivers
+# that talk via a native remote protocol, and for which prereq mingw
+# libraries exist.
+%define with_phyp          0%{!?_without_phyp:1}
+%define with_esx           0%{!?_without_esx:1}
+# missing libwsman, so can't build hyper-v
+%define with_hyperv        0%{!?_without_hyperv:0}
+%define with_xenapi        0%{!?_without_xenapi:1}
+
+# RHEL ships ESX but not PowerHypervisor, HyperV, or libxenserver (xenapi)
+%if 0%{?rhel}
+%define with_phyp 0
+%define with_xenapi 0
+%define with_hyperv 0
+%endif
+
 Name:           mingw32-libvirt
 Version:        @VERSION@
 Release:        3%{?dist}%{?extra_release}
@@ -28,6 +49,19 @@ BuildRequires:  mingw32-portablexdr
 BuildRequires:  pkgconfig
 # Need native version for msgfmt
 BuildRequires:  gettext
+%if 0%{?enable_autotools}
+BuildRequires: autoconf
+BuildRequires: automake
+BuildRequires: gettext-devel
+BuildRequires: libtool
+%endif
+
+%if %{with_phyp}
+BuildRequires: mingw32-libssh2
+%endif
+%if %{with_esx}
+BuildRequires: mingw32-curl
+%endif
 
 BuildArch:      noarch
 
@@ -42,23 +76,46 @@ MinGW Windows libvirt virtualization library.
 
 
 %build
+%if ! %{with_phyp}
+%define _without_phyp --without-phyp
+%endif
+
+%if ! %{with_esx}
+%define _without_esx --without-esx
+%endif
+
+%if ! %{with_hyperv}
+%define _without_hyperv --without-hyperv
+%endif
+
+%if ! %{with_xenapi}
+%define _without_xenapi --without-xenapi
+%endif
+
+%if 0%{?enable_autotools}
+autoreconf -if
+%endif
 # XXX enable SASL in future
 %{_mingw32_configure} \
+  --without-xen \
+  --without-qemu \
+  --without-openvz \
+  --without-lxc \
+  --without-vbox \
+  %{?_without_xenapi} \
   --without-sasl \
   --without-avahi \
   --without-polkit \
   --without-python \
-  --without-xen \
-  --without-qemu \
-  --without-lxc \
+  --without-libvirtd \
   --without-uml \
-  --without-vbox \
-  --without-openvz \
-  --without-phyp \
+  %{?_without_phyp} \
+  %{?_without_esx} \
+  %{?_without_hyperv} \
+  --without-vmware \
   --without-netcf \
   --without-audit \
-  --without-dtrace \
-  --without-libvirtd
+  --without-dtrace
 make
 
 
@@ -67,7 +124,7 @@ rm -rf $RPM_BUILD_ROOT
 
 make DESTDIR=$RPM_BUILD_ROOT install
 
-rm -rf $RPM_BUILD_ROOT%{_mingw32_sysconfdir}/libvirt
+rm -rf $RPM_BUILD_ROOT%{_mingw32_sysconfdir}/libvirt/nwfilter
 rm -rf $RPM_BUILD_ROOT%{_mingw32_datadir}/doc/*
 rm -rf $RPM_BUILD_ROOT%{_mingw32_datadir}/gtk-doc/*
 
@@ -83,6 +140,9 @@ rm -rf $RPM_BUILD_ROOT
 
 %files
 %defattr(-,root,root)
+%dir %{_mingw32_sysconfdir}/libvirt/
+%config(noreplace) %{_mingw32_sysconfdir}/libvirt/libvirt.conf
+
 %{_mingw32_bindir}/libvirt-0.dll
 %{_mingw32_bindir}/virsh.exe
 %{_mingw32_bindir}/virt-xml-validate
@@ -97,17 +157,20 @@ rm -rf $RPM_BUILD_ROOT
 
 %dir %{_mingw32_datadir}/libvirt/
 %dir %{_mingw32_datadir}/libvirt/schemas/
-%{_mingw32_datadir}/libvirt/schemas/domain.rng
-%{_mingw32_datadir}/libvirt/schemas/domainsnapshot.rng
-%{_mingw32_datadir}/libvirt/schemas/network.rng
-%{_mingw32_datadir}/libvirt/schemas/storagepool.rng
-%{_mingw32_datadir}/libvirt/schemas/storagevol.rng
-%{_mingw32_datadir}/libvirt/schemas/nodedev.rng
+%{_mingw32_datadir}/libvirt/schemas/basictypes.rng
 %{_mingw32_datadir}/libvirt/schemas/capability.rng
+%{_mingw32_datadir}/libvirt/schemas/domain.rng
+%{_mingw32_datadir}/libvirt/schemas/domaincommon.rng
+%{_mingw32_datadir}/libvirt/schemas/domainsnapshot.rng
 %{_mingw32_datadir}/libvirt/schemas/interface.rng
+%{_mingw32_datadir}/libvirt/schemas/network.rng
+%{_mingw32_datadir}/libvirt/schemas/networkcommon.rng
+%{_mingw32_datadir}/libvirt/schemas/nodedev.rng
 %{_mingw32_datadir}/libvirt/schemas/nwfilter.rng
 %{_mingw32_datadir}/libvirt/schemas/secret.rng
 %{_mingw32_datadir}/libvirt/schemas/storageencryption.rng
+%{_mingw32_datadir}/libvirt/schemas/storagepool.rng
+%{_mingw32_datadir}/libvirt/schemas/storagevol.rng
 
 %{_mingw32_datadir}/libvirt/cpu_map.xml
 

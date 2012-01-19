@@ -9,37 +9,29 @@
 #include "xml.h"
 #include "testutils.h"
 #include "xen/xen_hypervisor.h"
-#include "files.h"
+#include "virfile.h"
 
-static char *progname;
-static char *abs_srcdir;
-
-#define MAX_FILE 4096
-
-static int testCompareFiles(const char *hostmachine,
-                            const char *xml_rel,
-                            const char *cpuinfo_rel,
-                            const char *capabilities_rel) {
-  char xmlData[MAX_FILE];
-  char *expectxml = &(xmlData[0]);
+static int
+testCompareFiles(const char *hostmachine, const char *xml_rel,
+                 const char *cpuinfo_rel, const char *capabilities_rel)
+{
+  char *expectxml = NULL;
   char *actualxml = NULL;
   FILE *fp1 = NULL, *fp2 = NULL;
   virCapsPtr caps = NULL;
 
   int ret = -1;
 
-  char xml[PATH_MAX];
-  char cpuinfo[PATH_MAX];
-  char capabilities[PATH_MAX];
+  char *xml = NULL;
+  char *cpuinfo = NULL;
+  char *capabilities = NULL;
 
-  snprintf(xml, sizeof xml - 1, "%s/%s",
-           abs_srcdir, xml_rel);
-  snprintf(cpuinfo, sizeof cpuinfo - 1, "%s/%s",
-           abs_srcdir, cpuinfo_rel);
-  snprintf(capabilities, sizeof capabilities - 1, "%s/%s",
-           abs_srcdir, capabilities_rel);
+  if (virAsprintf(&xml, "%s/%s", abs_srcdir, xml_rel) < 0 ||
+      virAsprintf(&cpuinfo, "%s/%s", abs_srcdir, cpuinfo_rel) < 0 ||
+      virAsprintf(&capabilities, "%s/%s", abs_srcdir, capabilities_rel) < 0)
+      goto fail;
 
-  if (virtTestLoadFile(xml, &expectxml, MAX_FILE) < 0)
+  if (virtTestLoadFile(xml, &expectxml) < 0)
       goto fail;
 
   if (!(fp1 = fopen(cpuinfo, "r")))
@@ -62,8 +54,11 @@ static int testCompareFiles(const char *hostmachine,
   ret = 0;
 
  fail:
-
+  free(expectxml);
   free(actualxml);
+  free(xml);
+  free(cpuinfo);
+  free(capabilities);
   VIR_FORCE_FCLOSE(fp1);
   VIR_FORCE_FCLOSE(fp2);
 
@@ -150,23 +145,21 @@ static int testXenppc64(const void *data ATTRIBUTE_UNUSED) {
 }
 
 
+/* Fake initialization data for xenHypervisorInit(). Must be initialized
+ * explicitly before the implicit call via virInitialize(). */
+static struct xenHypervisorVersions hv_versions = {
+    .hv = 0,
+    .hypervisor = 2,
+    .sys_interface = -1,
+    .dom_interface = -1,
+};
+
 static int
-mymain(int argc, char **argv)
+mymain(void)
 {
     int ret = 0;
-    char cwd[PATH_MAX];
 
-    progname = argv[0];
-
-    if (argc > 1) {
-        fprintf(stderr, "Usage: %s\n", progname);
-        return(EXIT_FAILURE);
-    }
-
-    abs_srcdir = getenv("abs_srcdir");
-    if (!abs_srcdir)
-        abs_srcdir = getcwd(cwd, sizeof(cwd));
-
+    xenHypervisorInit(&hv_versions);
     virInitialize();
 
     if (virtTestRun("Capabilities for i686, no PAE, no HVM",

@@ -41,6 +41,8 @@ module Libvirtd_qemu =
                  | str_entry "save_image_format"
                  | str_entry "dump_image_format"
                  | str_entry "auto_dump_path"
+                 | bool_entry "auto_dump_bypass_cache"
+                 | bool_entry "auto_start_bypass_cache"
                  | str_entry "hugetlbfs_mount"
                  | bool_entry "relaxed_acs_check"
                  | bool_entry "vnc_allow_host_audio"
@@ -48,6 +50,11 @@ module Libvirtd_qemu =
                  | bool_entry "allow_disk_format_probing"
                  | bool_entry "set_process_name"
                  | int_entry "max_processes"
+                 | int_entry "max_files"
+                 | str_entry "lock_manager"
+                 | int_entry "max_queued"
+                 | int_entry "keepalive_interval"
+                 | int_entry "keepalive_count"
 
    (* Each enty in the config is one of the following three ... *)
    let entry = vnc_entry

@@ -35,6 +35,9 @@
         </optional>
       </element>
       <optional>
+        <ref name='power_management'/>
+      </optional>
+      <optional>
         <ref name='migration'/>
       </optional>
       <optional>
@@ -103,6 +106,28 @@
         <empty/>
       </element>
     </zeroOrMore>
+  </define>
+
+  <define name='power_management'>
+    <element name='power_management'>
+      <interleave>
+        <optional>
+          <element name='suspend_mem'>
+            <empty/>
+          </element>
+        </optional>
+        <optional>
+          <element name='suspend_disk'>
+            <empty/>
+          </element>
+        </optional>
+        <optional>
+          <element name='suspend_hybrid'>
+            <empty/>
+          </element>
+        </optional>
+      </interleave>
+    </element>
   </define>
 
   <define name='migration'>
@@ -302,6 +327,11 @@
           <empty/>
         </element>
       </optional>
+      <optional>
+        <element name='deviceboot'>
+          <empty/>
+        </element>
+      </optional>
     </element>
   </define>
 
@@ -325,6 +355,8 @@
       <value>arm</value>
       <value>i686</value>
       <value>ia64</value>
+      <value>microblaze</value>
+      <value>microblazeel</value>
       <value>mips</value>
       <value>mipsel</value>
       <value>ppc64</value>

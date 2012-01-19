@@ -4,7 +4,7 @@
  *                /etc/xen
  *                /var/lib/xend/domains
  *
- * Copyright (C) 2010 Red Hat, Inc.
+ * Copyright (C) 2010-2011 Red Hat, Inc.
  * Copyright (C) 2008 VirtualIron
  *
  * This library is free software; you can redistribute it and/or
@@ -31,7 +31,6 @@
 #include "datatypes.h"
 #include "driver.h"
 #include "memory.h"
-#include "event.h"
 #include "xen_driver.h"
 #include "conf.h"
 #include "domain_conf.h"
@@ -39,54 +38,18 @@
 #include "xend_internal.h"
 #include "logging.h"
 #include "uuid.h"
-#include "files.h"
+#include "virfile.h"
 
 #include "xm_internal.h" /* for xenXMDomainConfigParse */
 
 #define VIR_FROM_THIS VIR_FROM_XEN_INOTIFY
 
 #define virXenInotifyError(code, ...)                                   \
-        virReportErrorHelper(NULL, VIR_FROM_XEN_INOTIFY, code, __FILE__,      \
+        virReportErrorHelper(VIR_FROM_XEN_INOTIFY, code, __FILE__,      \
                              __FUNCTION__, __LINE__, __VA_ARGS__)
 
 struct xenUnifiedDriver xenInotifyDriver = {
-    xenInotifyOpen, /* open */
-    xenInotifyClose, /* close */
-    NULL, /* version */
-    NULL, /* hostname */
-    NULL, /* nodeGetInfo */
-    NULL, /* getCapabilities */
-    NULL, /* listDomains */
-    NULL, /* numOfDomains */
-    NULL, /* domainCreateLinux */
-    NULL, /* domainSuspend */
-    NULL, /* domainResume */
-    NULL, /* domainShutdown */
-    NULL, /* domainReboot */
-    NULL, /* domainDestroy */
-    NULL, /* domainGetOSType */
-    NULL, /* domainGetMaxMemory */
-    NULL, /* domainSetMaxMemory */
-    NULL, /* domainSetMemory */
-    NULL, /* domainGetInfo */
-    NULL, /* domainSave */
-    NULL, /* domainRestore */
-    NULL, /* domainCoreDump */
-    NULL, /* domainPinVcpu */
-    NULL, /* domainGetVcpus */
-    NULL, /* listDefinedDomains */
-    NULL, /* numOfDefinedDomains */
-    NULL, /* domainCreate */
-    NULL, /* domainDefineXML */
-    NULL, /* domainUndefine */
-    NULL, /* domainAttachDeviceFlags */
-    NULL, /* domainDetachDeviceFlags */
-    NULL, /* domainUpdateDeviceFlags */
-    NULL, /* domainGetAutostart */
-    NULL, /* domainSetAutostart */
-    NULL, /* domainGetSchedulerType */
-    NULL, /* domainGetSchedulerParameters */
-    NULL, /* domainSetSchedulerParameters */
+    .xenClose = xenInotifyClose,
 };
 
 static int
@@ -105,7 +68,7 @@ xenInotifyXenCacheLookup(virConnectPtr conn,
     memcpy(uuid, entry->def->uuid, VIR_UUID_BUFLEN);
 
     if (!*name) {
-        VIR_DEBUG0("Error getting dom from def");
+        VIR_DEBUG("Error getting dom from def");
         virReportOOMError();
         return -1;
     }
@@ -149,7 +112,7 @@ xenInotifyXendDomainsDirLookup(virConnectPtr conn, const char *filename,
                     return -1;
                 }
                 memcpy(uuid, priv->configInfoList->doms[i]->uuid, VIR_UUID_BUFLEN);
-                VIR_DEBUG0("Found dom on list");
+                VIR_DEBUG("Found dom on list");
                 return 0;
             }
         }
@@ -288,7 +251,7 @@ xenInotifyEvent(int watch ATTRIBUTE_UNUSED,
     virConnectPtr conn = data;
     xenUnifiedPrivatePtr priv = NULL;
 
-    VIR_DEBUG0("got inotify event");
+    VIR_DEBUG("got inotify event");
 
     if( conn && conn->privateData ) {
         priv = conn->privateData;
@@ -382,13 +345,15 @@ cleanup:
  */
 virDrvOpenStatus
 xenInotifyOpen(virConnectPtr conn,
-             virConnectAuthPtr auth ATTRIBUTE_UNUSED,
-             int flags ATTRIBUTE_UNUSED)
+               virConnectAuthPtr auth ATTRIBUTE_UNUSED,
+               unsigned int flags)
 {
     DIR *dh;
     struct dirent *ent;
     char *path;
     xenUnifiedPrivatePtr priv = (xenUnifiedPrivatePtr) conn->privateData;
+
+    virCheckFlags(VIR_CONNECT_RO, VIR_DRV_OPEN_ERROR);
 
     if (priv->configDir) {
         priv->useXenConfigCache = 1;
@@ -415,7 +380,6 @@ xenInotifyOpen(virConnectPtr conn,
 
             /* Build the full file path */
             if (!(path = virFileBuildPath(priv->configDir, ent->d_name, NULL))) {
-                virReportOOMError();
                 closedir(dh);
                 return -1;
             }
@@ -451,18 +415,18 @@ xenInotifyOpen(virConnectPtr conn,
         return -1;
     }
 
-    VIR_DEBUG0("Building initial config cache");
+    VIR_DEBUG("Building initial config cache");
     if (priv->useXenConfigCache &&
         xenXMConfigCacheRefresh (conn) < 0) {
         VIR_DEBUG("Failed to enable XM config cache %s", conn->err.message);
         return -1;
     }
 
-    VIR_DEBUG0("Registering with event loop");
+    VIR_DEBUG("Registering with event loop");
     /* Add the handle for monitoring */
     if ((priv->inotifyWatch = virEventAddHandle(priv->inotifyFD, VIR_EVENT_HANDLE_READABLE,
                                                 xenInotifyEvent, conn, NULL)) < 0) {
-        VIR_DEBUG0("Failed to add inotify handle, disabling events");
+        VIR_DEBUG("Failed to add inotify handle, disabling events");
     }
 
     return 0;

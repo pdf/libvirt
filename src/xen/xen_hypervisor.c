@@ -1,7 +1,7 @@
 /*
  * xen_internal.c: direct access to Xen hypervisor level
  *
- * Copyright (C) 2005-2010 Red Hat, Inc.
+ * Copyright (C) 2005-2011 Red Hat, Inc.
  *
  * See COPYING.LIB for the License of this software
  *
@@ -65,7 +65,8 @@
 #include "buf.h"
 #include "capabilities.h"
 #include "memory.h"
-#include "files.h"
+#include "virfile.h"
+#include "virnodesuspend.h"
 
 #define VIR_FROM_THIS VIR_FROM_XEN
 
@@ -113,10 +114,13 @@ typedef privcmd_hypercall_t hypercall_t;
 static int xen_ioctl_hypercall_cmd = 0;
 static int initialized = 0;
 static int in_init = 0;
-static int hv_version = 0;
-static int hypervisor_version = 2;
-static int sys_interface_version = -1;
-static int dom_interface_version = -1;
+static struct xenHypervisorVersions hv_versions = {
+    .hv = 0,
+    .hypervisor = 2,
+    .sys_interface = -1,
+    .dom_interface = -1,
+};
+
 static int kb_per_pages = 0;
 
 /* Regular expressions used by xenHypervisorGetCapabilities, and
@@ -239,12 +243,30 @@ struct xen_v2d7_getdomaininfo {
 };
 typedef struct xen_v2d7_getdomaininfo xen_v2d7_getdomaininfo;
 
+struct xen_v2d8_getdomaininfo {
+    domid_t  domain;	/* the domain number */
+    uint32_t flags;	/* flags, see before */
+    uint64_t tot_pages ALIGN_64;	/* total number of pages used */
+    uint64_t max_pages ALIGN_64;	/* maximum number of pages allowed */
+    uint64_t shr_pages ALIGN_64;    /* number of shared pages */
+    uint64_t paged_pages ALIGN_64;    /* number of paged pages */
+    uint64_t shared_info_frame ALIGN_64; /* MFN of shared_info struct */
+    uint64_t cpu_time ALIGN_64;  /* CPU time used */
+    uint32_t nr_online_vcpus;  /* Number of VCPUs currently online. */
+    uint32_t max_vcpu_id; /* Maximum VCPUID in use by this domain. */
+    uint32_t ssidref;
+    xen_domain_handle_t handle;
+    uint32_t cpupool;
+};
+typedef struct xen_v2d8_getdomaininfo xen_v2d8_getdomaininfo;
+
 union xen_getdomaininfo {
     struct xen_v0_getdomaininfo v0;
     struct xen_v2_getdomaininfo v2;
     struct xen_v2d5_getdomaininfo v2d5;
     struct xen_v2d6_getdomaininfo v2d6;
     struct xen_v2d7_getdomaininfo v2d7;
+    struct xen_v2d8_getdomaininfo v2d8;
 };
 typedef union xen_getdomaininfo xen_getdomaininfo;
 
@@ -254,6 +276,7 @@ union xen_getdomaininfolist {
     struct xen_v2d5_getdomaininfo *v2d5;
     struct xen_v2d6_getdomaininfo *v2d6;
     struct xen_v2d7_getdomaininfo *v2d7;
+    struct xen_v2d8_getdomaininfo *v2d8;
 };
 typedef union xen_getdomaininfolist xen_getdomaininfolist;
 
@@ -289,181 +312,213 @@ typedef struct xen_v2s5_availheap  xen_v2s5_availheap;
 
 
 #define XEN_GETDOMAININFOLIST_ALLOC(domlist, size)                      \
-    (hypervisor_version < 2 ?                                           \
+    (hv_versions.hypervisor < 2 ?                                       \
      (VIR_ALLOC_N(domlist.v0, (size)) == 0) :                           \
-     (dom_interface_version >= 7 ?                                      \
+     (hv_versions.dom_interface >= 8 ?                                  \
+      (VIR_ALLOC_N(domlist.v2d8, (size)) == 0) :                        \
+     (hv_versions.dom_interface == 7 ?                                  \
       (VIR_ALLOC_N(domlist.v2d7, (size)) == 0) :                        \
-     (dom_interface_version == 6 ?                                      \
+     (hv_versions.dom_interface == 6 ?                                  \
       (VIR_ALLOC_N(domlist.v2d6, (size)) == 0) :                        \
-     (dom_interface_version == 5 ?                                      \
+     (hv_versions.dom_interface == 5 ?                                  \
       (VIR_ALLOC_N(domlist.v2d5, (size)) == 0) :                        \
-      (VIR_ALLOC_N(domlist.v2, (size)) == 0)))))
+      (VIR_ALLOC_N(domlist.v2, (size)) == 0))))))
 
 #define XEN_GETDOMAININFOLIST_FREE(domlist)            \
-    (hypervisor_version < 2 ?                          \
+    (hv_versions.hypervisor < 2 ?                      \
      VIR_FREE(domlist.v0) :                            \
-     (dom_interface_version >= 7 ?                     \
+     (hv_versions.dom_interface >= 8 ?                 \
+      VIR_FREE(domlist.v2d8) :                         \
+     (hv_versions.dom_interface == 7 ?                 \
       VIR_FREE(domlist.v2d7) :                         \
-     (dom_interface_version == 6 ?                     \
+     (hv_versions.dom_interface == 6 ?                 \
       VIR_FREE(domlist.v2d6) :                         \
-     (dom_interface_version == 5 ?                     \
+     (hv_versions.dom_interface == 5 ?                 \
       VIR_FREE(domlist.v2d5) :                         \
-      VIR_FREE(domlist.v2)))))
+      VIR_FREE(domlist.v2))))))
 
 #define XEN_GETDOMAININFOLIST_CLEAR(domlist, size)            \
-    (hypervisor_version < 2 ?                                 \
+    (hv_versions.hypervisor < 2 ?                             \
      memset(domlist.v0, 0, sizeof(*domlist.v0) * size) :      \
-     (dom_interface_version >= 7 ?                            \
+     (hv_versions.dom_interface >= 8 ?                        \
+      memset(domlist.v2d8, 0, sizeof(*domlist.v2d8) * size) : \
+     (hv_versions.dom_interface == 7 ?                        \
       memset(domlist.v2d7, 0, sizeof(*domlist.v2d7) * size) : \
-     (dom_interface_version == 6 ?                            \
+     (hv_versions.dom_interface == 6 ?                        \
       memset(domlist.v2d6, 0, sizeof(*domlist.v2d6) * size) : \
-     (dom_interface_version == 5 ?                            \
+     (hv_versions.dom_interface == 5 ?                        \
       memset(domlist.v2d5, 0, sizeof(*domlist.v2d5) * size) : \
-      memset(domlist.v2, 0, sizeof(*domlist.v2) * size)))))
+      memset(domlist.v2, 0, sizeof(*domlist.v2) * size))))))
 
 #define XEN_GETDOMAININFOLIST_DOMAIN(domlist, n)    \
-    (hypervisor_version < 2 ?                       \
+    (hv_versions.hypervisor < 2 ?                   \
      domlist.v0[n].domain :                         \
-     (dom_interface_version >= 7 ?                  \
+     (hv_versions.dom_interface >= 8 ?              \
+      domlist.v2d8[n].domain :                      \
+     (hv_versions.dom_interface == 7 ?              \
       domlist.v2d7[n].domain :                      \
-     (dom_interface_version == 6 ?                  \
+     (hv_versions.dom_interface == 6 ?              \
       domlist.v2d6[n].domain :                      \
-     (dom_interface_version == 5 ?                  \
+     (hv_versions.dom_interface == 5 ?              \
       domlist.v2d5[n].domain :                      \
-      domlist.v2[n].domain))))
+      domlist.v2[n].domain)))))
 
 #define XEN_GETDOMAININFOLIST_UUID(domlist, n)      \
-    (hypervisor_version < 2 ?                       \
+    (hv_versions.hypervisor < 2 ?                   \
      domlist.v0[n].handle :                         \
-     (dom_interface_version >= 7 ?                  \
+     (hv_versions.dom_interface >= 8 ?              \
+      domlist.v2d8[n].handle :                      \
+     (hv_versions.dom_interface == 7 ?              \
       domlist.v2d7[n].handle :                      \
-     (dom_interface_version == 6 ?                  \
+     (hv_versions.dom_interface == 6 ?              \
       domlist.v2d6[n].handle :                      \
-     (dom_interface_version == 5 ?                  \
+     (hv_versions.dom_interface == 5 ?              \
       domlist.v2d5[n].handle :                      \
-      domlist.v2[n].handle))))
+      domlist.v2[n].handle)))))
 
 #define XEN_GETDOMAININFOLIST_DATA(domlist)        \
-    (hypervisor_version < 2 ?                      \
+    (hv_versions.hypervisor < 2 ?                  \
      (void*)(domlist->v0) :                        \
-     (dom_interface_version >= 7 ?                 \
+     (hv_versions.dom_interface >= 8 ?             \
+      (void*)(domlist->v2d8) :                     \
+     (hv_versions.dom_interface == 7 ?             \
       (void*)(domlist->v2d7) :                     \
-     (dom_interface_version == 6 ?                 \
+     (hv_versions.dom_interface == 6 ?             \
       (void*)(domlist->v2d6) :                     \
-     (dom_interface_version == 5 ?                 \
+     (hv_versions.dom_interface == 5 ?             \
       (void*)(domlist->v2d5) :                     \
-      (void*)(domlist->v2)))))
+      (void*)(domlist->v2))))))
 
 #define XEN_GETDOMAININFO_SIZE                     \
-    (hypervisor_version < 2 ?                      \
+    (hv_versions.hypervisor < 2 ?                  \
      sizeof(xen_v0_getdomaininfo) :                \
-     (dom_interface_version >= 7 ?                 \
+     (hv_versions.dom_interface >= 8 ?             \
+      sizeof(xen_v2d8_getdomaininfo) :             \
+     (hv_versions.dom_interface == 7 ?             \
       sizeof(xen_v2d7_getdomaininfo) :             \
-     (dom_interface_version == 6 ?                 \
+     (hv_versions.dom_interface == 6 ?             \
       sizeof(xen_v2d6_getdomaininfo) :             \
-     (dom_interface_version == 5 ?                 \
+     (hv_versions.dom_interface == 5 ?             \
       sizeof(xen_v2d5_getdomaininfo) :             \
-      sizeof(xen_v2_getdomaininfo)))))
+      sizeof(xen_v2_getdomaininfo))))))
 
 #define XEN_GETDOMAININFO_CLEAR(dominfo)                           \
-    (hypervisor_version < 2 ?                                      \
+    (hv_versions.hypervisor < 2 ?                                  \
      memset(&(dominfo.v0), 0, sizeof(xen_v0_getdomaininfo)) :      \
-     (dom_interface_version >= 7 ?                                 \
+     (hv_versions.dom_interface >= 8 ?                             \
+      memset(&(dominfo.v2d8), 0, sizeof(xen_v2d8_getdomaininfo)) : \
+     (hv_versions.dom_interface == 7 ?                             \
       memset(&(dominfo.v2d7), 0, sizeof(xen_v2d7_getdomaininfo)) : \
-     (dom_interface_version == 6 ?                                 \
+     (hv_versions.dom_interface == 6 ?                             \
       memset(&(dominfo.v2d6), 0, sizeof(xen_v2d6_getdomaininfo)) : \
-     (dom_interface_version == 5 ?                                 \
+     (hv_versions.dom_interface == 5 ?                             \
       memset(&(dominfo.v2d5), 0, sizeof(xen_v2d5_getdomaininfo)) : \
-      memset(&(dominfo.v2), 0, sizeof(xen_v2_getdomaininfo))))))
+      memset(&(dominfo.v2), 0, sizeof(xen_v2_getdomaininfo)))))))
 
 #define XEN_GETDOMAININFO_DOMAIN(dominfo)       \
-    (hypervisor_version < 2 ?                   \
+    (hv_versions.hypervisor < 2 ?               \
      dominfo.v0.domain :                        \
-     (dom_interface_version >= 7 ?              \
+     (hv_versions.dom_interface >= 8 ?          \
+      dominfo.v2d8.domain :                     \
+     (hv_versions.dom_interface == 7 ?          \
       dominfo.v2d7.domain :                     \
-     (dom_interface_version == 6 ?              \
+     (hv_versions.dom_interface == 6 ?          \
       dominfo.v2d6.domain :                     \
-     (dom_interface_version == 5 ?              \
+     (hv_versions.dom_interface == 5 ?          \
       dominfo.v2d5.domain :                     \
-      dominfo.v2.domain))))
+      dominfo.v2.domain)))))
 
 #define XEN_GETDOMAININFO_CPUTIME(dominfo)      \
-    (hypervisor_version < 2 ?                   \
+    (hv_versions.hypervisor < 2 ?               \
      dominfo.v0.cpu_time :                      \
-     (dom_interface_version >= 7 ?              \
+     (hv_versions.dom_interface >= 8 ?          \
+      dominfo.v2d8.cpu_time :                   \
+     (hv_versions.dom_interface == 7 ?          \
       dominfo.v2d7.cpu_time :                   \
-     (dom_interface_version == 6 ?              \
+     (hv_versions.dom_interface == 6 ?          \
       dominfo.v2d6.cpu_time :                   \
-     (dom_interface_version == 5 ?              \
+     (hv_versions.dom_interface == 5 ?          \
       dominfo.v2d5.cpu_time :                   \
-      dominfo.v2.cpu_time))))
+      dominfo.v2.cpu_time)))))
 
 
 #define XEN_GETDOMAININFO_CPUCOUNT(dominfo)     \
-    (hypervisor_version < 2 ?                   \
+    (hv_versions.hypervisor < 2 ?               \
      dominfo.v0.nr_online_vcpus :               \
-     (dom_interface_version >= 7 ?              \
+     (hv_versions.dom_interface >= 8 ?          \
+      dominfo.v2d8.nr_online_vcpus :            \
+     (hv_versions.dom_interface == 7 ?          \
       dominfo.v2d7.nr_online_vcpus :            \
-     (dom_interface_version == 6 ?              \
+     (hv_versions.dom_interface == 6 ?          \
       dominfo.v2d6.nr_online_vcpus :            \
-     (dom_interface_version == 5 ?              \
+     (hv_versions.dom_interface == 5 ?          \
       dominfo.v2d5.nr_online_vcpus :            \
-      dominfo.v2.nr_online_vcpus))))
+      dominfo.v2.nr_online_vcpus)))))
 
-#define XEN_GETDOMAININFO_MAXCPUID(dominfo)  \
-    (hypervisor_version < 2 ?                   \
+#define XEN_GETDOMAININFO_MAXCPUID(dominfo)     \
+    (hv_versions.hypervisor < 2 ?               \
      dominfo.v0.max_vcpu_id :                   \
-     (dom_interface_version >= 7 ?              \
+     (hv_versions.dom_interface >= 8 ?          \
+      dominfo.v2d8.max_vcpu_id :                \
+     (hv_versions.dom_interface == 7 ?          \
       dominfo.v2d7.max_vcpu_id :                \
-     (dom_interface_version == 6 ?              \
+     (hv_versions.dom_interface == 6 ?          \
       dominfo.v2d6.max_vcpu_id :                \
-     (dom_interface_version == 5 ?              \
+     (hv_versions.dom_interface == 5 ?          \
       dominfo.v2d5.max_vcpu_id :                \
-      dominfo.v2.max_vcpu_id))))
+      dominfo.v2.max_vcpu_id)))))
 
 #define XEN_GETDOMAININFO_FLAGS(dominfo)        \
-    (hypervisor_version < 2 ?                   \
+    (hv_versions.hypervisor < 2 ?               \
      dominfo.v0.flags :                         \
-     (dom_interface_version >= 7 ?              \
+     (hv_versions.dom_interface >= 8 ?          \
+      dominfo.v2d8.flags :                      \
+     (hv_versions.dom_interface == 7 ?          \
       dominfo.v2d7.flags :                      \
-     (dom_interface_version == 6 ?              \
+     (hv_versions.dom_interface == 6 ?          \
       dominfo.v2d6.flags :                      \
-     (dom_interface_version == 5 ?              \
+     (hv_versions.dom_interface == 5 ?          \
       dominfo.v2d5.flags :                      \
-      dominfo.v2.flags))))
+      dominfo.v2.flags)))))
 
 #define XEN_GETDOMAININFO_TOT_PAGES(dominfo)    \
-    (hypervisor_version < 2 ?                   \
+    (hv_versions.hypervisor < 2 ?               \
      dominfo.v0.tot_pages :                     \
-     (dom_interface_version >= 7 ?              \
+     (hv_versions.dom_interface >= 8 ?          \
+      dominfo.v2d8.tot_pages :                  \
+     (hv_versions.dom_interface == 7 ?          \
       dominfo.v2d7.tot_pages :                  \
-     (dom_interface_version == 6 ?              \
+     (hv_versions.dom_interface == 6 ?          \
       dominfo.v2d6.tot_pages :                  \
-     (dom_interface_version == 5 ?              \
+     (hv_versions.dom_interface == 5 ?          \
       dominfo.v2d5.tot_pages :                  \
-      dominfo.v2.tot_pages))))
+      dominfo.v2.tot_pages)))))
 
 #define XEN_GETDOMAININFO_MAX_PAGES(dominfo)    \
-    (hypervisor_version < 2 ?                   \
+    (hv_versions.hypervisor < 2 ?               \
      dominfo.v0.max_pages :                     \
-     (dom_interface_version >= 7 ?              \
+     (hv_versions.dom_interface >= 8 ?          \
+      dominfo.v2d8.max_pages :                  \
+     (hv_versions.dom_interface == 7 ?          \
       dominfo.v2d7.max_pages :                  \
-     (dom_interface_version == 6 ?              \
+     (hv_versions.dom_interface == 6 ?          \
       dominfo.v2d6.max_pages :                  \
-     (dom_interface_version == 5 ?              \
+     (hv_versions.dom_interface == 5 ?          \
       dominfo.v2d5.max_pages :                  \
-      dominfo.v2.max_pages))))
+      dominfo.v2.max_pages)))))
 
 #define XEN_GETDOMAININFO_UUID(dominfo)         \
-    (hypervisor_version < 2 ?                   \
+    (hv_versions.hypervisor < 2 ?               \
      dominfo.v0.handle :                        \
-     (dom_interface_version >= 7 ?              \
+     (hv_versions.dom_interface >= 8 ?          \
+      dominfo.v2d8.handle :                     \
+     (hv_versions.dom_interface == 7 ?          \
       dominfo.v2d7.handle :                     \
-     (dom_interface_version == 6 ?              \
+     (hv_versions.dom_interface == 6 ?          \
       dominfo.v2d6.handle :                     \
-     (dom_interface_version == 5 ?              \
+     (hv_versions.dom_interface == 5 ?          \
       dominfo.v2d5.handle :                     \
-      dominfo.v2.handle))))
+      dominfo.v2.handle)))))
 
 
 static int
@@ -552,7 +607,7 @@ typedef struct xen_v0_domainop xen_v0_domainop;
 #define XEN_V2_OP_UNPAUSEDOMAIN	4
 
 /*
- * The information for an setmaxmem system hypercall
+ * The information for a setmaxmem system hypercall
  */
 #define XEN_V0_OP_SETMAXMEM	28
 #define XEN_V1_OP_SETMAXMEM	28
@@ -576,7 +631,7 @@ struct xen_v2d5_setmaxmem {
 typedef struct xen_v2d5_setmaxmem xen_v2d5_setmaxmem;
 
 /*
- * The information for an setmaxvcpu system hypercall
+ * The information for a setmaxvcpu system hypercall
  */
 #define XEN_V0_OP_SETMAXVCPU	41
 #define XEN_V1_OP_SETMAXVCPU	41
@@ -595,7 +650,7 @@ struct xen_v2_setmaxvcpu {
 typedef struct xen_v2_setmaxvcpu xen_v2_setmaxvcpu;
 
 /*
- * The information for an setvcpumap system hypercall
+ * The information for a setvcpumap system hypercall
  * Note that between 1 and 2 the limitation to 64 physical CPU was lifted
  * hence the difference in structures
  */
@@ -643,7 +698,7 @@ struct xen_v2d5_setvcpumap {
 typedef struct xen_v2d5_setvcpumap xen_v2d5_setvcpumap;
 
 /*
- * The information for an vcpuinfo system hypercall
+ * The information for a vcpuinfo system hypercall
  */
 #define XEN_V0_OP_GETVCPUINFO   43
 #define XEN_V1_OP_GETVCPUINFO	43
@@ -802,48 +857,25 @@ typedef struct xen_op_v2_dom xen_op_v2_dom;
 static unsigned long xenHypervisorGetMaxMemory(virDomainPtr domain);
 
 struct xenUnifiedDriver xenHypervisorDriver = {
-    xenHypervisorOpen, /* open */
-    xenHypervisorClose, /* close */
-    xenHypervisorGetVersion, /* version */
-    NULL, /* hostname */
-    NULL, /* nodeGetInfo */
-    xenHypervisorGetCapabilities, /* getCapabilities */
-    xenHypervisorListDomains, /* listDomains */
-    xenHypervisorNumOfDomains, /* numOfDomains */
-    NULL, /* domainCreateXML */
-    xenHypervisorPauseDomain, /* domainSuspend */
-    xenHypervisorResumeDomain, /* domainResume */
-    NULL, /* domainShutdown */
-    NULL, /* domainReboot */
-    xenHypervisorDestroyDomain, /* domainDestroy */
-    xenHypervisorDomainGetOSType, /* domainGetOSType */
-    xenHypervisorGetMaxMemory, /* domainGetMaxMemory */
-    xenHypervisorSetMaxMemory, /* domainSetMaxMemory */
-    NULL, /* domainSetMemory */
-    xenHypervisorGetDomainInfo, /* domainGetInfo */
-    NULL, /* domainSave */
-    NULL, /* domainRestore */
-    NULL, /* domainCoreDump */
-    xenHypervisorPinVcpu, /* domainPinVcpu */
-    xenHypervisorGetVcpus, /* domainGetVcpus */
-    NULL, /* listDefinedDomains */
-    NULL, /* numOfDefinedDomains */
-    NULL, /* domainCreate */
-    NULL, /* domainDefineXML */
-    NULL, /* domainUndefine */
-    NULL, /* domainAttachDeviceFlags */
-    NULL, /* domainDetachDeviceFlags */
-    NULL, /* domainUpdateDeviceFlags */
-    NULL, /* domainGetAutostart */
-    NULL, /* domainSetAutostart */
-    xenHypervisorGetSchedulerType, /* domainGetSchedulerType */
-    xenHypervisorGetSchedulerParameters, /* domainGetSchedulerParameters */
-    xenHypervisorSetSchedulerParameters, /* domainSetSchedulerParameters */
+    .xenClose = xenHypervisorClose,
+    .xenVersion = xenHypervisorGetVersion,
+    .xenDomainSuspend = xenHypervisorPauseDomain,
+    .xenDomainResume = xenHypervisorResumeDomain,
+    .xenDomainDestroyFlags = xenHypervisorDestroyDomainFlags,
+    .xenDomainGetOSType = xenHypervisorDomainGetOSType,
+    .xenDomainGetMaxMemory = xenHypervisorGetMaxMemory,
+    .xenDomainSetMaxMemory = xenHypervisorSetMaxMemory,
+    .xenDomainGetInfo = xenHypervisorGetDomainInfo,
+    .xenDomainPinVcpu = xenHypervisorPinVcpu,
+    .xenDomainGetVcpus = xenHypervisorGetVcpus,
+    .xenDomainGetSchedulerType = xenHypervisorGetSchedulerType,
+    .xenDomainGetSchedulerParameters = xenHypervisorGetSchedulerParameters,
+    .xenDomainSetSchedulerParameters = xenHypervisorSetSchedulerParameters,
 };
 
 #define virXenError(code, ...)                                             \
         if (in_init == 0)                                                  \
-            virReportErrorHelper(NULL, VIR_FROM_XEN, code, __FILE__,       \
+            virReportErrorHelper(VIR_FROM_XEN, code, __FILE__,             \
                                  __FUNCTION__, __LINE__, __VA_ARGS__)
 
 /**
@@ -870,11 +902,11 @@ virXenErrorFunc(virErrorNumber error, const char *func, const char *info,
     if (func != NULL) {
         snprintf(fullinfo, 999, "%s: %s", func, info);
         fullinfo[999] = 0;
-        virRaiseError(NULL, NULL, NULL, VIR_FROM_XEN, error, VIR_ERR_ERROR,
+        virRaiseError(NULL, NULL, VIR_FROM_XEN, error, VIR_ERR_ERROR,
                         errmsg, fullinfo, NULL, value, 0, errmsg, fullinfo,
                         value);
     } else {
-        virRaiseError(NULL, NULL, NULL, VIR_FROM_XEN, error, VIR_ERR_ERROR,
+        virRaiseError(NULL, NULL, VIR_FROM_XEN, error, VIR_ERR_ERROR,
                         errmsg, info, NULL, value, 0, errmsg, info,
                         value);
     }
@@ -885,8 +917,8 @@ virXenErrorFunc(virErrorNumber error, const char *func, const char *info,
  * @handle: the handle to the Xen hypervisor
  * @op: pointer to the hypervisor operation structure
  *
- * Do an hypervisor operation though the old interface,
- * this leads to an hypervisor call through ioctl.
+ * Do a hypervisor operation though the old interface,
+ * this leads to a hypervisor call through ioctl.
  *
  * Returns 0 in case of success and -1 in case of error.
  */
@@ -897,7 +929,7 @@ xenHypervisorDoV0Op(int handle, xen_op_v0 * op)
     v0_hypercall_t hc;
 
     memset(&hc, 0, sizeof(hc));
-    op->interface_version = hv_version << 8;
+    op->interface_version = hv_versions.hv << 8;
     hc.op = __HYPERVISOR_dom0_op;
     hc.arg[0] = (unsigned long) op;
 
@@ -927,7 +959,7 @@ xenHypervisorDoV0Op(int handle, xen_op_v0 * op)
  * @handle: the handle to the Xen hypervisor
  * @op: pointer to the hypervisor operation structure
  *
- * Do an hypervisor v1 operation, this leads to an hypervisor call through
+ * Do a hypervisor v1 operation, this leads to a hypervisor call through
  * ioctl.
  *
  * Returns 0 in case of success and -1 in case of error.
@@ -970,7 +1002,7 @@ xenHypervisorDoV1Op(int handle, xen_op_v1* op)
  * @handle: the handle to the Xen hypervisor
  * @op: pointer to the hypervisor operation structure
  *
- * Do an hypervisor v2 system operation, this leads to an hypervisor
+ * Do a hypervisor v2 system operation, this leads to a hypervisor
  * call through ioctl.
  *
  * Returns 0 in case of success and -1 in case of error.
@@ -982,7 +1014,7 @@ xenHypervisorDoV2Sys(int handle, xen_op_v2_sys* op)
     hypercall_t hc;
 
     memset(&hc, 0, sizeof(hc));
-    op->interface_version = sys_interface_version;
+    op->interface_version = hv_versions.sys_interface;
     hc.op = __HYPERVISOR_sysctl;
     hc.arg[0] = (unsigned long) op;
 
@@ -1013,7 +1045,7 @@ xenHypervisorDoV2Sys(int handle, xen_op_v2_sys* op)
  * @handle: the handle to the Xen hypervisor
  * @op: pointer to the hypervisor domain operation structure
  *
- * Do an hypervisor v2 domain operation, this leads to an hypervisor
+ * Do a hypervisor v2 domain operation, this leads to a hypervisor
  * call through ioctl.
  *
  * Returns 0 in case of success and -1 in case of error.
@@ -1025,7 +1057,7 @@ xenHypervisorDoV2Dom(int handle, xen_op_v2_dom* op)
     hypercall_t hc;
 
     memset(&hc, 0, sizeof(hc));
-    op->interface_version = dom_interface_version;
+    op->interface_version = hv_versions.dom_interface;
     hc.op = __HYPERVISOR_domctl;
     hc.arg[0] = (unsigned long) op;
 
@@ -1073,13 +1105,13 @@ virXen_getdomaininfolist(int handle, int first_domain, int maxids,
         virXenError(VIR_ERR_XEN_CALL, " locking");
         return (-1);
     }
-    if (hypervisor_version > 1) {
+    if (hv_versions.hypervisor > 1) {
         xen_op_v2_sys op;
 
         memset(&op, 0, sizeof(op));
         op.cmd = XEN_V2_OP_GETDOMAININFOLIST;
 
-        if (sys_interface_version < 3) {
+        if (hv_versions.sys_interface < 3) {
             op.u.getdomaininfolist.first_domain = (domid_t) first_domain;
             op.u.getdomaininfolist.max_domains = maxids;
             op.u.getdomaininfolist.buffer = dominfos->v2;
@@ -1093,12 +1125,12 @@ virXen_getdomaininfolist(int handle, int first_domain, int maxids,
         ret = xenHypervisorDoV2Sys(handle, &op);
 
         if (ret == 0) {
-            if (sys_interface_version < 3)
+            if (hv_versions.sys_interface < 3)
                 ret = op.u.getdomaininfolist.num_domains;
             else
                 ret = op.u.getdomaininfolists3.num_domains;
         }
-    } else if (hypervisor_version == 1) {
+    } else if (hv_versions.hypervisor == 1) {
         xen_op_v1 op;
 
         memset(&op, 0, sizeof(op));
@@ -1110,7 +1142,7 @@ virXen_getdomaininfolist(int handle, int first_domain, int maxids,
         ret = xenHypervisorDoV1Op(handle, &op);
         if (ret == 0)
             ret = op.u.getdomaininfolist.num_domains;
-    } else if (hypervisor_version == 0) {
+    } else if (hv_versions.hypervisor == 0) {
         xen_op_v0 op;
 
         memset(&op, 0, sizeof(op));
@@ -1136,7 +1168,7 @@ virXen_getdomaininfo(int handle, int first_domain,
                      xen_getdomaininfo *dominfo) {
     xen_getdomaininfolist dominfos;
 
-    if (hypervisor_version < 2) {
+    if (hv_versions.hypervisor < 2) {
         dominfos.v0 = &(dominfo->v0);
     } else {
         dominfos.v2 = &(dominfo->v2);
@@ -1180,17 +1212,17 @@ xenHypervisorGetSchedulerType(virDomainPtr domain, int *nparams)
     }
 
     /*
-     * Support only dom_interface_version >=5
+     * Support only hv_versions.dom_interface >=5
      * (Xen3.1.0 or later)
      * TODO: check on Xen 3.0.3
      */
-    if (dom_interface_version < 5) {
+    if (hv_versions.dom_interface < 5) {
         virXenErrorFunc(VIR_ERR_NO_XEN, __FUNCTION__,
                         "unsupported in dom interface < 5", 0);
         return NULL;
     }
 
-    if (hypervisor_version > 1) {
+    if (hv_versions.hypervisor > 1) {
         xen_op_v2_sys op;
         int ret;
 
@@ -1206,14 +1238,14 @@ xenHypervisorGetSchedulerType(virDomainPtr domain, int *nparams)
                 if (schedulertype == NULL)
                     virReportOOMError();
                 if (nparams)
-                    *nparams = 6;
+                    *nparams = XEN_SCHED_SEDF_NPARAM;
                 break;
             case XEN_SCHEDULER_CREDIT:
                 schedulertype = strdup("credit");
                 if (schedulertype == NULL)
                     virReportOOMError();
                 if (nparams)
-                    *nparams = 2;
+                    *nparams = XEN_SCHED_CRED_NPARAM;
                 break;
             default:
                 break;
@@ -1223,16 +1255,13 @@ xenHypervisorGetSchedulerType(virDomainPtr domain, int *nparams)
     return schedulertype;
 }
 
-static const char *str_weight = "weight";
-static const char *str_cap = "cap";
-
 /**
  * xenHypervisorGetSchedulerParameters:
  * @domain: pointer to the Xen Hypervisor block
  * @params: pointer to scheduler parameters.
  *     This memory area should be allocated before calling.
- * @nparams:this parameter should be same as
- *     a given number of scheduler parameters.
+ * @nparams: this parameter must be at least as large as
+ *     the given number of scheduler parameters.
  *     from xenHypervisorGetSchedulerType().
  *
  * Do a low level hypercall to get scheduler parameters
@@ -1241,7 +1270,7 @@ static const char *str_cap = "cap";
  */
 int
 xenHypervisorGetSchedulerParameters(virDomainPtr domain,
-                                    virSchedParameterPtr params, int *nparams)
+                                    virTypedParameterPtr params, int *nparams)
 {
     xenUnifiedPrivatePtr priv;
 
@@ -1264,17 +1293,17 @@ xenHypervisorGetSchedulerParameters(virDomainPtr domain,
     }
 
     /*
-     * Support only dom_interface_version >=5
+     * Support only hv_versions.dom_interface >=5
      * (Xen3.1.0 or later)
      * TODO: check on Xen 3.0.3
      */
-    if (dom_interface_version < 5) {
+    if (hv_versions.dom_interface < 5) {
         virXenErrorFunc(VIR_ERR_NO_XEN, __FUNCTION__,
                         "unsupported in dom interface < 5", 0);
         return -1;
     }
 
-    if (hypervisor_version > 1) {
+    if (hv_versions.hypervisor > 1) {
         xen_op_v2_sys op_sys;
         xen_op_v2_dom op_dom;
         int ret;
@@ -1287,12 +1316,16 @@ xenHypervisorGetSchedulerParameters(virDomainPtr domain,
 
         switch (op_sys.u.getschedulerid.sched_id){
             case XEN_SCHEDULER_SEDF:
+                if (*nparams < XEN_SCHED_SEDF_NPARAM) {
+                    virXenError(VIR_ERR_INVALID_ARG,
+                                "%s", _("Invalid parameter count"));
+                    return -1;
+                }
+
                 /* TODO: Implement for Xen/SEDF */
                 TODO
                 return(-1);
             case XEN_SCHEDULER_CREDIT:
-                if (*nparams < 2)
-                    return(-1);
                 memset(&op_dom, 0, sizeof(op_dom));
                 op_dom.cmd = XEN_V2_OP_SCHEDULER;
                 op_dom.domain = (domid_t) domain->id;
@@ -1302,23 +1335,30 @@ xenHypervisorGetSchedulerParameters(virDomainPtr domain,
                 if (ret < 0)
                     return(-1);
 
-                if (virStrcpyStatic(params[0].field, str_weight) == NULL) {
+                if (virStrcpyStatic(params[0].field,
+                                    VIR_DOMAIN_SCHEDULER_WEIGHT) == NULL) {
                     virXenError(VIR_ERR_INTERNAL_ERROR,
-                                "Weight %s too big for destination", str_weight);
+                                "Weight %s too big for destination",
+                                VIR_DOMAIN_SCHEDULER_WEIGHT);
                     return -1;
                 }
-                params[0].type = VIR_DOMAIN_SCHED_FIELD_UINT;
+                params[0].type = VIR_TYPED_PARAM_UINT;
                 params[0].value.ui = op_dom.u.getschedinfo.u.credit.weight;
 
-                if (virStrcpyStatic(params[1].field, str_cap) == NULL) {
-                    virXenError(VIR_ERR_INTERNAL_ERROR,
-                                "Cap %s too big for destination", str_cap);
-                    return -1;
+                if (*nparams > 1) {
+                    if (virStrcpyStatic(params[1].field,
+                                        VIR_DOMAIN_SCHEDULER_CAP) == NULL) {
+                        virXenError(VIR_ERR_INTERNAL_ERROR,
+                                    "Cap %s too big for destination",
+                                    VIR_DOMAIN_SCHEDULER_CAP);
+                        return -1;
+                    }
+                    params[1].type = VIR_TYPED_PARAM_UINT;
+                    params[1].value.ui = op_dom.u.getschedinfo.u.credit.cap;
                 }
-                params[1].type = VIR_DOMAIN_SCHED_FIELD_UINT;
-                params[1].value.ui = op_dom.u.getschedinfo.u.credit.cap;
 
-                *nparams = 2;
+                if (*nparams > XEN_SCHED_CRED_NPARAM)
+                    *nparams = XEN_SCHED_CRED_NPARAM;
                 break;
             default:
                 virXenErrorFunc(VIR_ERR_INVALID_ARG, __FUNCTION__,
@@ -1341,7 +1381,7 @@ xenHypervisorGetSchedulerParameters(virDomainPtr domain,
  */
 int
 xenHypervisorSetSchedulerParameters(virDomainPtr domain,
-                                 virSchedParameterPtr params, int nparams)
+                                    virTypedParameterPtr params, int nparams)
 {
     int i;
     unsigned int val;
@@ -1354,10 +1394,9 @@ xenHypervisorSetSchedulerParameters(virDomainPtr domain,
         return -1;
     }
 
-    if ((nparams == 0) || (params == NULL)) {
-        virXenErrorFunc(VIR_ERR_INVALID_ARG, __FUNCTION__,
-                        "Noparameters given", 0);
-        return(-1);
+    if (nparams == 0) {
+        /* nothing to do, exit early */
+        return 0;
     }
 
     priv = (xenUnifiedPrivatePtr) domain->conn->privateData;
@@ -1373,17 +1412,17 @@ xenHypervisorSetSchedulerParameters(virDomainPtr domain,
     }
 
     /*
-     * Support only dom_interface_version >=5
+     * Support only hv_versions.dom_interface >=5
      * (Xen3.1.0 or later)
      * TODO: check on Xen 3.0.3
      */
-    if (dom_interface_version < 5) {
+    if (hv_versions.dom_interface < 5) {
         virXenErrorFunc(VIR_ERR_NO_XEN, __FUNCTION__,
                         "unsupported in dom interface < 5", 0);
         return -1;
     }
 
-    if (hypervisor_version > 1) {
+    if (hv_versions.hypervisor > 1) {
         xen_op_v2_sys op_sys;
         xen_op_v2_dom op_dom;
         int ret;
@@ -1414,8 +1453,8 @@ xenHypervisorSetSchedulerParameters(virDomainPtr domain,
 
             for (i = 0; i < nparams; i++) {
                 memset(&buf, 0, sizeof(buf));
-                if (STREQ (params[i].field, str_weight) &&
-                    params[i].type == VIR_DOMAIN_SCHED_FIELD_UINT) {
+                if (STREQ (params[i].field, VIR_DOMAIN_SCHEDULER_WEIGHT) &&
+                    params[i].type == VIR_TYPED_PARAM_UINT) {
                     val = params[i].value.ui;
                     if ((val < 1) || (val > USHRT_MAX)) {
                         snprintf(buf, sizeof(buf), _("Credit scheduler weight parameter (%d) is out of range (1-65535)"), val);
@@ -1423,8 +1462,8 @@ xenHypervisorSetSchedulerParameters(virDomainPtr domain,
                         return(-1);
                     }
                     op_dom.u.getschedinfo.u.credit.weight = val;
-                } else if (STREQ (params[i].field, str_cap) &&
-                    params[i].type == VIR_DOMAIN_SCHED_FIELD_UINT) {
+                } else if (STREQ (params[i].field, VIR_DOMAIN_SCHEDULER_CAP) &&
+                    params[i].type == VIR_TYPED_PARAM_UINT) {
                     val = params[i].value.ui;
                     if (val >= USHRT_MAX) {
                         snprintf(buf, sizeof(buf), _("Credit scheduler cap parameter (%d) is out of range (0-65534)"), val);
@@ -1472,7 +1511,7 @@ xenHypervisorDomainBlockStats (virDomainPtr dom,
     xenUnifiedUnlock(priv);
     return ret;
 #else
-    virXenErrorFunc(VIR_ERR_NO_SUPPORT, __FUNCTION__,
+    virXenErrorFunc(VIR_ERR_OPERATION_INVALID, __FUNCTION__,
                     "block statistics not supported on this platform",
                     dom->id);
     return -1;
@@ -1510,7 +1549,7 @@ xenHypervisorDomainInterfaceStats (virDomainPtr dom,
 
     return linuxDomainInterfaceStats(path, stats);
 #else
-    virXenErrorFunc(VIR_ERR_NO_SUPPORT, __FUNCTION__,
+    virXenErrorFunc(VIR_ERR_OPERATION_INVALID, __FUNCTION__,
                     "/proc/net/dev: Interface not found", 0);
     return -1;
 #endif
@@ -1530,21 +1569,21 @@ virXen_pausedomain(int handle, int id)
 {
     int ret = -1;
 
-    if (hypervisor_version > 1) {
+    if (hv_versions.hypervisor > 1) {
         xen_op_v2_dom op;
 
         memset(&op, 0, sizeof(op));
         op.cmd = XEN_V2_OP_PAUSEDOMAIN;
         op.domain = (domid_t) id;
         ret = xenHypervisorDoV2Dom(handle, &op);
-    } else if (hypervisor_version == 1) {
+    } else if (hv_versions.hypervisor == 1) {
         xen_op_v1 op;
 
         memset(&op, 0, sizeof(op));
         op.cmd = XEN_V1_OP_PAUSEDOMAIN;
         op.u.domain.domain = (domid_t) id;
         ret = xenHypervisorDoV1Op(handle, &op);
-    } else if (hypervisor_version == 0) {
+    } else if (hv_versions.hypervisor == 0) {
         xen_op_v0 op;
 
         memset(&op, 0, sizeof(op));
@@ -1569,21 +1608,21 @@ virXen_unpausedomain(int handle, int id)
 {
     int ret = -1;
 
-    if (hypervisor_version > 1) {
+    if (hv_versions.hypervisor > 1) {
         xen_op_v2_dom op;
 
         memset(&op, 0, sizeof(op));
         op.cmd = XEN_V2_OP_UNPAUSEDOMAIN;
         op.domain = (domid_t) id;
         ret = xenHypervisorDoV2Dom(handle, &op);
-    } else if (hypervisor_version == 1) {
+    } else if (hv_versions.hypervisor == 1) {
         xen_op_v1 op;
 
         memset(&op, 0, sizeof(op));
         op.cmd = XEN_V1_OP_UNPAUSEDOMAIN;
         op.u.domain.domain = (domid_t) id;
         ret = xenHypervisorDoV1Op(handle, &op);
-    } else if (hypervisor_version == 0) {
+    } else if (hv_versions.hypervisor == 0) {
         xen_op_v0 op;
 
         memset(&op, 0, sizeof(op));
@@ -1608,21 +1647,21 @@ virXen_destroydomain(int handle, int id)
 {
     int ret = -1;
 
-    if (hypervisor_version > 1) {
+    if (hv_versions.hypervisor > 1) {
         xen_op_v2_dom op;
 
         memset(&op, 0, sizeof(op));
         op.cmd = XEN_V2_OP_DESTROYDOMAIN;
         op.domain = (domid_t) id;
         ret = xenHypervisorDoV2Dom(handle, &op);
-    } else if (hypervisor_version == 1) {
+    } else if (hv_versions.hypervisor == 1) {
         xen_op_v1 op;
 
         memset(&op, 0, sizeof(op));
         op.cmd = XEN_V1_OP_DESTROYDOMAIN;
         op.u.domain.domain = (domid_t) id;
         ret = xenHypervisorDoV1Op(handle, &op);
-    } else if (hypervisor_version == 0) {
+    } else if (hv_versions.hypervisor == 0) {
         xen_op_v0 op;
 
         memset(&op, 0, sizeof(op));
@@ -1648,18 +1687,18 @@ virXen_setmaxmem(int handle, int id, unsigned long memory)
 {
     int ret = -1;
 
-    if (hypervisor_version > 1) {
+    if (hv_versions.hypervisor > 1) {
         xen_op_v2_dom op;
 
         memset(&op, 0, sizeof(op));
         op.cmd = XEN_V2_OP_SETMAXMEM;
         op.domain = (domid_t) id;
-        if (dom_interface_version < 5)
+        if (hv_versions.dom_interface < 5)
             op.u.setmaxmem.maxmem = memory;
         else
             op.u.setmaxmemd5.maxmem = memory;
         ret = xenHypervisorDoV2Dom(handle, &op);
-    } else if (hypervisor_version == 1) {
+    } else if (hv_versions.hypervisor == 1) {
         xen_op_v1 op;
 
         memset(&op, 0, sizeof(op));
@@ -1667,7 +1706,7 @@ virXen_setmaxmem(int handle, int id, unsigned long memory)
         op.u.setmaxmem.domain = (domid_t) id;
         op.u.setmaxmem.maxmem = memory;
         ret = xenHypervisorDoV1Op(handle, &op);
-    } else if (hypervisor_version == 0) {
+    } else if (hv_versions.hypervisor == 0) {
         xen_op_v0 op;
 
         memset(&op, 0, sizeof(op));
@@ -1694,7 +1733,7 @@ virXen_setmaxvcpus(int handle, int id, unsigned int vcpus)
 {
     int ret = -1;
 
-    if (hypervisor_version > 1) {
+    if (hv_versions.hypervisor > 1) {
         xen_op_v2_dom op;
 
         memset(&op, 0, sizeof(op));
@@ -1702,7 +1741,7 @@ virXen_setmaxvcpus(int handle, int id, unsigned int vcpus)
         op.domain = (domid_t) id;
         op.u.setmaxvcpu.maxvcpu = vcpus;
         ret = xenHypervisorDoV2Dom(handle, &op);
-    } else if (hypervisor_version == 1) {
+    } else if (hv_versions.hypervisor == 1) {
         xen_op_v1 op;
 
         memset(&op, 0, sizeof(op));
@@ -1710,7 +1749,7 @@ virXen_setmaxvcpus(int handle, int id, unsigned int vcpus)
         op.u.setmaxvcpu.domain = (domid_t) id;
         op.u.setmaxvcpu.maxvcpu = vcpus;
         ret = xenHypervisorDoV1Op(handle, &op);
-    } else if (hypervisor_version == 0) {
+    } else if (hv_versions.hypervisor == 0) {
         xen_op_v0 op;
 
         memset(&op, 0, sizeof(op));
@@ -1743,7 +1782,7 @@ virXen_setvcpumap(int handle, int id, unsigned int vcpu,
     unsigned char *bitmap = NULL;
     uint32_t nr_cpus;
 
-    if (hypervisor_version > 1) {
+    if (hv_versions.hypervisor > 1) {
         xen_op_v2_dom op;
 
         if (lock_pages(cpumap, maplen) < 0) {
@@ -1769,7 +1808,7 @@ virXen_setvcpumap(int handle, int id, unsigned int vcpu,
             nr_cpus = maplen * 8;
         }
 
-        if (dom_interface_version < 5) {
+        if (hv_versions.dom_interface < 5) {
             op.u.setvcpumap.vcpu = vcpu;
             op.u.setvcpumap.cpumap.bitmap = bitmap;
             op.u.setvcpumap.cpumap.nr_cpus = nr_cpus;
@@ -1797,7 +1836,7 @@ virXen_setvcpumap(int handle, int id, unsigned int vcpu,
         for (j = 0; j < maplen; j++)
             *(pm + (j / 8)) |= cpumap[j] << (8 * (j & 7));
 
-        if (hypervisor_version == 1) {
+        if (hv_versions.hypervisor == 1) {
             xen_op_v1 op;
 
             memset(&op, 0, sizeof(op));
@@ -1806,7 +1845,7 @@ virXen_setvcpumap(int handle, int id, unsigned int vcpu,
             op.u.setvcpumap.vcpu = vcpu;
             op.u.setvcpumap.cpumap = xen_cpumap;
             ret = xenHypervisorDoV1Op(handle, &op);
-        } else if (hypervisor_version == 0) {
+        } else if (hv_versions.hypervisor == 0) {
             xen_op_v0 op;
 
             memset(&op, 0, sizeof(op));
@@ -1839,13 +1878,13 @@ virXen_getvcpusinfo(int handle, int id, unsigned int vcpu, virVcpuInfoPtr ipt,
 {
     int ret = -1;
 
-    if (hypervisor_version > 1) {
+    if (hv_versions.hypervisor > 1) {
         xen_op_v2_dom op;
 
         memset(&op, 0, sizeof(op));
         op.cmd = XEN_V2_OP_GETVCPUINFO;
         op.domain = (domid_t) id;
-        if (dom_interface_version < 5)
+        if (hv_versions.dom_interface < 5)
             op.u.getvcpuinfo.vcpu = (uint16_t) vcpu;
         else
             op.u.getvcpuinfod5.vcpu = (uint16_t) vcpu;
@@ -1854,7 +1893,7 @@ virXen_getvcpusinfo(int handle, int id, unsigned int vcpu, virVcpuInfoPtr ipt,
         if (ret < 0)
             return(-1);
         ipt->number = vcpu;
-        if (dom_interface_version < 5) {
+        if (hv_versions.dom_interface < 5) {
             if (op.u.getvcpuinfo.online) {
                 if (op.u.getvcpuinfo.running)
                     ipt->state = VIR_VCPU_RUNNING;
@@ -1886,7 +1925,7 @@ virXen_getvcpusinfo(int handle, int id, unsigned int vcpu, virVcpuInfoPtr ipt,
             memset(&op, 0, sizeof(op));
             op.cmd = XEN_V2_OP_GETVCPUMAP;
             op.domain = (domid_t) id;
-            if (dom_interface_version < 5) {
+            if (hv_versions.dom_interface < 5) {
                 op.u.getvcpumap.vcpu = vcpu;
                 op.u.getvcpumap.cpumap.bitmap = cpumap;
                 op.u.getvcpumap.cpumap.nr_cpus = maplen * 8;
@@ -1908,7 +1947,7 @@ virXen_getvcpusinfo(int handle, int id, unsigned int vcpu, virVcpuInfoPtr ipt,
         if (maplen > (int)sizeof(cpumap_t))
             mapl = (int)sizeof(cpumap_t);
 
-        if (hypervisor_version == 1) {
+        if (hv_versions.hypervisor == 1) {
             xen_op_v1 op;
 
             memset(&op, 0, sizeof(op));
@@ -1932,7 +1971,7 @@ virXen_getvcpusinfo(int handle, int id, unsigned int vcpu, virVcpuInfoPtr ipt,
                         VIR_USE_CPU(cpumap, cpu);
                 }
             }
-        } else if (hypervisor_version == 0) {
+        } else if (hv_versions.hypervisor == 0) {
             xen_op_v1 op;
 
             memset(&op, 0, sizeof(op));
@@ -1963,12 +2002,16 @@ virXen_getvcpusinfo(int handle, int id, unsigned int vcpu, virVcpuInfoPtr ipt,
 
 /**
  * xenHypervisorInit:
+ * @override_versions: pointer to optional struct xenHypervisorVersions with
+ *     version information used instead of automatic version detection.
  *
  * Initialize the hypervisor layer. Try to detect the kind of interface
  * used i.e. pre or post changeset 10277
+ *
+ * Returns 0 or -1 in case of failure
  */
 int
-xenHypervisorInit(void)
+xenHypervisorInit(struct xenHypervisorVersions *override_versions)
 {
     int fd, ret, cmd, errcode;
     hypercall_t hc;
@@ -1977,7 +2020,7 @@ xenHypervisorInit(void)
     virVcpuInfoPtr ipt = NULL;
 
     if (initialized) {
-        if (hypervisor_version == -1)
+        if (hv_versions.hypervisor == -1)
             return (-1);
         return(0);
     }
@@ -2019,10 +2062,16 @@ xenHypervisorInit(void)
         return -1;
     }
 
+    if (override_versions) {
+      hv_versions = *override_versions;
+      in_init = 0;
+      return 0;
+    }
+
     /* Xen hypervisor version detection begins. */
     ret = open(XEN_HYPERVISOR_SOCKET, O_RDWR);
     if (ret < 0) {
-        hypervisor_version = -1;
+        hv_versions.hypervisor = -1;
         return(-1);
     }
     fd = ret;
@@ -2040,7 +2089,7 @@ xenHypervisorInit(void)
 
     if ((ret != -1) && (ret != 0)) {
         VIR_DEBUG("Using new hypervisor call: %X", ret);
-        hv_version = ret;
+        hv_versions.hv = ret;
         xen_ioctl_hypercall_cmd = cmd;
         goto detect_v2;
     }
@@ -2056,9 +2105,9 @@ xenHypervisorInit(void)
     ret = ioctl(fd, cmd, (unsigned long) &v0_hc);
     if ((ret != -1) && (ret != 0)) {
         VIR_DEBUG("Using old hypervisor call: %X", ret);
-        hv_version = ret;
+        hv_versions.hv = ret;
         xen_ioctl_hypercall_cmd = cmd;
-        hypervisor_version = 0;
+        hv_versions.hypervisor = 0;
         goto done;
     }
 #endif
@@ -2067,7 +2116,7 @@ xenHypervisorInit(void)
      * we failed to make any hypercall
      */
 
-    hypervisor_version = -1;
+    hv_versions.hypervisor = -1;
     virXenError(VIR_ERR_XEN_CALL, " ioctl %lu",
                 (unsigned long) IOCTL_PRIVCMD_HYPERCALL);
     VIR_FORCE_CLOSE(fd);
@@ -2080,82 +2129,90 @@ xenHypervisorInit(void)
      * Try to detect if we are running a version post 3.0.2 with the new ones
      * or the old ones
      */
-    hypervisor_version = 2;
+    hv_versions.hypervisor = 2;
 
     if (VIR_ALLOC(ipt) < 0) {
         virReportOOMError();
         return(-1);
     }
     /* Currently consider RHEL5.0 Fedora7, xen-3.1, and xen-unstable */
-    sys_interface_version = 2; /* XEN_SYSCTL_INTERFACE_VERSION */
+    hv_versions.sys_interface = 2; /* XEN_SYSCTL_INTERFACE_VERSION */
     if (virXen_getdomaininfo(fd, 0, &info) == 1) {
         /* RHEL 5.0 */
-        dom_interface_version = 3; /* XEN_DOMCTL_INTERFACE_VERSION */
+        hv_versions.dom_interface = 3; /* XEN_DOMCTL_INTERFACE_VERSION */
         if (virXen_getvcpusinfo(fd, 0, 0, ipt, NULL, 0) == 0){
-            VIR_DEBUG0("Using hypervisor call v2, sys ver2 dom ver3");
+            VIR_DEBUG("Using hypervisor call v2, sys ver2 dom ver3");
             goto done;
         }
         /* Fedora 7 */
-        dom_interface_version = 4; /* XEN_DOMCTL_INTERFACE_VERSION */
+        hv_versions.dom_interface = 4; /* XEN_DOMCTL_INTERFACE_VERSION */
         if (virXen_getvcpusinfo(fd, 0, 0, ipt, NULL, 0) == 0){
-            VIR_DEBUG0("Using hypervisor call v2, sys ver2 dom ver4");
+            VIR_DEBUG("Using hypervisor call v2, sys ver2 dom ver4");
             goto done;
         }
     }
 
-    sys_interface_version = 3; /* XEN_SYSCTL_INTERFACE_VERSION */
+    hv_versions.sys_interface = 3; /* XEN_SYSCTL_INTERFACE_VERSION */
     if (virXen_getdomaininfo(fd, 0, &info) == 1) {
         /* xen-3.1 */
-        dom_interface_version = 5; /* XEN_DOMCTL_INTERFACE_VERSION */
+        hv_versions.dom_interface = 5; /* XEN_DOMCTL_INTERFACE_VERSION */
         if (virXen_getvcpusinfo(fd, 0, 0, ipt, NULL, 0) == 0){
-            VIR_DEBUG0("Using hypervisor call v2, sys ver3 dom ver5");
+            VIR_DEBUG("Using hypervisor call v2, sys ver3 dom ver5");
             goto done;
         }
     }
 
-    sys_interface_version = 4; /* XEN_SYSCTL_INTERFACE_VERSION */
+    hv_versions.sys_interface = 4; /* XEN_SYSCTL_INTERFACE_VERSION */
     if (virXen_getdomaininfo(fd, 0, &info) == 1) {
         /* Fedora 8 */
-        dom_interface_version = 5; /* XEN_DOMCTL_INTERFACE_VERSION */
+        hv_versions.dom_interface = 5; /* XEN_DOMCTL_INTERFACE_VERSION */
         if (virXen_getvcpusinfo(fd, 0, 0, ipt, NULL, 0) == 0){
-            VIR_DEBUG0("Using hypervisor call v2, sys ver4 dom ver5");
+            VIR_DEBUG("Using hypervisor call v2, sys ver4 dom ver5");
             goto done;
         }
     }
 
-    sys_interface_version = 6; /* XEN_SYSCTL_INTERFACE_VERSION */
+    hv_versions.sys_interface = 6; /* XEN_SYSCTL_INTERFACE_VERSION */
     if (virXen_getdomaininfo(fd, 0, &info) == 1) {
         /* Xen 3.2, Fedora 9 */
-        dom_interface_version = 5; /* XEN_DOMCTL_INTERFACE_VERSION */
+        hv_versions.dom_interface = 5; /* XEN_DOMCTL_INTERFACE_VERSION */
         if (virXen_getvcpusinfo(fd, 0, 0, ipt, NULL, 0) == 0){
-            VIR_DEBUG0("Using hypervisor call v2, sys ver6 dom ver5");
+            VIR_DEBUG("Using hypervisor call v2, sys ver6 dom ver5");
             goto done;
         }
     }
 
     /* Xen 4.0 */
-    sys_interface_version = 7; /* XEN_SYSCTL_INTERFACE_VERSION */
+    hv_versions.sys_interface = 7; /* XEN_SYSCTL_INTERFACE_VERSION */
     if (virXen_getdomaininfo(fd, 0, &info) == 1) {
-        dom_interface_version = 6; /* XEN_DOMCTL_INTERFACE_VERSION */
-        VIR_DEBUG0("Using hypervisor call v2, sys ver7 dom ver6");
+        hv_versions.dom_interface = 6; /* XEN_DOMCTL_INTERFACE_VERSION */
+        VIR_DEBUG("Using hypervisor call v2, sys ver7 dom ver6");
         goto done;
     }
 
     /* Xen 4.1
      * sysctl version 8 -> xen-unstable c/s 21118:28e5409e3fb3
      * domctl version 7 -> xen-unstable c/s 21212:de94884a669c
+     * domctl version 8 -> xen-unstable c/s 23874:651aed73b39c
      */
-    sys_interface_version = 8; /* XEN_SYSCTL_INTERFACE_VERSION */
+    hv_versions.sys_interface = 8; /* XEN_SYSCTL_INTERFACE_VERSION */
     if (virXen_getdomaininfo(fd, 0, &info) == 1) {
-        dom_interface_version = 7; /* XEN_DOMCTL_INTERFACE_VERSION */
-        VIR_DEBUG0("Using hypervisor call v2, sys ver8 dom ver7\n");
-        goto done;
+        hv_versions.dom_interface = 7; /* XEN_DOMCTL_INTERFACE_VERSION */
+        if (virXen_getvcpusinfo(fd, 0, 0, ipt, NULL, 0) == 0){
+            VIR_DEBUG("Using hypervisor call v2, sys ver8 dom ver7");
+            goto done;
+        }
+        hv_versions.dom_interface = 8; /* XEN_DOMCTL_INTERFACE_VERSION */
+        if (virXen_getvcpusinfo(fd, 0, 0, ipt, NULL, 0) == 0){
+            VIR_DEBUG("Using hypervisor call v2, sys ver8 dom ver8");
+            goto done;
+        }
     }
 
-    hypervisor_version = 1;
-    sys_interface_version = -1;
+    hv_versions.hypervisor = 1;
+    hv_versions.sys_interface = -1;
     if (virXen_getdomaininfo(fd, 0, &info) == 1) {
-        VIR_DEBUG0("Using hypervisor call v1");
+        VIR_DEBUG("Using hypervisor call v1");
         goto done;
     }
 
@@ -2163,8 +2220,8 @@ xenHypervisorInit(void)
      * we failed to make the getdomaininfolist hypercall
      */
 
-    VIR_DEBUG0("Failed to find any Xen hypervisor method");
-    hypervisor_version = -1;
+    VIR_DEBUG("Failed to find any Xen hypervisor method");
+    hv_versions.hypervisor = -1;
     virXenError(VIR_ERR_XEN_CALL, " ioctl %lu",
                 (unsigned long)IOCTL_PRIVCMD_HYPERCALL);
     VIR_FORCE_CLOSE(fd);
@@ -2192,13 +2249,15 @@ xenHypervisorInit(void)
 virDrvOpenStatus
 xenHypervisorOpen(virConnectPtr conn,
                   virConnectAuthPtr auth ATTRIBUTE_UNUSED,
-                  int flags ATTRIBUTE_UNUSED)
+                  unsigned int flags)
 {
     int ret;
     xenUnifiedPrivatePtr priv = (xenUnifiedPrivatePtr) conn->privateData;
 
+    virCheckFlags(VIR_CONNECT_RO, VIR_DRV_OPEN_ERROR);
+
     if (initialized == 0)
-        if (xenHypervisorInit() == -1)
+        if (xenHypervisorInit(NULL) == -1)
             return -1;
 
     priv->handle = -1;
@@ -2263,7 +2322,7 @@ xenHypervisorGetVersion(virConnectPtr conn, unsigned long *hvVer)
     priv = (xenUnifiedPrivatePtr) conn->privateData;
     if (priv->handle < 0 || hvVer == NULL)
         return (-1);
-    *hvVer = (hv_version >> 16) * 1000000 + (hv_version & 0xFFFF) * 1000;
+    *hvVer = (hv_versions.hv >> 16) * 1000000 + (hv_versions.hv & 0xFFFF) * 1000;
     return(0);
 }
 
@@ -2277,6 +2336,14 @@ struct guest_arch {
 };
 
 
+static int xenDefaultConsoleType(const char *ostype)
+{
+    if (STREQ(ostype, "hvm"))
+        return VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_SERIAL;
+    else
+        return VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_XEN;
+}
+
 static virCapsPtr
 xenHypervisorBuildCapabilities(virConnectPtr conn,
                                const char *hostmachine,
@@ -2286,8 +2353,8 @@ xenHypervisorBuildCapabilities(virConnectPtr conn,
                                int nr_guest_archs) {
     virCapsPtr caps;
     int i;
-    int hv_major = hv_version >> 16;
-    int hv_minor = hv_version & 0xFFFF;
+    int hv_major = hv_versions.hv >> 16;
+    int hv_minor = hv_versions.hv & 0xFFFF;
 
     if ((caps = virCapabilitiesNew(hostmachine, 1, 1)) == NULL)
         goto no_memory;
@@ -2307,7 +2374,7 @@ xenHypervisorBuildCapabilities(virConnectPtr conn,
         goto no_memory;
 
 
-    if (sys_interface_version >= SYS_IFACE_MIN_VERS_NUMA && conn != NULL) {
+    if (hv_versions.sys_interface >= SYS_IFACE_MIN_VERS_NUMA && conn != NULL) {
         if (xenDaemonNodeGetTopology(conn, caps) != 0) {
             virCapabilitiesFree(caps);
             return NULL;
@@ -2392,10 +2459,21 @@ xenHypervisorBuildCapabilities(virConnectPtr conn,
                                                    0,
                                                    1) == NULL)
                     goto no_memory;
+
+            /* Xen 3.4.x and beyond supports the Viridian (Hyper-V)
+             * enlightenment interface.  Default is off.
+             */
+            if ((hv_major == 3 && hv_minor >= 4) || (hv_major > 3))
+                if (virCapabilitiesAddGuestFeature(guest,
+                                                   "viridian",
+                                                   0,
+                                                   1) == NULL)
+                    goto no_memory;
         }
+
     }
 
-    caps->defaultConsoleTargetType = VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_XEN;
+    caps->defaultConsoleTargetType = xenDefaultConsoleType;
 
     return caps;
 
@@ -2725,6 +2803,9 @@ xenHypervisorMakeCapabilities(virConnectPtr conn)
                                                  cpuinfo,
                                                  capabilities);
 
+    if (virNodeSuspendGetTargetMask(&caps->host.powerMgmt) < 0)
+        VIR_WARN("Failed to get host power management capabilities");
+
     VIR_FORCE_FCLOSE(cpuinfo);
     VIR_FORCE_FCLOSE(capabilities);
 
@@ -2885,8 +2966,8 @@ xenHypervisorDomainGetOSType (virDomainPtr dom)
     }
 
     /* HV's earlier than 3.1.0 don't include the HVM flags in guests status*/
-    if (hypervisor_version < 2 ||
-        dom_interface_version < 4) {
+    if (hv_versions.hypervisor < 2 ||
+        hv_versions.dom_interface < 4) {
         virXenErrorFunc(VIR_ERR_INTERNAL_ERROR, __FUNCTION__,
                         _("unsupported in dom interface < 4"), 0);
         return (NULL);
@@ -3133,7 +3214,7 @@ xenHypervisorGetMaxMemory(virDomainPtr domain)
  * @id: the domain ID
  * @info: the place where information should be stored
  *
- * Do an hypervisor call to get the related set of domain information.
+ * Do a hypervisor call to get the related set of domain information.
  *
  * Returns 0 in case of success, -1 in case of error.
  */
@@ -3216,7 +3297,7 @@ xenHypervisorGetDomInfo(virConnectPtr conn, int id, virDomainInfoPtr info)
  * @domain: pointer to the domain block
  * @info: the place where information should be stored
  *
- * Do an hypervisor call to get the related set of domain information.
+ * Do a hypervisor call to get the related set of domain information.
  *
  * Returns 0 in case of success, -1 in case of error.
  */
@@ -3235,6 +3316,44 @@ xenHypervisorGetDomainInfo(virDomainPtr domain, virDomainInfoPtr info)
 
     return(xenHypervisorGetDomInfo(domain->conn, domain->id, info));
 
+}
+
+/**
+ * xenHypervisorGetDomainState:
+ * @domain: pointer to the domain block
+ * @state: returned state of the domain
+ * @reason: returned reason for the state
+ * @flags: additional flags, 0 for now
+ *
+ * Do a hypervisor call to get the related set of domain information.
+ *
+ * Returns 0 in case of success, -1 in case of error.
+ */
+int
+xenHypervisorGetDomainState(virDomainPtr domain,
+                            int *state,
+                            int *reason,
+                            unsigned int flags)
+{
+    xenUnifiedPrivatePtr priv = domain->conn->privateData;
+    virDomainInfo info;
+
+    virCheckFlags(0, -1);
+
+    if (domain->conn == NULL)
+        return -1;
+
+    if (priv->handle < 0 || domain->id < 0)
+        return -1;
+
+    if (xenHypervisorGetDomInfo(domain->conn, domain->id, &info) < 0)
+        return -1;
+
+    *state = info.state;
+    if (reason)
+        *reason = 0;
+
+    return 0;
 }
 
 /**
@@ -3283,9 +3402,9 @@ xenHypervisorNodeGetCellsFreeMemory(virConnectPtr conn, unsigned long long *free
     }
 
     /*
-     * Support only sys_interface_version >=4
+     * Support only hv_versions.sys_interface >=4
      */
-    if (sys_interface_version < SYS_IFACE_MIN_VERS_NUMA) {
+    if (hv_versions.sys_interface < SYS_IFACE_MIN_VERS_NUMA) {
         virXenErrorFunc(VIR_ERR_XEN_CALL, __FUNCTION__,
                         "unsupported in sys interface < 4", 0);
         return -1;
@@ -3301,7 +3420,7 @@ xenHypervisorNodeGetCellsFreeMemory(virConnectPtr conn, unsigned long long *free
     op_sys.cmd = XEN_V2_OP_GETAVAILHEAP;
 
     for (i = startCell, j = 0;(i < priv->nbNodeCells) && (j < maxCells);i++,j++) {
-        if (sys_interface_version >= 5)
+        if (hv_versions.sys_interface >= 5)
             op_sys.u.availheap5.node = i;
         else
             op_sys.u.availheap.node = i;
@@ -3309,7 +3428,7 @@ xenHypervisorNodeGetCellsFreeMemory(virConnectPtr conn, unsigned long long *free
         if (ret < 0) {
             return(-1);
         }
-        if (sys_interface_version >= 5)
+        if (hv_versions.sys_interface >= 5)
             freeMems[j] = op_sys.u.availheap5.avail_bytes;
         else
             freeMems[j] = op_sys.u.availheap.avail_bytes;
@@ -3322,7 +3441,7 @@ xenHypervisorNodeGetCellsFreeMemory(virConnectPtr conn, unsigned long long *free
  * xenHypervisorPauseDomain:
  * @domain: pointer to the domain block
  *
- * Do an hypervisor call to pause the given domain
+ * Do a hypervisor call to pause the given domain
  *
  * Returns 0 in case of success, -1 in case of error.
  */
@@ -3349,7 +3468,7 @@ xenHypervisorPauseDomain(virDomainPtr domain)
  * xenHypervisorResumeDomain:
  * @domain: pointer to the domain block
  *
- * Do an hypervisor call to resume the given domain
+ * Do a hypervisor call to resume the given domain
  *
  * Returns 0 in case of success, -1 in case of error.
  */
@@ -3373,18 +3492,25 @@ xenHypervisorResumeDomain(virDomainPtr domain)
 }
 
 /**
- * xenHypervisorDestroyDomain:
+ * xenHypervisorDestroyDomainFlags:
  * @domain: pointer to the domain block
+ * @flags: an OR'ed set of virDomainDestroyFlagsValues
  *
- * Do an hypervisor call to destroy the given domain
+ * Do a hypervisor call to destroy the given domain
+ *
+ * Calling this function with no @flags set (equal to zero)
+ * is equivalent to calling xenHypervisorDestroyDomain.
  *
  * Returns 0 in case of success, -1 in case of error.
  */
 int
-xenHypervisorDestroyDomain(virDomainPtr domain)
+xenHypervisorDestroyDomainFlags(virDomainPtr domain,
+                                unsigned int flags)
 {
     int ret;
     xenUnifiedPrivatePtr priv;
+
+    virCheckFlags(0, -1);
 
     if (domain->conn == NULL)
         return -1;
@@ -3404,7 +3530,7 @@ xenHypervisorDestroyDomain(virDomainPtr domain)
  * @domain: pointer to the domain block
  * @memory: the max memory size in kilobytes.
  *
- * Do an hypervisor call to change the maximum amount of memory used
+ * Do a hypervisor call to change the maximum amount of memory used
  *
  * Returns 0 in case of success, -1 in case of error.
  */
@@ -3496,7 +3622,7 @@ xenHypervisorPinVcpu(virDomainPtr domain, unsigned int vcpu,
  * @domain: pointer to domain object, or NULL for Domain0
  * @info: pointer to an array of virVcpuInfo structures (OUT)
  * @maxinfo: number of structures in info array
- * @cpumaps: pointer to an bit map of real CPUs for all vcpus of this domain (in 8-bit bytes) (OUT)
+ * @cpumaps: pointer to a bit map of real CPUs for all vcpus of this domain (in 8-bit bytes) (OUT)
  *	If cpumaps is NULL, then no cpumap information is returned by the API.
  *	It's assumed there is <maxinfo> cpumap in cpumaps array.
  *	The memory allocated to cpumaps must be (maxinfo * maplen) bytes
