@@ -1,10 +1,22 @@
 /*
  * cgroup.h: Interface to tools for managing cgroups
  *
- * Copyright (C) 2011 Red Hat, Inc.
+ * Copyright (C) 2011-2012 Red Hat, Inc.
  * Copyright IBM Corp. 2008
  *
- * See COPYING.LIB for the License of this software
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *  Dan Smith <danms@us.ibm.com>
@@ -15,6 +27,8 @@
 
 struct virCgroup;
 typedef struct virCgroup *virCgroupPtr;
+
+# define VIR_CGROUP_SYSFS_MOUNT "/sys/fs/cgroup"
 
 enum {
     VIR_CGROUP_CONTROLLER_CPU,
@@ -115,6 +129,9 @@ int virCgroupSetCpuCfsQuota(virCgroupPtr group, long long cfs_quota);
 int virCgroupGetCpuCfsQuota(virCgroupPtr group, long long *cfs_quota);
 
 int virCgroupGetCpuacctUsage(virCgroupPtr group, unsigned long long *usage);
+int virCgroupGetCpuacctPercpuUsage(virCgroupPtr group, char **usage);
+int virCgroupGetCpuacctStat(virCgroupPtr group, unsigned long long *user,
+                            unsigned long long *sys);
 
 int virCgroupSetFreezerState(virCgroupPtr group, const char *state);
 int virCgroupGetFreezerState(virCgroupPtr group, char **state);

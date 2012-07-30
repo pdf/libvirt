@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel Veillard <veillard@redhat.com>
  */
@@ -56,6 +56,10 @@ enum virHookQemuOpType {
     VIR_HOOK_QEMU_OP_STOPPED,          /* domain has stopped */
     VIR_HOOK_QEMU_OP_PREPARE,          /* domain startup initiated */
     VIR_HOOK_QEMU_OP_RELEASE,          /* domain destruction is over */
+    VIR_HOOK_QEMU_OP_MIGRATE,          /* domain is being migrated */
+    VIR_HOOK_QEMU_OP_STARTED,          /* domain has started */
+    VIR_HOOK_QEMU_OP_RECONNECT,        /* domain is being reconnected by libvirt */
+    VIR_HOOK_QEMU_OP_ATTACH,           /* domain is being attached to be libvirt */
 
     VIR_HOOK_QEMU_OP_LAST,
 };
@@ -63,6 +67,10 @@ enum virHookQemuOpType {
 enum virHookLxcOpType {
     VIR_HOOK_LXC_OP_START,            /* domain is about to start */
     VIR_HOOK_LXC_OP_STOPPED,          /* domain has stopped */
+    VIR_HOOK_LXC_OP_PREPARE,          /* domain startup initiated */
+    VIR_HOOK_LXC_OP_RELEASE,          /* domain destruction is over */
+    VIR_HOOK_LXC_OP_STARTED,          /* domain has started */
+    VIR_HOOK_LXC_OP_RECONNECT,        /* domain is being reconnected by libvirt */
 
     VIR_HOOK_LXC_OP_LAST,
 };
@@ -72,6 +80,6 @@ int virHookInitialize(void);
 int virHookPresent(int driver);
 
 int virHookCall(int driver, const char *id, int op, int sub_op,
-                const char *extra, const char *input);
+                const char *extra, const char *input, char **output);
 
 #endif /* __VIR_HOOKS_H__ */

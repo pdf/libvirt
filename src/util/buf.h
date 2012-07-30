@@ -1,9 +1,21 @@
 /*
  * buf.h: buffers for libvirt
  *
- * Copyright (C) 2005-2008, 2011 Red Hat, Inc.
+ * Copyright (C) 2005-2008, 2011, 2012 Red Hat, Inc.
  *
- * See COPYING.LIB for the License of this software
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Daniel Veillard <veillard@redhat.com>
  */
@@ -37,6 +49,7 @@ struct _virBuffer {
 };
 # endif
 
+const char *virBufferCurrentContent(virBufferPtr buf);
 char *virBufferContentAndReset(virBufferPtr buf);
 void virBufferFreeAndReset(virBufferPtr buf);
 int virBufferError(const virBufferPtr buf);
@@ -49,7 +62,7 @@ void virBufferVasprintf(virBufferPtr buf, const char *format, va_list ap)
   ATTRIBUTE_FMT_PRINTF(2, 0);
 void virBufferStrcat(virBufferPtr buf, ...)
   ATTRIBUTE_SENTINEL;
-void virBufferEscape(virBufferPtr buf, const char *toescape,
+void virBufferEscape(virBufferPtr buf, char escape, const char *toescape,
                      const char *format, const char *str);
 void virBufferEscapeString(virBufferPtr buf, const char *format,
                            const char *str);
@@ -59,9 +72,11 @@ void virBufferEscapeShell(virBufferPtr buf, const char *str);
 void virBufferURIEncodeString(virBufferPtr buf, const char *str);
 
 # define virBufferAddLit(buf_, literal_string_) \
-    virBufferAdd(buf_, "" literal_string_ "", sizeof literal_string_ - 1)
+    virBufferAdd(buf_, "" literal_string_ "", sizeof(literal_string_) - 1)
 
 void virBufferAdjustIndent(virBufferPtr buf, int indent);
 int virBufferGetIndent(const virBufferPtr buf, bool dynamic);
+
+int virBufferTrim(virBufferPtr buf, const char *trim, int len);
 
 #endif /* __VIR_BUFFER_H__ */

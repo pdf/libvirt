@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -22,6 +22,9 @@
 
 #include <stdio.h>
 #include "internal.h"
+#include "testutils.h"
+
+#ifndef WIN32
 
 int main(int argc, char **argv)
 {
@@ -52,3 +55,13 @@ int main(int argc, char **argv)
 
     return 0;
 }
+
+#else
+
+int
+main(void)
+{
+    return EXIT_AM_SKIP;
+}
+
+#endif

@@ -22,7 +22,11 @@
  * variables, so effectively undefine the deprecated attribute
  * which would otherwise be defined in libvirt.h.
  */
+# undef VIR_DEPRECATED
 # define VIR_DEPRECATED /*empty*/
+
+/* The library itself needs to know enum sizes.  */
+# define VIR_ENUM_SENTINELS
 
 /* All uses of _() within the library should pick up translations from
  * libvirt's message files, rather than from the package that is
@@ -41,6 +45,7 @@
 # include "libvirt_internal.h"
 
 # include "c-strcase.h"
+# include "ignore-value.h"
 
 /* On architectures which lack these limits, define them (ie. Cygwin).
  * Note that the libvirt code should be robust enough to handle the
@@ -79,7 +84,7 @@
 
 
 # define NUL_TERMINATE(buf) do { (buf)[sizeof(buf)-1] = '\0'; } while (0)
-# define ARRAY_CARDINALITY(Array) (sizeof (Array) / sizeof *(Array))
+# define ARRAY_CARDINALITY(Array) (sizeof(Array) / sizeof(*(Array)))
 
 /* C99 uses __func__.  __FUNCTION__ is legacy. */
 # ifndef __GNUC__
@@ -178,7 +183,7 @@
 #  endif
 
 #  ifndef ATTRIBUTE_NONNULL
-#   if __GNUC_PREREQ (3, 3)
+#   if __GNUC_PREREQ (3, 3) && STATIC_ANALYSIS
 #    define ATTRIBUTE_NONNULL(m) __attribute__((__nonnull__(m)))
 #   else
 #    define ATTRIBUTE_NONNULL(m)
@@ -201,7 +206,7 @@
  * Use this when passing possibly-NULL strings to printf-a-likes.
  */
 # define NULLSTR(s) \
-    ((void)verify_true(sizeof *(s) == sizeof (char)), \
+    ((void)verify_true(sizeof(*(s)) == sizeof(char)),   \
      (s) ? (s) : "(null)")
 
 /**
@@ -228,25 +233,72 @@
     do {                                                                \
         unsigned long __unsuppflags = flags & ~(supported);             \
         if (__unsuppflags) {                                            \
-            virReportErrorHelper(VIR_FROM_THIS,                         \
-                                 VIR_ERR_INVALID_ARG,                   \
-                                 __FILE__,                              \
-                                 __FUNCTION__,                          \
-                                 __LINE__,                              \
-                                 _("%s: unsupported flags (0x%lx)"),    \
-                                 __FUNCTION__, __unsuppflags);          \
+            virReportInvalidArg(flags,                                  \
+                                _("unsupported flags (0x%lx) in function %s"), \
+                                __unsuppflags, __FUNCTION__);           \
             return retval;                                              \
         }                                                               \
     } while (0)
+
+# define virCheckNonNullArgReturn(argname, retval)  \
+    do {                                            \
+        if (argname == NULL) {                      \
+            virReportInvalidNonNullArg(argname);    \
+            return retval;                          \
+        }                                           \
+    } while (0)
+# define virCheckNullArgGoto(argname, label)        \
+    do {                                            \
+        if (argname != NULL) {                      \
+            virReportInvalidNullArg(argname);       \
+            goto label;                             \
+        }                                           \
+    } while (0)
+# define virCheckNonNullArgGoto(argname, label)     \
+    do {                                            \
+        if (argname == NULL) {                      \
+            virReportInvalidNonNullArg(argname);    \
+            goto label;                             \
+        }                                           \
+    } while (0)
+# define virCheckPositiveArgGoto(argname, label)    \
+    do {                                            \
+        if (argname <= 0) {                         \
+            virReportInvalidPositiveArg(argname);   \
+            goto label;                             \
+        }                                           \
+    } while (0)
+# define virCheckNonZeroArgGoto(argname, label)     \
+    do {                                            \
+        if (argname == 0) {                         \
+            virReportInvalidNonZeroArg(argname);    \
+            goto label;                             \
+        }                                           \
+    } while (0)
+# define virCheckZeroArgGoto(argname, label)        \
+    do {                                            \
+        if (argname != 0) {                         \
+            virReportInvalidNonZeroArg(argname);    \
+            goto label;                             \
+        }                                           \
+    } while (0)
+# define virCheckNonNegativeArgGoto(argname, label)     \
+    do {                                                \
+        if (argname < 0) {                              \
+            virReportInvalidNonNegativeArg(argname);    \
+            goto label;                                 \
+        }                                               \
+    } while (0)
+
 
 /* divide value by size, rounding up */
 # define VIR_DIV_UP(value, size) (((value) + (size) - 1) / (size))
 
 
-# if WITH_DTRACE
+# if WITH_DTRACE_PROBES
 #  ifndef LIBVIRT_PROBES_H
 #   define LIBVIRT_PROBES_H
-#   include "probes.h"
+#   include "libvirt_probes.h"
 #  endif /* LIBVIRT_PROBES_H */
 
 /* Systemtap 1.2 headers have a bug where they cannot handle a

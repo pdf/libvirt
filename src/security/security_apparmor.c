@@ -1,5 +1,6 @@
 /*
  * AppArmor security driver for libvirt
+ *
  * Copyright (C) 2011 Red Hat, Inc.
  * Copyright (C) 2009-2010 Canonical Ltd.
  *
@@ -7,6 +8,15 @@
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author:
  *   Jamie Strandboge <jamie@canonical.com>
@@ -238,8 +248,8 @@ use_apparmor(void)
     char *libvirt_daemon = NULL;
 
     if (virFileResolveLink("/proc/self/exe", &libvirt_daemon) < 0) {
-        virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                               "%s", _("could not find libvirtd"));
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       "%s", _("could not find libvirtd"));
         return rc;
     }
 
@@ -275,10 +285,10 @@ reload_profile(virSecurityManagerPtr mgr,
     /* Update the profile only if it is loaded */
     if (profile_loaded(secdef->imagelabel) >= 0) {
         if (load_profile(mgr, secdef->imagelabel, def, fn, append) < 0) {
-            virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                                   _("cannot update AppArmor profile "
-                                     "\'%s\'"),
-                                   secdef->imagelabel);
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("cannot update AppArmor profile "
+                             "\'%s\'"),
+                           secdef->imagelabel);
             goto clean;
         }
     }
@@ -299,10 +309,10 @@ AppArmorSetSecurityUSBLabel(usbDevice *dev ATTRIBUTE_UNUSED,
 
     if (reload_profile(ptr->mgr, def, file, true) < 0) {
         const virSecurityLabelDefPtr secdef = &def->seclabel;
-        virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                               _("cannot update AppArmor profile "
-                                 "\'%s\'"),
-                               secdef->imagelabel);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("cannot update AppArmor profile "
+                         "\'%s\'"),
+                       secdef->imagelabel);
         return -1;
     }
     return 0;
@@ -317,10 +327,10 @@ AppArmorSetSecurityPCILabel(pciDevice *dev ATTRIBUTE_UNUSED,
 
     if (reload_profile(ptr->mgr, def, file, true) < 0) {
         const virSecurityLabelDefPtr secdef = &def->seclabel;
-        virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                               _("cannot update AppArmor profile "
-                                 "\'%s\'"),
-                               secdef->imagelabel);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("cannot update AppArmor profile "
+                         "\'%s\'"),
+                       secdef->imagelabel);
         return -1;
     }
     return 0;
@@ -328,12 +338,15 @@ AppArmorSetSecurityPCILabel(pciDevice *dev ATTRIBUTE_UNUSED,
 
 /* Called on libvirtd startup to see if AppArmor is available */
 static int
-AppArmorSecurityManagerProbe(void)
+AppArmorSecurityManagerProbe(const char *virtDriver)
 {
     char *template = NULL;
     int rc = SECURITY_DRIVER_DISABLE;
 
     if (use_apparmor() < 0)
+        return rc;
+
+    if (virtDriver && STREQ(virtDriver, "LXC"))
         return rc;
 
     /* see if template file exists */
@@ -344,8 +357,8 @@ AppArmorSecurityManagerProbe(void)
     }
 
     if (!virFileExists(template)) {
-        virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                               _("template \'%s\' does not exist"), template);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("template \'%s\' does not exist"), template);
         goto clean;
     }
     rc = SECURITY_DRIVER_ENABLE;
@@ -400,16 +413,16 @@ AppArmorGenSecurityLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
         return 0;
 
     if (def->seclabel.baselabel) {
-        virSecurityReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                               "%s", _("Cannot set a base label with AppArmour"));
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                       "%s", _("Cannot set a base label with AppArmour"));
         return rc;
     }
 
     if ((def->seclabel.label) ||
         (def->seclabel.model) || (def->seclabel.imagelabel)) {
-        virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                               "%s",
-                               _("security label already defined for VM"));
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       "%s",
+                       _("security label already defined for VM"));
         return rc;
     }
 
@@ -438,9 +451,9 @@ AppArmorGenSecurityLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
 
     /* Now that we have a label, load the profile into the kernel. */
     if (load_profile(mgr, def->seclabel.label, def, NULL, false) < 0) {
-        virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                               _("cannot load AppArmor profile "
-                               "\'%s\'"), def->seclabel.label);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("cannot load AppArmor profile "
+                         "\'%s\'"), def->seclabel.label);
         goto err;
     }
 
@@ -490,14 +503,14 @@ AppArmorGetSecurityProcessLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
 
     if (virStrcpy(sec->label, profile_name,
         VIR_SECURITY_LABEL_BUFLEN) == NULL) {
-        virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                               "%s", _("error copying profile name"));
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       "%s", _("error copying profile name"));
         goto clean;
     }
 
     if ((sec->enforcing = profile_status(profile_name, 1)) < 0) {
-        virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                               "%s", _("error calling profile_status()"));
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       "%s", _("error calling profile_status()"));
         goto clean;
     }
     rc = 0;
@@ -535,9 +548,9 @@ AppArmorRestoreSecurityAllLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
 
     if (secdef->type == VIR_DOMAIN_SECLABEL_DYNAMIC) {
         if ((rc = remove_profile(secdef->label)) != 0) {
-            virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                                   _("could not remove profile for \'%s\'"),
-                                   secdef->label);
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("could not remove profile for \'%s\'"),
+                           secdef->label);
         }
     }
     return rc;
@@ -557,18 +570,18 @@ AppArmorSetSecurityProcessLabel(virSecurityManagerPtr mgr, virDomainDefPtr def)
         return rc;
 
     if (STRNEQ(virSecurityManagerGetModel(mgr), secdef->model)) {
-        virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                               _("security label driver mismatch: "
-                               "\'%s\' model configured for domain, but "
-                               "hypervisor driver is \'%s\'."),
-                               secdef->model, virSecurityManagerGetModel(mgr));
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("security label driver mismatch: "
+                         "\'%s\' model configured for domain, but "
+                         "hypervisor driver is \'%s\'."),
+                       secdef->model, virSecurityManagerGetModel(mgr));
         if (use_apparmor() > 0)
             goto clean;
     }
 
     if (aa_change_profile(profile_name) < 0) {
-        virSecurityReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("error calling aa_change_profile()"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("error calling aa_change_profile()"));
         goto clean;
     }
     rc = 0;
@@ -631,8 +644,8 @@ AppArmorSetSecurityImageLabel(virSecurityManagerPtr mgr,
     if (secdef->imagelabel) {
         /* if the device doesn't exist, error out */
         if (!virFileExists(disk->src)) {
-            virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                                   _("\'%s\' does not exist"), disk->src);
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("\'%s\' does not exist"), disk->src);
             return rc;
         }
 
@@ -643,10 +656,10 @@ AppArmorSetSecurityImageLabel(virSecurityManagerPtr mgr,
         if (profile_loaded(secdef->imagelabel) >= 0) {
             if (load_profile(mgr, secdef->imagelabel, def, disk->src,
                              false) < 0) {
-                virSecurityReportError(VIR_ERR_INTERNAL_ERROR,
-                                     _("cannot update AppArmor profile "
-                                     "\'%s\'"),
-                                     secdef->imagelabel);
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot update AppArmor profile "
+                                 "\'%s\'"),
+                               secdef->imagelabel);
                 goto clean;
             }
         }
@@ -667,9 +680,9 @@ AppArmorSecurityVerify(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
 
     if (secdef->type == VIR_DOMAIN_SECLABEL_STATIC) {
         if (use_apparmor() < 0 || profile_status(secdef->label, 0) < 0) {
-            virSecurityReportError(VIR_ERR_XML_ERROR,
-                                   _("Invalid security label \'%s\'"),
-                                   secdef->label);
+            virReportError(VIR_ERR_XML_ERROR,
+                           _("Invalid security label \'%s\'"),
+                           secdef->label);
             return -1;
         }
     }
@@ -806,39 +819,39 @@ AppArmorSetImageFDLabel(virSecurityManagerPtr mgr,
 }
 
 virSecurityDriver virAppArmorSecurityDriver = {
-    0,
-    SECURITY_APPARMOR_NAME,
-    AppArmorSecurityManagerProbe,
-    AppArmorSecurityManagerOpen,
-    AppArmorSecurityManagerClose,
+    .privateDataLen                     = 0,
+    .name                               = SECURITY_APPARMOR_NAME,
+    .probe                              = AppArmorSecurityManagerProbe,
+    .open                               = AppArmorSecurityManagerOpen,
+    .close                              = AppArmorSecurityManagerClose,
 
-    AppArmorSecurityManagerGetModel,
-    AppArmorSecurityManagerGetDOI,
+    .getModel                           = AppArmorSecurityManagerGetModel,
+    .getDOI                             = AppArmorSecurityManagerGetDOI,
 
-    AppArmorSecurityVerify,
+    .domainSecurityVerify               = AppArmorSecurityVerify,
 
-    AppArmorSetSecurityImageLabel,
-    AppArmorRestoreSecurityImageLabel,
+    .domainSetSecurityImageLabel        = AppArmorSetSecurityImageLabel,
+    .domainRestoreSecurityImageLabel    = AppArmorRestoreSecurityImageLabel,
 
-    AppArmorSetSecurityDaemonSocketLabel,
-    AppArmorSetSecuritySocketLabel,
-    AppArmorClearSecuritySocketLabel,
+    .domainSetSecurityDaemonSocketLabel = AppArmorSetSecurityDaemonSocketLabel,
+    .domainSetSecuritySocketLabel       = AppArmorSetSecuritySocketLabel,
+    .domainClearSecuritySocketLabel     = AppArmorClearSecuritySocketLabel,
 
-    AppArmorGenSecurityLabel,
-    AppArmorReserveSecurityLabel,
-    AppArmorReleaseSecurityLabel,
+    .domainGenSecurityLabel             = AppArmorGenSecurityLabel,
+    .domainReserveSecurityLabel         = AppArmorReserveSecurityLabel,
+    .domainReleaseSecurityLabel         = AppArmorReleaseSecurityLabel,
 
-    AppArmorGetSecurityProcessLabel,
-    AppArmorSetSecurityProcessLabel,
+    .domainGetSecurityProcessLabel      = AppArmorGetSecurityProcessLabel,
+    .domainSetSecurityProcessLabel      = AppArmorSetSecurityProcessLabel,
 
-    AppArmorSetSecurityAllLabel,
-    AppArmorRestoreSecurityAllLabel,
+    .domainSetSecurityAllLabel          = AppArmorSetSecurityAllLabel,
+    .domainRestoreSecurityAllLabel      = AppArmorRestoreSecurityAllLabel,
 
-    AppArmorSetSecurityHostdevLabel,
-    AppArmorRestoreSecurityHostdevLabel,
+    .domainSetSecurityHostdevLabel      = AppArmorSetSecurityHostdevLabel,
+    .domainRestoreSecurityHostdevLabel  = AppArmorRestoreSecurityHostdevLabel,
 
-    AppArmorSetSavedStateLabel,
-    AppArmorRestoreSavedStateLabel,
+    .domainSetSavedStateLabel           = AppArmorSetSavedStateLabel,
+    .domainRestoreSavedStateLabel       = AppArmorRestoreSavedStateLabel,
 
-    AppArmorSetImageFDLabel,
+    .domainSetSecurityImageFDLabel      = AppArmorSetImageFDLabel,
 };

@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -31,10 +31,6 @@
 #include "virterror_internal.h"
 
 #define VIR_FROM_THIS VIR_FROM_STREAMS
-
-#define virNetError(code, ...)                                    \
-    virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,           \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
 
 struct daemonClientStream {
     daemonClientPrivatePtr priv;
@@ -233,11 +229,11 @@ daemonStreamEvent(virStreamPtr st, int events, void *opaque)
         virStreamEventRemoveCallback(stream->st);
         virStreamAbort(stream->st);
         if (events & VIR_STREAM_EVENT_HANGUP)
-            virNetError(VIR_ERR_RPC,
-                        "%s", _("stream had unexpected termination"));
+            virReportError(VIR_ERR_RPC,
+                           "%s", _("stream had unexpected termination"));
         else
-            virNetError(VIR_ERR_RPC,
-                        "%s", _("stream had I/O failure"));
+            virReportError(VIR_ERR_RPC,
+                           "%s", _("stream had I/O failure"));
 
         msg = virNetMessageNew(false);
         if (!msg) {
@@ -618,13 +614,13 @@ daemonStreamHandleAbort(virNetServerClientPtr client,
     virStreamAbort(stream->st);
 
     if (msg->header.status == VIR_NET_ERROR)
-        virNetError(VIR_ERR_RPC,
-                    "%s", _("stream aborted at client request"));
+        virReportError(VIR_ERR_RPC,
+                       "%s", _("stream aborted at client request"));
     else {
         VIR_WARN("unexpected stream status %d", msg->header.status);
-        virNetError(VIR_ERR_RPC,
-                    _("stream aborted with unexpected status %d"),
-                    msg->header.status);
+        virReportError(VIR_ERR_RPC,
+                       _("stream aborted with unexpected status %d"),
+                       msg->header.status);
     }
 
     return virNetServerProgramSendReplyError(remoteProgram,

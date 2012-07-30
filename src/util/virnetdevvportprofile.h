@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *     Stefan Berger <stefanb@us.ibm.com>
@@ -28,6 +28,7 @@
 # include "internal.h"
 # include "uuid.h"
 # include "util.h"
+# include "virmacaddr.h"
 
 # define LIBVIRT_IFLA_VF_PORT_PROFILE_MAX 40
 
@@ -35,6 +36,7 @@ enum virNetDevVPortProfile {
     VIR_NETDEV_VPORT_PROFILE_NONE,
     VIR_NETDEV_VPORT_PROFILE_8021QBG,
     VIR_NETDEV_VPORT_PROFILE_8021QBH,
+    VIR_NETDEV_VPORT_PROFILE_OPENVSWITCH,
 
     VIR_NETDEV_VPORT_PROFILE_LAST,
 };
@@ -54,7 +56,7 @@ enum virNetDevVPortProfileOp {
 };
 VIR_ENUM_DECL(virNetDevVPortProfileOp)
 
-/* profile data for macvtap (VEPA) */
+/* profile data for macvtap (VEPA) and openvswitch */
 typedef struct _virNetDevVPortProfile virNetDevVPortProfile;
 typedef virNetDevVPortProfile *virNetDevVPortProfilePtr;
 struct _virNetDevVPortProfile {
@@ -69,6 +71,10 @@ struct _virNetDevVPortProfile {
         struct {
             char          profileID[LIBVIRT_IFLA_VF_PORT_PROFILE_MAX];
         } virtPort8021Qbh;
+        struct {
+            unsigned char interfaceID[VIR_UUID_BUFLEN];
+            char          profileID[LIBVIRT_IFLA_VF_PORT_PROFILE_MAX];
+        } openvswitch;
     } u;
 };
 
@@ -78,19 +84,22 @@ bool virNetDevVPortProfileEqual(virNetDevVPortProfilePtr a,
 
 int virNetDevVPortProfileAssociate(const char *ifname,
                                    const virNetDevVPortProfilePtr virtPort,
-                                   const unsigned char *macaddr,
+                                   const virMacAddrPtr macaddr,
                                    const char *linkdev,
+                                   int vf,
                                    const unsigned char *vmuuid,
-                                   enum virNetDevVPortProfileOp vmOp)
-    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(3) ATTRIBUTE_NONNULL(4)
-    ATTRIBUTE_NONNULL(5) ATTRIBUTE_RETURN_CHECK;
+                                   enum virNetDevVPortProfileOp vmOp,
+                                   bool setlink_only)
+    ATTRIBUTE_NONNULL(3) ATTRIBUTE_NONNULL(4) ATTRIBUTE_NONNULL(6)
+    ATTRIBUTE_RETURN_CHECK;
 
 int virNetDevVPortProfileDisassociate(const char *ifname,
                                       const virNetDevVPortProfilePtr virtPort,
-                                      const unsigned char *macaddr,
+                                      const virMacAddrPtr macaddr,
                                       const char *linkdev,
+                                      int vf,
                                       enum virNetDevVPortProfileOp vmOp)
-    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(3) ATTRIBUTE_NONNULL(4)
+    ATTRIBUTE_NONNULL(3) ATTRIBUTE_NONNULL(4)
     ATTRIBUTE_RETURN_CHECK;
 
 

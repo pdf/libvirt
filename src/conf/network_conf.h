@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -35,7 +35,7 @@
 # include "virsocketaddr.h"
 # include "virnetdevbandwidth.h"
 # include "virnetdevvportprofile.h"
-# include "util.h"
+# include "virmacaddr.h"
 
 enum virNetworkForwardType {
     VIR_NETWORK_FORWARD_NONE   = 0,
@@ -154,7 +154,7 @@ struct _virNetworkDef {
     char *domain;
     unsigned long delay;   /* Bridge forward delay (ms) */
     unsigned int stp :1; /* Spanning tree protocol */
-    unsigned char mac[VIR_MAC_BUFLEN]; /* mac address of bridge device */
+    virMacAddr mac; /* mac address of bridge device */
     bool mac_specified;
 
     int forwardType;    /* One of virNetworkForwardType constants */

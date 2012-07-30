@@ -1,7 +1,7 @@
 /*
  * qemu_monitor.h: interaction with QEMU monitor console
  *
- * Copyright (C) 2006-2011 Red Hat, Inc.
+ * Copyright (C) 2006-2012 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -29,7 +29,9 @@
 
 # include "domain_conf.h"
 # include "qemu_conf.h"
-# include "hash.h"
+# include "bitmap.h"
+# include "virhash.h"
+# include "json.h"
 
 typedef struct _qemuMonitor qemuMonitor;
 typedef qemuMonitor *qemuMonitorPtr;
@@ -123,10 +125,21 @@ struct _qemuMonitorCallbacks {
                           const char *diskAlias,
                           int type,
                           int status);
+    int (*domainTrayChange)(qemuMonitorPtr mon,
+                            virDomainObjPtr vm,
+                            const char *devAlias,
+                            int reason);
+    int (*domainPMWakeup)(qemuMonitorPtr mon,
+                          virDomainObjPtr vm);
+    int (*domainPMSuspend)(qemuMonitorPtr mon,
+                           virDomainObjPtr vm);
+    int (*domainBalloonChange)(qemuMonitorPtr mon,
+                               virDomainObjPtr vm,
+                               unsigned long long actual);
 };
 
-
 char *qemuMonitorEscapeArg(const char *in);
+char *qemuMonitorUnescapeArg(const char *in);
 
 qemuMonitorPtr qemuMonitorOpen(virDomainObjPtr vm,
                                virDomainChrSourceDefPtr config,
@@ -135,7 +148,8 @@ qemuMonitorPtr qemuMonitorOpen(virDomainObjPtr vm,
 
 void qemuMonitorClose(qemuMonitorPtr mon);
 
-int qemuMonitorSetCapabilities(qemuMonitorPtr mon);
+int qemuMonitorSetCapabilities(qemuMonitorPtr mon,
+                               virBitmapPtr qemuCaps);
 
 int qemuMonitorCheckHMP(qemuMonitorPtr mon, const char *cmd);
 
@@ -188,12 +202,17 @@ int qemuMonitorEmitGraphics(qemuMonitorPtr mon,
                             const char *authScheme,
                             const char *x509dname,
                             const char *saslUsername);
+int qemuMonitorEmitTrayChange(qemuMonitorPtr mon,
+                              const char *devAlias,
+                              int reason);
+int qemuMonitorEmitPMWakeup(qemuMonitorPtr mon);
+int qemuMonitorEmitPMSuspend(qemuMonitorPtr mon);
 int qemuMonitorEmitBlockJob(qemuMonitorPtr mon,
                             const char *diskAlias,
                             int type,
                             int status);
-
-
+int qemuMonitorEmitBalloonChange(qemuMonitorPtr mon,
+                                 unsigned long long actual);
 
 int qemuMonitorStartCPUs(qemuMonitorPtr mon,
                          virConnectPtr conn);
@@ -231,13 +250,17 @@ int qemuMonitorGetCPUInfo(qemuMonitorPtr mon,
 int qemuMonitorGetVirtType(qemuMonitorPtr mon,
                            int *virtType);
 int qemuMonitorGetBalloonInfo(qemuMonitorPtr mon,
-                              unsigned long *currmem);
+                              unsigned long long *currmem);
 int qemuMonitorGetMemoryStats(qemuMonitorPtr mon,
                               virDomainMemoryStatPtr stats,
                               unsigned int nr_stats);
-int qemuMonitorGetBlockInfo(qemuMonitorPtr mon,
-                            const char *devname,
-                            struct qemuDomainDiskInfo *info);
+
+int qemuMonitorBlockIOStatusToError(const char *status);
+virHashTablePtr qemuMonitorGetBlockInfo(qemuMonitorPtr mon);
+struct qemuDomainDiskInfo *
+qemuMonitorBlockInfoLookup(virHashTablePtr blockInfo,
+                           const char *devname);
+
 int qemuMonitorGetBlockStatsInfo(qemuMonitorPtr mon,
                                  const char *dev_name,
                                  long long *rd_req,
@@ -360,6 +383,18 @@ int qemuMonitorMigrateToUnix(qemuMonitorPtr mon,
                              const char *unixfile);
 
 int qemuMonitorMigrateCancel(qemuMonitorPtr mon);
+
+typedef enum {
+  QEMU_MONITOR_DUMP_HAVE_FILTER  = 1 << 0,
+  QEMU_MONITOR_DUMP_PAGING       = 1 << 1,
+  QEMU_MONITOR_DUMP_FLAGS_LAST
+} QEMU_MONITOR_DUMP;
+
+int qemuMonitorDumpToFd(qemuMonitorPtr mon,
+                        unsigned int flags,
+                        int fd,
+                        unsigned long long begin,
+                        unsigned long long length);
 
 int qemuMonitorGraphicsRelocate(qemuMonitorPtr mon,
                                 int type,
@@ -485,8 +520,13 @@ int qemuMonitorLoadSnapshot(qemuMonitorPtr mon, const char *name);
 int qemuMonitorDeleteSnapshot(qemuMonitorPtr mon, const char *name);
 
 int qemuMonitorDiskSnapshot(qemuMonitorPtr mon,
+                            virJSONValuePtr actions,
                             const char *device,
-                            const char *file);
+                            const char *file,
+                            const char *format,
+                            bool reuse);
+int qemuMonitorTransaction(qemuMonitorPtr mon, virJSONValuePtr actions)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
 
 int qemuMonitorArbitraryCommand(qemuMonitorPtr mon,
                                 const char *cmd,
@@ -504,17 +544,20 @@ int qemuMonitorSendKey(qemuMonitorPtr mon,
                        unsigned int nkeycodes);
 
 typedef enum {
-    BLOCK_JOB_ABORT = 0,
-    BLOCK_JOB_INFO = 1,
-    BLOCK_JOB_SPEED = 2,
-    BLOCK_JOB_PULL = 3,
-} BLOCK_JOB_CMD;
+    BLOCK_JOB_ABORT,
+    BLOCK_JOB_INFO,
+    BLOCK_JOB_SPEED,
+    BLOCK_JOB_PULL,
+} qemuMonitorBlockJobCmd;
 
 int qemuMonitorBlockJob(qemuMonitorPtr mon,
                         const char *device,
+                        const char *back,
                         unsigned long bandwidth,
                         virDomainBlockJobInfoPtr info,
-                        int mode);
+                        qemuMonitorBlockJobCmd mode,
+                        bool modern)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
 
 int qemuMonitorOpenGraphics(qemuMonitorPtr mon,
                             const char *protocol,
@@ -529,6 +572,8 @@ int qemuMonitorSetBlockIoThrottle(qemuMonitorPtr mon,
 int qemuMonitorGetBlockIoThrottle(qemuMonitorPtr mon,
                                   const char *device,
                                   virDomainBlockIoTuneInfoPtr reply);
+
+int qemuMonitorSystemWakeup(qemuMonitorPtr mon);
 
 /**
  * When running two dd process and using <> redirection, we need a

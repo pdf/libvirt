@@ -18,8 +18,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  */
 
 #ifndef LXC_CONF_H
@@ -33,15 +33,20 @@
 # include "capabilities.h"
 # include "threads.h"
 # include "cgroup.h"
+# include "security/security_manager.h"
 # include "configmake.h"
+
+# define LXC_DRIVER_NAME "LXC"
 
 # define LXC_CONFIG_DIR SYSCONFDIR "/libvirt/lxc"
 # define LXC_STATE_DIR LOCALSTATEDIR "/run/libvirt/lxc"
 # define LXC_LOG_DIR LOCALSTATEDIR "/log/libvirt/lxc"
 # define LXC_AUTOSTART_DIR LXC_CONFIG_DIR "/autostart"
 
-typedef struct __lxc_driver lxc_driver_t;
-struct __lxc_driver {
+typedef struct _virLXCDriver virLXCDriver;
+typedef virLXCDriver *virLXCDriverPtr;
+
+struct _virLXCDriver {
     virMutex lock;
 
     virCapsPtr caps;
@@ -57,17 +62,27 @@ struct __lxc_driver {
 
     virDomainEventStatePtr domainEventState;
 
+    char *securityDriverName;
+    bool securityDefaultConfined;
+    bool securityRequireConfined;
+    virSecurityManagerPtr securityManager;
+
     /* Mapping of 'char *uuidstr' -> virConnectPtr
      * of guests which will be automatically killed
      * when the virConnectPtr is closed*/
     virHashTablePtr autodestroy;
 };
 
-int lxcLoadDriverConfig(lxc_driver_t *driver);
-virCapsPtr lxcCapsInit(void);
+int lxcLoadDriverConfig(virLXCDriverPtr driver);
+virCapsPtr lxcCapsInit(virLXCDriverPtr driver);
 
-# define lxcError(code, ...)                                             \
-    virReportErrorHelper(VIR_FROM_LXC, code, __FILE__,                   \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
+static inline void lxcDriverLock(virLXCDriverPtr driver)
+{
+    virMutexLock(&driver->lock);
+}
+static inline void lxcDriverUnlock(virLXCDriverPtr driver)
+{
+    virMutexUnlock(&driver->lock);
+}
 
 #endif /* LXC_CONF_H */

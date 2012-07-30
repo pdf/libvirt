@@ -240,11 +240,14 @@ mymain(void)
     DO_TEST("floppy-file", "floppy-file");
     DO_TEST("floppy-device", "floppy-device");
 
+    DO_TEST("sharedfolder", "sharedfolder");
+
     DO_TEST("ethernet-e1000", "ethernet-e1000");
     DO_TEST("ethernet-vmxnet2", "ethernet-vmxnet2");
 
     DO_TEST("ethernet-custom", "ethernet-custom");
     DO_TEST("ethernet-bridged", "ethernet-bridged");
+    DO_TEST("ethernet-nat", "ethernet-nat");
 
     DO_TEST("ethernet-generated", "ethernet-generated");
     DO_TEST("ethernet-static", "ethernet-static");
@@ -274,6 +277,9 @@ mymain(void)
     DO_TEST("gsx-in-the-wild-2", "gsx-in-the-wild-2");
     DO_TEST("gsx-in-the-wild-3", "gsx-in-the-wild-3");
     DO_TEST("gsx-in-the-wild-4", "gsx-in-the-wild-4");
+
+    DO_TEST("ws-in-the-wild-1", "ws-in-the-wild-1");
+    DO_TEST("ws-in-the-wild-2", "ws-in-the-wild-2");
 
     DO_TEST("annotation", "annotation");
 

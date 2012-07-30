@@ -1,8 +1,8 @@
 /*
  * xen_sxpr.h: Xen SEXPR parsing functions
  *
+ * Copyright (C) 2006-2008, 2010, 2012 Red Hat, Inc.
  * Copyright (C) 2011 Univention GmbH
- * Copyright (C) 2006-2008, 2010 Red Hat, Inc.
  * Copyright (C) 2005,2006
  *
  * This library is free software; you can redistribute it and/or
@@ -16,8 +16,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Anthony Liguori <aliguori@us.ibm.com>
  * Author: Daniel Veillard <veillard@redhat.com>
@@ -31,6 +31,13 @@
 # include "conf.h"
 # include "domain_conf.h"
 # include "sexpr.h"
+
+typedef enum {
+    XEND_CONFIG_VERSION_3_0_2 = 1,
+    XEND_CONFIG_VERSION_3_0_3 = 2,
+    XEND_CONFIG_VERSION_3_0_4 = 3,
+    XEND_CONFIG_VERSION_3_1_0 = 4,
+} xenConfigVersionEnum;
 
 /* helper functions to get the dom id from a sexpr */
 int xenGetDomIdFromSxprString(const char *sexpr, int xendConfigVersion);

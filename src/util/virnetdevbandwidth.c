@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *     Michal Privoznik <mprivozn@redhat.com>
@@ -26,7 +26,6 @@
 #include "command.h"
 #include "memory.h"
 #include "virterror_internal.h"
-#include "ignore-value.h"
 
 #define VIR_FROM_THIS VIR_FROM_NONE
 
@@ -136,7 +135,7 @@ virNetDevBandwidthSet(const char *ifname,
         virCommandAddArgList(cmd, "filter", "add", "dev", ifname, "parent",
                              "ffff:", "protocol", "ip", "u32", "match", "ip",
                              "src", "0.0.0.0/0", "police", "rate", average,
-                             "burst", burst, "mtu", burst, "drop", "flowid",
+                             "burst", burst, "mtu", "64kb", "drop", "flowid",
                              ":1", NULL);
 
         if (virCommandRun(cmd, NULL) < 0)

@@ -28,8 +28,8 @@ UUID:           " DOM_UUID "\n\
 OS Type:        linux\n\
 State:          running\n\
 CPU(s):         1\n\
-Max memory:     261072 kB\n\
-Used memory:    131072 kB\n\
+Max memory:     261072 KiB\n\
+Used memory:    131072 KiB\n\
 Persistent:     yes\n\
 Autostart:      disable\n\
 Managed save:   unknown\n\
@@ -76,7 +76,7 @@ testCompareOutputLit(const char *expectData,
     result = 0;
 
 cleanup:
-    free(actualData);
+    VIR_FREE(actualData);
 
     return result;
 }
@@ -122,7 +122,7 @@ CPU socket(s):       2\n\
 Core(s) per socket:  2\n\
 Thread(s) per core:  2\n\
 NUMA cell(s):        2\n\
-Memory size:         3145728 kB\n\
+Memory size:         3145728 KiB\n\
 \n";
   return testCompareOutputLit(exp, NULL, argv);
 }
@@ -141,7 +141,7 @@ CPU socket(s):       4\n\
 Core(s) per socket:  4\n\
 Thread(s) per core:  2\n\
 NUMA cell(s):        4\n\
-Memory size:         8192000 kB\n\
+Memory size:         8192000 KiB\n\
 \n";
   return testCompareOutputLit(exp, NULL, argv);
 }
@@ -386,10 +386,16 @@ mymain(void)
     DO_TEST(30, "--shell a\n",
             "echo \t '-'\"-\" \t --shell \t a");
 
+    /* Tests of alias handling.  */
+    DO_TEST(31, "hello\n", "echo", "--string", "hello");
+    DO_TEST(32, "hello\n", "echo --string hello");
+    DO_TEST(33, "hello\n", "echo", "--str", "hello");
+    DO_TEST(34, "hello\n", "echo --str hello");
+
 # undef DO_TEST
 
-    free(custom_uri);
-    return(ret==0 ? EXIT_SUCCESS : EXIT_FAILURE);
+    VIR_FREE(custom_uri);
+    return ret==0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 VIRT_TEST_MAIN(mymain)

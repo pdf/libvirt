@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Daniel Berrange <berrange@redhat.com>
  */
@@ -34,6 +34,7 @@
 # include <errno.h>
 # include <unistd.h>
 # include <signal.h>
+# include <c-ctype.h>
 
 # include "internal.h"
 # include "console.h"
@@ -292,17 +293,41 @@ static char
 vshGetEscapeChar(const char *s)
 {
     if (*s == '^')
-        return CONTROL(s[1]);
+        return CONTROL(c_toupper(s[1]));
 
     return *s;
 }
 
+int vshMakeStdinRaw(struct termios *ttyattr, bool report_errors) {
+    struct termios rawattr;
+
+    if (tcgetattr(STDIN_FILENO, ttyattr) < 0) {
+        if (report_errors)
+            VIR_ERROR(_("unable to get tty attributes: %s"),
+                      strerror(errno));
+        return -1;
+    }
+
+    rawattr = *ttyattr;
+    cfmakeraw(&rawattr);
+
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &rawattr) < 0) {
+        if (report_errors)
+            VIR_ERROR(_("unable to set tty attributes: %s"),
+                      strerror(errno));
+        return -1;
+    }
+
+    return 0;
+}
+
 int vshRunConsole(virDomainPtr dom,
                   const char *dev_name,
-                  const char *escape_seq)
+                  const char *escape_seq,
+                  unsigned int flags)
 {
     int ret = -1;
-    struct termios ttyattr, rawattr;
+    struct termios ttyattr;
     void (*old_sigquit)(int);
     void (*old_sigterm)(int);
     void (*old_sigint)(int);
@@ -315,21 +340,8 @@ int vshRunConsole(virDomainPtr dom,
        result in it being echoed back already), and
        also ensure Ctrl-C, etc is blocked, and misc
        other bits */
-    if (tcgetattr(STDIN_FILENO, &ttyattr) < 0) {
-        VIR_ERROR(_("unable to get tty attributes: %s"),
-                  strerror(errno));
-        return -1;
-    }
-
-    rawattr = ttyattr;
-    cfmakeraw(&rawattr);
-
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &rawattr) < 0) {
-        VIR_ERROR(_("unable to set tty attributes: %s"),
-                  strerror(errno));
+    if (vshMakeStdinRaw(&ttyattr, true) < 0)
         goto resettty;
-    }
-
 
     /* Trap all common signals so that we can safely restore
        the original terminal settings on STDIN before the
@@ -353,7 +365,7 @@ int vshRunConsole(virDomainPtr dom,
     if (!con->st)
         goto cleanup;
 
-    if (virDomainOpenConsole(dom, dev_name, con->st, 0) < 0)
+    if (virDomainOpenConsole(dom, dev_name, con->st, flags) < 0)
         goto cleanup;
 
     if (virCondInit(&con->cond) < 0 || virMutexInit(&con->lock) < 0)

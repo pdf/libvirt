@@ -15,13 +15,16 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
 #include <config.h>
 
+#ifdef HAVE_WINSOCK2_H
+# include <winsock2.h>
+#endif
 #include <windows.h>
 
 #define nsCID CLSID
@@ -621,7 +624,7 @@ vboxComUninitialize(void)
 
 
 static VBOXXPCOMC_v1 vboxXPCOMC_v1 = {
-    sizeof (VBOXXPCOMC_v1),     /* cb */
+    sizeof(VBOXXPCOMC_v1),      /* cb */
     0x00010000U,                /* uVersion */
     vboxGetVersion,             /* pfnGetVersion */
     vboxComInitialize_v1,       /* pfnComInitialize */
@@ -635,7 +638,7 @@ static VBOXXPCOMC_v1 vboxXPCOMC_v1 = {
 };
 
 static VBOXXPCOMC_v2 vboxXPCOMC_v2 = {
-    sizeof (VBOXXPCOMC_v2),     /* cb */
+    sizeof(VBOXXPCOMC_v2),      /* cb */
     0x00020000U,                /* uVersion */
     vboxGetVersion,             /* pfnGetVersion */
     vboxComInitialize_v2,       /* pfnComInitialize */

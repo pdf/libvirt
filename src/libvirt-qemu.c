@@ -2,7 +2,7 @@
  * libvirt-qemu.c: Interfaces for the libvirt library to handle qemu-specific
  *                 APIs.
  *
- * Copyright (C) 2010-2011 Red Hat, Inc.
+ * Copyright (C) 2010-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Chris Lalancette <clalance@redhat.com>
  */
@@ -27,6 +27,8 @@
 #include "logging.h"
 #include "datatypes.h"
 #include "libvirt/libvirt-qemu.h"
+
+#define VIR_FROM_THIS VIR_FROM_NONE
 
 #define virLibConnError(conn, error, info)                               \
     virReportErrorHelper(VIR_FROM_NONE, error, NULL, __FUNCTION__,       \
@@ -87,10 +89,7 @@ virDomainQemuMonitorCommand(virDomainPtr domain, const char *cmd,
 
     conn = domain->conn;
 
-    if (result == NULL) {
-        virLibDomainError(domain, VIR_ERR_INVALID_ARG, __FUNCTION__);
-        goto error;
-    }
+    virCheckNonNullArgGoto(result, error);
 
     if (conn->flags & VIR_CONNECT_RO) {
         virLibDomainError(domain, VIR_ERR_OPERATION_DENIED, __FUNCTION__);
@@ -116,7 +115,7 @@ error:
 /**
  * virDomainQemuAttach:
  * @conn: pointer to a hypervisor connection
- * @pid: the UNIX process ID of the external QEMU process
+ * @pid_value: the UNIX process ID of the external QEMU process
  * @flags: optional flags, currently unused
  *
  * This API is QEMU specific, so it will only work with hypervisor
@@ -133,6 +132,10 @@ error:
  *   - The '-name' and '-uuid' arguments should have been set (not
  *     mandatory, but strongly recommended)
  *
+ * To date, the only platforms we know of where pid_t is larger than
+ * unsigned int (64-bit Windows) also lack UNIX sockets, so the choice
+ * of @pid_value as an unsigned int should not present any difficulties.
+ *
  * If successful, then the guest will appear in the list of running
  * domains for this connection, and other APIs should operate
  * normally (provided the above requirements were honored).
@@ -141,10 +144,11 @@ error:
  */
 virDomainPtr
 virDomainQemuAttach(virConnectPtr conn,
-                    unsigned int pid,
+                    unsigned int pid_value,
                     unsigned int flags)
 {
-    VIR_DEBUG("conn=%p, pid=%u, flags=%x", conn, pid, flags);
+    pid_t pid = pid_value;
+    VIR_DEBUG("conn=%p, pid=%u, flags=%x", conn, pid_value, flags);
 
     virResetLastError();
 
@@ -154,8 +158,11 @@ virDomainQemuAttach(virConnectPtr conn,
         return NULL;
     }
 
-    if (pid <= 1) {
-        virLibDomainError(domain, VIR_ERR_INVALID_ARG, __FUNCTION__);
+    virCheckPositiveArgGoto(pid_value, error);
+    if (pid != pid_value) {
+        virReportInvalidArg(pid_value,
+                            _("pid_value in %s is too large"),
+                            __FUNCTION__);
         goto error;
     }
 
@@ -166,7 +173,7 @@ virDomainQemuAttach(virConnectPtr conn,
 
     if (conn->driver->qemuDomainAttach) {
         virDomainPtr ret;
-        ret = conn->driver->qemuDomainAttach(conn, pid, flags);
+        ret = conn->driver->qemuDomainAttach(conn, pid_value, flags);
         if (!ret)
             goto error;
         return ret;

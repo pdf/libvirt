@@ -1,7 +1,7 @@
 /*
  * libvirtd.c: daemon start of day, guest process & i/o management
  *
- * Copyright (C) 2006-2011 Red Hat, Inc.
+ * Copyright (C) 2006-2012 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -40,13 +40,14 @@
 #define VIR_FROM_THIS VIR_FROM_QEMU
 
 #include "libvirtd.h"
+#include "libvirtd-config.h"
 
 #include "util.h"
 #include "uuid.h"
 #include "remote_driver.h"
-#include "conf.h"
 #include "memory.h"
 #include "conf.h"
+#include "virnetlink.h"
 #include "virnetserver.h"
 #include "threads.h"
 #include "remote.h"
@@ -76,7 +77,7 @@
 # ifdef WITH_NETCF
 #  include "interface/netcf_driver.h"
 # endif
-# ifdef WITH_STORAGE_DIR
+# ifdef WITH_STORAGE
 #  include "storage/storage_driver.h"
 # endif
 # ifdef WITH_NODE_DEVICES
@@ -97,60 +98,6 @@ virNetSASLContextPtr saslCtxt = NULL;
 #endif
 virNetServerProgramPtr remoteProgram = NULL;
 virNetServerProgramPtr qemuProgram = NULL;
-
-struct daemonConfig {
-    char *host_uuid;
-
-    int listen_tls;
-    int listen_tcp;
-    char *listen_addr;
-    char *tls_port;
-    char *tcp_port;
-
-    char *unix_sock_ro_perms;
-    char *unix_sock_rw_perms;
-    char *unix_sock_group;
-    char *unix_sock_dir;
-
-    int auth_unix_rw;
-    int auth_unix_ro;
-    int auth_tcp;
-    int auth_tls;
-
-    int mdns_adv;
-    char *mdns_name;
-
-    int tls_no_verify_certificate;
-    int tls_no_sanity_certificate;
-    char **tls_allowed_dn_list;
-    char **sasl_allowed_username_list;
-
-    char *key_file;
-    char *cert_file;
-    char *ca_file;
-    char *crl_file;
-
-    int min_workers;
-    int max_workers;
-    int max_clients;
-
-    int prio_workers;
-
-    int max_requests;
-    int max_client_requests;
-
-    int log_level;
-    char *log_filters;
-    char *log_outputs;
-    int log_buffer_size;
-
-    int audit_level;
-    int audit_logging;
-
-    int keepalive_interval;
-    unsigned int keepalive_count;
-    int keepalive_required;
-};
 
 enum {
     VIR_DAEMON_ERR_NONE = 0,
@@ -186,7 +133,7 @@ static int daemonForkIntoBackground(const char *argv0)
     if (pipe(statuspipe) < 0)
         return -1;
 
-    int pid = fork();
+    pid_t pid = fork();
     switch (pid) {
     case 0:
         {
@@ -292,17 +239,25 @@ daemonPidFilePath(bool privileged,
         if (!(*pidfile = strdup(LOCALSTATEDIR "/run/libvirtd.pid")))
             goto no_memory;
     } else {
-        char *userdir = NULL;
+        char *rundir = NULL;
+        mode_t old_umask;
 
-        if (!(userdir = virGetUserDirectory(geteuid())))
+        if (!(rundir = virGetUserRuntimeDirectory()))
             goto error;
 
-        if (virAsprintf(pidfile, "%s/.libvirt/libvirtd.pid", userdir) < 0) {
-            VIR_FREE(userdir);
+        old_umask = umask(077);
+        if (virFileMakePath(rundir) < 0) {
+            umask(old_umask);
+            goto error;
+        }
+        umask(old_umask);
+
+        if (virAsprintf(pidfile, "%s/libvirtd.pid", rundir) < 0) {
+            VIR_FREE(rundir);
             goto no_memory;
         }
 
-        VIR_FREE(userdir);
+        VIR_FREE(rundir);
     }
 
     return 0;
@@ -332,17 +287,25 @@ daemonUnixSocketPaths(struct daemonConfig *config,
             if (!(*rosockfile = strdup(LOCALSTATEDIR "/run/libvirt/libvirt-sock-ro")))
                 goto no_memory;
         } else {
-            char *userdir = NULL;
+            char *rundir = NULL;
+            mode_t old_umask;
 
-            if (!(userdir = virGetUserDirectory(geteuid())))
+            if (!(rundir = virGetUserRuntimeDirectory()))
                 goto error;
 
-            if (virAsprintf(sockfile, "@%s/.libvirt/libvirt-sock", userdir) < 0) {
-                VIR_FREE(userdir);
+            old_umask = umask(077);
+            if (virFileMakePath(rundir) < 0) {
+                umask(old_umask);
+                goto error;
+            }
+            umask(old_umask);
+
+            if (virAsprintf(sockfile, "%s/libvirt-sock", rundir) < 0) {
+                VIR_FREE(rundir);
                 goto no_memory;
             }
 
-            VIR_FREE(userdir);
+            VIR_FREE(rundir);
         }
     }
     return 0;
@@ -400,14 +363,39 @@ static void daemonInitialize(void)
      * If they try to open a connection for a module that
      * is not loaded they'll get a suitable error at that point
      */
+# ifdef WITH_NETWORK
     virDriverLoadModule("network");
+# endif
+# ifdef WITH_STORAGE
     virDriverLoadModule("storage");
+# endif
+# ifdef WITH_NODE_DEVICES
     virDriverLoadModule("nodedev");
+# endif
+# ifdef WITH_SECRETS
     virDriverLoadModule("secret");
-    virDriverLoadModule("qemu");
-    virDriverLoadModule("lxc");
-    virDriverLoadModule("uml");
+# endif
+# ifdef WITH_NWFILTER
     virDriverLoadModule("nwfilter");
+# endif
+# ifdef WITH_NETCF
+    virDriverLoadModule("interface");
+# endif
+# ifdef WITH_QEMU
+    virDriverLoadModule("qemu");
+# endif
+# ifdef WITH_LXC
+    virDriverLoadModule("lxc");
+# endif
+# ifdef WITH_UML
+    virDriverLoadModule("uml");
+# endif
+# ifdef WITH_XEN
+    virDriverLoadModule("xen");
+# endif
+# ifdef WITH_LIBXL
+    virDriverLoadModule("libxl");
+# endif
 #else
 # ifdef WITH_NETWORK
     networkRegister();
@@ -415,10 +403,10 @@ static void daemonInitialize(void)
 # ifdef WITH_NETCF
     interfaceRegister();
 # endif
-# ifdef WITH_STORAGE_DIR
+# ifdef WITH_STORAGE
     storageRegister();
 # endif
-# if defined(WITH_NODE_DEVICES)
+# ifdef WITH_NODE_DEVICES
     nodedevRegister();
 # endif
 # ifdef WITH_SECRETS
@@ -473,6 +461,7 @@ static int daemonSetupNetworking(virNetServerPtr srv,
         goto error;
     }
 
+    VIR_DEBUG("Registering unix socket %s", sock_path);
     if (!(svc = virNetServerServiceNewUNIX(sock_path,
                                            unix_sock_rw_mask,
                                            unix_sock_gid,
@@ -481,15 +470,17 @@ static int daemonSetupNetworking(virNetServerPtr srv,
                                            config->max_client_requests,
                                            NULL)))
         goto error;
-    if (sock_path_ro &&
-        !(svcRO = virNetServerServiceNewUNIX(sock_path_ro,
-                                             unix_sock_ro_mask,
-                                             unix_sock_gid,
-                                             config->auth_unix_ro,
-                                             true,
-                                             config->max_client_requests,
-                                             NULL)))
-        goto error;
+    if (sock_path_ro) {
+        VIR_DEBUG("Registering unix socket %s", sock_path_ro);
+        if (!(svcRO = virNetServerServiceNewUNIX(sock_path_ro,
+                                                 unix_sock_ro_mask,
+                                                 unix_sock_gid,
+                                                 config->auth_unix_ro,
+                                                 true,
+                                                 config->max_client_requests,
+                                                 NULL)))
+            goto error;
+    }
 
     if (virNetServerAddService(srv, svc,
                                config->mdns_adv && !ipsock ?
@@ -503,6 +494,8 @@ static int daemonSetupNetworking(virNetServerPtr srv,
 
     if (ipsock) {
         if (config->listen_tcp) {
+            VIR_DEBUG("Registering TCP socket %s:%s",
+                      config->listen_addr, config->tcp_port);
             if (!(svcTCP = virNetServerServiceNewTCP(config->listen_addr,
                                                      config->tcp_port,
                                                      config->auth_tcp,
@@ -539,6 +532,8 @@ static int daemonSetupNetworking(virNetServerPtr srv,
                     goto error;
             }
 
+            VIR_DEBUG("Registering TLS socket %s:%s",
+                      config->listen_addr, config->tls_port);
             if (!(svcTLS =
                   virNetServerServiceNewTCP(config->listen_addr,
                                             config->tls_port,
@@ -590,155 +585,6 @@ static int daemonShutdownCheck(virNetServerPtr srv ATTRIBUTE_UNUSED,
     return 1;
 }
 
-
-/* Allocate an array of malloc'd strings from the config file, filename
- * (used only in diagnostics), using handle "conf".  Upon error, return -1
- * and free any allocated memory.  Otherwise, save the array in *list_arg
- * and return 0.
- */
-static int
-remoteConfigGetStringList(virConfPtr conf, const char *key, char ***list_arg,
-                          const char *filename)
-{
-    char **list;
-    virConfValuePtr p = virConfGetValue (conf, key);
-    if (!p)
-        return 0;
-
-    switch (p->type) {
-    case VIR_CONF_STRING:
-        if (VIR_ALLOC_N(list, 2) < 0) {
-            VIR_ERROR(_("failed to allocate memory for %s config list"), key);
-            return -1;
-        }
-        list[0] = strdup (p->str);
-        list[1] = NULL;
-        if (list[0] == NULL) {
-            VIR_ERROR(_("failed to allocate memory for %s config list value"),
-                      key);
-            VIR_FREE(list);
-            return -1;
-        }
-        break;
-
-    case VIR_CONF_LIST: {
-        int i, len = 0;
-        virConfValuePtr pp;
-        for (pp = p->list; pp; pp = pp->next)
-            len++;
-        if (VIR_ALLOC_N(list, 1+len) < 0) {
-            VIR_ERROR(_("failed to allocate memory for %s config list"), key);
-            return -1;
-        }
-        for (i = 0, pp = p->list; pp; ++i, pp = pp->next) {
-            if (pp->type != VIR_CONF_STRING) {
-                VIR_ERROR(_("remoteReadConfigFile: %s: %s:"
-                            " must be a string or list of strings"),
-                          filename, key);
-                VIR_FREE(list);
-                return -1;
-            }
-            list[i] = strdup (pp->str);
-            if (list[i] == NULL) {
-                int j;
-                for (j = 0 ; j < i ; j++)
-                    VIR_FREE(list[j]);
-                VIR_FREE(list);
-                VIR_ERROR(_("failed to allocate memory for %s config list value"),
-                          key);
-                return -1;
-            }
-
-        }
-        list[i] = NULL;
-        break;
-    }
-
-    default:
-        VIR_ERROR(_("remoteReadConfigFile: %s: %s:"
-                    " must be a string or list of strings"),
-                  filename, key);
-        return -1;
-    }
-
-    *list_arg = list;
-    return 0;
-}
-
-/* A helper function used by each of the following macros.  */
-static int
-checkType (virConfValuePtr p, const char *filename,
-           const char *key, virConfType required_type)
-{
-    if (p->type != required_type) {
-        VIR_ERROR(_("remoteReadConfigFile: %s: %s: invalid type:"
-                    " got %s; expected %s"), filename, key,
-                  virConfTypeName (p->type),
-                  virConfTypeName (required_type));
-        return -1;
-    }
-    return 0;
-}
-
-/* If there is no config data for the key, #var_name, then do nothing.
-   If there is valid data of type VIR_CONF_STRING, and strdup succeeds,
-   store the result in var_name.  Otherwise, (i.e. invalid type, or strdup
-   failure), give a diagnostic and "goto" the cleanup-and-fail label.  */
-#define GET_CONF_STR(conf, filename, var_name)                          \
-    do {                                                                \
-        virConfValuePtr p = virConfGetValue (conf, #var_name);          \
-        if (p) {                                                        \
-            if (checkType (p, filename, #var_name, VIR_CONF_STRING) < 0) \
-                goto error;                                             \
-            VIR_FREE(data->var_name);                                   \
-            if (!(data->var_name = strdup (p->str))) {                  \
-                virReportOOMError();                                    \
-                goto error;                                             \
-            }                                                           \
-        }                                                               \
-    } while (0)
-
-/* Like GET_CONF_STR, but for integral values.  */
-#define GET_CONF_INT(conf, filename, var_name)                          \
-    do {                                                                \
-        virConfValuePtr p = virConfGetValue (conf, #var_name);          \
-        if (p) {                                                        \
-            if (checkType (p, filename, #var_name, VIR_CONF_LONG) < 0)  \
-                goto error;                                             \
-            data->var_name = p->l;                                      \
-        }                                                               \
-    } while (0)
-
-
-static int remoteConfigGetAuth(virConfPtr conf, const char *key, int *auth, const char *filename) {
-    virConfValuePtr p;
-
-    p = virConfGetValue (conf, key);
-    if (!p)
-        return 0;
-
-    if (checkType (p, filename, key, VIR_CONF_STRING) < 0)
-        return -1;
-
-    if (!p->str)
-        return 0;
-
-    if (STREQ(p->str, "none")) {
-        *auth = VIR_NET_SERVER_SERVICE_AUTH_NONE;
-#if HAVE_SASL
-    } else if (STREQ(p->str, "sasl")) {
-        *auth = VIR_NET_SERVER_SERVICE_AUTH_SASL;
-#endif
-    } else if (STREQ(p->str, "polkit")) {
-        *auth = VIR_NET_SERVER_SERVICE_AUTH_POLKIT;
-    } else {
-        VIR_ERROR(_("remoteReadConfigFile: %s: %s: unsupported auth %s"),
-                  filename, key, p->str);
-        return -1;
-    }
-
-    return 0;
-}
 
 /*
  * Set up the logging environment
@@ -795,16 +641,25 @@ daemonSetupLogging(struct daemonConfig *config,
                                 LOCALSTATEDIR) == -1)
                     goto no_memory;
             } else {
-                char *userdir = virGetUserDirectory(geteuid());
-                if (!userdir)
+                char *logdir = virGetUserCacheDirectory();
+                mode_t old_umask;
+
+                if (!logdir)
                     goto error;
 
-                if (virAsprintf(&tmp, "%d:file:%s/.libvirt/libvirtd.log",
-                                virLogGetDefaultPriority(), userdir) == -1) {
-                    VIR_FREE(userdir);
+                old_umask = umask(077);
+                if (virFileMakePath(logdir) < 0) {
+                    umask(old_umask);
+                    goto error;
+                }
+                umask(old_umask);
+
+                if (virAsprintf(&tmp, "%d:file:%s/libvirtd.log",
+                                virLogGetDefaultPriority(), logdir) == -1) {
+                    VIR_FREE(logdir);
                     goto no_memory;
                 }
-                VIR_FREE(userdir);
+                VIR_FREE(logdir);
             }
         } else {
             if (virAsprintf(&tmp, "%d:stderr", virLogGetDefaultPriority()) < 0)
@@ -828,280 +683,6 @@ error:
     return -1;
 }
 
-
-static int
-daemonConfigFilePath(bool privileged, char **configfile)
-{
-    if (privileged) {
-        if (!(*configfile = strdup(SYSCONFDIR "/libvirt/libvirtd.conf")))
-            goto no_memory;
-    } else {
-        char *userdir = NULL;
-
-        if (!(userdir = virGetUserDirectory(geteuid())))
-            goto error;
-
-        if (virAsprintf(configfile, "%s/.libvirt/libvirtd.conf", userdir) < 0) {
-            VIR_FREE(userdir);
-            goto no_memory;
-        }
-        VIR_FREE(userdir);
-    }
-
-    return 0;
-
-no_memory:
-    virReportOOMError();
-error:
-    return -1;
-}
-
-static void
-daemonConfigFree(struct daemonConfig *data);
-
-static struct daemonConfig*
-daemonConfigNew(bool privileged ATTRIBUTE_UNUSED)
-{
-    struct daemonConfig *data;
-    char *localhost;
-    int ret;
-
-    if (VIR_ALLOC(data) < 0) {
-        virReportOOMError();
-        return NULL;
-    }
-
-    data->listen_tls = 1;
-    data->listen_tcp = 0;
-
-    if (!(data->tls_port = strdup(LIBVIRTD_TLS_PORT)))
-        goto no_memory;
-    if (!(data->tcp_port = strdup(LIBVIRTD_TCP_PORT)))
-        goto no_memory;
-
-    /* Only default to PolicyKit if running as root */
-#if HAVE_POLKIT
-    if (privileged) {
-        data->auth_unix_rw = REMOTE_AUTH_POLKIT;
-        data->auth_unix_ro = REMOTE_AUTH_POLKIT;
-    } else {
-#endif
-        data->auth_unix_rw = REMOTE_AUTH_NONE;
-        data->auth_unix_ro = REMOTE_AUTH_NONE;
-#if HAVE_POLKIT
-    }
-#endif
-
-    if (data->auth_unix_rw == REMOTE_AUTH_POLKIT)
-        data->unix_sock_rw_perms = strdup("0777"); /* Allow world */
-    else
-        data->unix_sock_rw_perms = strdup("0700"); /* Allow user only */
-    data->unix_sock_ro_perms = strdup("0777"); /* Always allow world */
-    if (!data->unix_sock_ro_perms ||
-        !data->unix_sock_rw_perms)
-        goto no_memory;
-
-#if HAVE_SASL
-    data->auth_tcp = REMOTE_AUTH_SASL;
-#else
-    data->auth_tcp = REMOTE_AUTH_NONE;
-#endif
-    data->auth_tls = REMOTE_AUTH_NONE;
-
-    data->mdns_adv = 1;
-
-    data->min_workers = 5;
-    data->max_workers = 20;
-    data->max_clients = 20;
-
-    data->prio_workers = 5;
-
-    data->max_requests = 20;
-    data->max_client_requests = 5;
-
-    data->log_buffer_size = 64;
-
-    data->audit_level = 1;
-    data->audit_logging = 0;
-
-    data->keepalive_interval = 5;
-    data->keepalive_count = 5;
-    data->keepalive_required = 0;
-
-    localhost = virGetHostname(NULL);
-    if (localhost == NULL) {
-        /* we couldn't resolve the hostname; assume that we are
-         * running in disconnected operation, and report a less
-         * useful Avahi string
-         */
-        ret = virAsprintf(&data->mdns_name, "Virtualization Host");
-    } else {
-        char *tmp;
-        /* Extract the host part of the potentially FQDN */
-        if ((tmp = strchr(localhost, '.')))
-            *tmp = '\0';
-        ret = virAsprintf(&data->mdns_name, "Virtualization Host %s",
-                          localhost);
-    }
-    VIR_FREE(localhost);
-    if (ret < 0)
-        goto no_memory;
-
-    return data;
-
-no_memory:
-    virReportOOMError();
-    daemonConfigFree(data);
-    return NULL;
-}
-
-static void
-daemonConfigFree(struct daemonConfig *data)
-{
-    char **tmp;
-
-    if (!data)
-        return;
-
-    VIR_FREE(data->listen_addr);
-    VIR_FREE(data->tls_port);
-    VIR_FREE(data->tcp_port);
-
-    VIR_FREE(data->unix_sock_ro_perms);
-    VIR_FREE(data->unix_sock_rw_perms);
-    VIR_FREE(data->unix_sock_group);
-    VIR_FREE(data->unix_sock_dir);
-    VIR_FREE(data->mdns_name);
-
-    tmp = data->tls_allowed_dn_list;
-    while (tmp && *tmp) {
-        VIR_FREE(*tmp);
-        tmp++;
-    }
-    VIR_FREE(data->tls_allowed_dn_list);
-
-    tmp = data->sasl_allowed_username_list;
-    while (tmp && *tmp) {
-        VIR_FREE(*tmp);
-        tmp++;
-    }
-    VIR_FREE(data->sasl_allowed_username_list);
-
-    VIR_FREE(data->key_file);
-    VIR_FREE(data->ca_file);
-    VIR_FREE(data->cert_file);
-    VIR_FREE(data->crl_file);
-
-    VIR_FREE(data->log_filters);
-    VIR_FREE(data->log_outputs);
-
-    VIR_FREE(data);
-}
-
-
-/* Read the config file if it exists.
- * Only used in the remote case, hence the name.
- */
-static int
-daemonConfigLoad(struct daemonConfig *data,
-                 const char *filename,
-                 bool allow_missing)
-{
-    virConfPtr conf;
-
-    if (allow_missing &&
-        access(filename, R_OK) == -1 &&
-        errno == ENOENT)
-        return 0;
-
-    conf = virConfReadFile (filename, 0);
-    if (!conf)
-        return -1;
-
-    GET_CONF_INT (conf, filename, listen_tcp);
-    GET_CONF_INT (conf, filename, listen_tls);
-    GET_CONF_STR (conf, filename, tls_port);
-    GET_CONF_STR (conf, filename, tcp_port);
-    GET_CONF_STR (conf, filename, listen_addr);
-
-    if (remoteConfigGetAuth(conf, "auth_unix_rw", &data->auth_unix_rw, filename) < 0)
-        goto error;
-#if HAVE_POLKIT
-    /* Change default perms to be wide-open if PolicyKit is enabled.
-     * Admin can always override in config file
-     */
-    if (data->auth_unix_rw == REMOTE_AUTH_POLKIT) {
-        VIR_FREE(data->unix_sock_rw_perms);
-        if (!(data->unix_sock_rw_perms = strdup("0777"))) {
-            virReportOOMError();
-            goto error;
-        }
-    }
-#endif
-    if (remoteConfigGetAuth(conf, "auth_unix_ro", &data->auth_unix_ro, filename) < 0)
-        goto error;
-    if (remoteConfigGetAuth(conf, "auth_tcp", &data->auth_tcp, filename) < 0)
-        goto error;
-    if (remoteConfigGetAuth(conf, "auth_tls", &data->auth_tls, filename) < 0)
-        goto error;
-
-    GET_CONF_STR (conf, filename, unix_sock_group);
-    GET_CONF_STR (conf, filename, unix_sock_ro_perms);
-    GET_CONF_STR (conf, filename, unix_sock_rw_perms);
-
-    GET_CONF_STR (conf, filename, unix_sock_dir);
-
-    GET_CONF_INT (conf, filename, mdns_adv);
-    GET_CONF_STR (conf, filename, mdns_name);
-
-    GET_CONF_INT (conf, filename, tls_no_sanity_certificate);
-    GET_CONF_INT (conf, filename, tls_no_verify_certificate);
-
-    GET_CONF_STR (conf, filename, key_file);
-    GET_CONF_STR (conf, filename, cert_file);
-    GET_CONF_STR (conf, filename, ca_file);
-    GET_CONF_STR (conf, filename, crl_file);
-
-    if (remoteConfigGetStringList(conf, "tls_allowed_dn_list",
-                                  &data->tls_allowed_dn_list, filename) < 0)
-        goto error;
-
-
-    if (remoteConfigGetStringList(conf, "sasl_allowed_username_list",
-                                  &data->sasl_allowed_username_list, filename) < 0)
-        goto error;
-
-
-    GET_CONF_INT (conf, filename, min_workers);
-    GET_CONF_INT (conf, filename, max_workers);
-    GET_CONF_INT (conf, filename, max_clients);
-
-    GET_CONF_INT (conf, filename, prio_workers);
-
-    GET_CONF_INT (conf, filename, max_requests);
-    GET_CONF_INT (conf, filename, max_client_requests);
-
-    GET_CONF_INT (conf, filename, audit_level);
-    GET_CONF_INT (conf, filename, audit_logging);
-
-    GET_CONF_STR (conf, filename, host_uuid);
-
-    GET_CONF_INT (conf, filename, log_level);
-    GET_CONF_STR (conf, filename, log_filters);
-    GET_CONF_STR (conf, filename, log_outputs);
-    GET_CONF_INT (conf, filename, log_buffer_size);
-
-    GET_CONF_INT (conf, filename, keepalive_interval);
-    GET_CONF_INT (conf, filename, keepalive_count);
-    GET_CONF_INT (conf, filename, keepalive_required);
-
-    virConfFree (conf);
-    return 0;
-
-error:
-    virConfFree (conf);
-    return -1;
-}
 
 /* Display version information. */
 static void
@@ -1148,7 +729,7 @@ static void daemonReloadHandler(virNetServerPtr srv ATTRIBUTE_UNUSED,
 {
         VIR_INFO("Reloading configuration on SIGHUP");
         virHookCall(VIR_HOOK_DRIVER_DAEMON, "-",
-                    VIR_HOOK_DAEMON_OP_RELOAD, SIGHUP, "SIGHUP", NULL);
+                    VIR_HOOK_DAEMON_OP_RELOAD, SIGHUP, "SIGHUP", NULL, NULL);
         if (virStateReload() < 0)
             VIR_WARN("Error while reloading drivers");
 }
@@ -1196,6 +777,82 @@ static int daemonStateInit(virNetServerPtr srv)
         return -1;
     }
     return 0;
+}
+
+static int migrateProfile(void)
+{
+    char *old_base = NULL;
+    char *updated = NULL;
+    char *home = NULL;
+    char *xdg_dir = NULL;
+    char *config_dir = NULL;
+    const char *config_home;
+    int ret = -1;
+    mode_t old_umask;
+
+    VIR_DEBUG("Checking if user profile needs migrating");
+
+    if (!(home = virGetUserDirectory()))
+        goto cleanup;
+
+    if (virAsprintf(&old_base, "%s/.libvirt", home) < 0) {
+        goto cleanup;
+    }
+
+    /* if the new directory is there or the old one is not: do nothing */
+    if (!(config_dir = virGetUserConfigDirectory()))
+        goto cleanup;
+
+    if (!virFileIsDir(old_base) || virFileExists(config_dir)) {
+        VIR_DEBUG("No old profile in '%s' / "
+                  "new profile directory already present '%s'",
+                  old_base, config_dir);
+        ret = 0;
+        goto cleanup;
+    }
+
+    /* test if we already attempted to migrate first */
+    if (virAsprintf(&updated, "%s/DEPRECATED-DIRECTORY", old_base) < 0) {
+        goto cleanup;
+    }
+    if (virFileExists(updated)) {
+        goto cleanup;
+    }
+
+    config_home = getenv("XDG_CONFIG_HOME");
+    if (config_home && config_home[0] != '\0') {
+        xdg_dir = strdup(config_home);
+    } else {
+        if (virAsprintf(&xdg_dir, "%s/.config", home) < 0) {
+            goto cleanup;
+        }
+    }
+
+    old_umask = umask(077);
+    if (virFileMakePath(xdg_dir) < 0) {
+        umask(old_umask);
+        goto cleanup;
+    }
+    umask(old_umask);
+
+    if (rename(old_base, config_dir) < 0) {
+        int fd = creat(updated, 0600);
+        VIR_FORCE_CLOSE(fd);
+        VIR_ERROR(_("Unable to migrate %s to %s"), old_base, config_dir);
+        goto cleanup;
+    }
+
+    VIR_DEBUG("Profile migrated from %s to %s", old_base, config_dir);
+    ret = 0;
+
+ cleanup:
+    VIR_FREE(home);
+    VIR_FREE(old_base);
+    VIR_FREE(xdg_dir);
+    VIR_FREE(config_dir);
+    VIR_FREE(updated);
+
+    return ret;
 }
 
 /* Print command-line usage. */
@@ -1251,10 +908,10 @@ libvirt management daemon:\n"), argv0);
   Default paths:\n\
 \n\
     Configuration file (unless overridden by -f):\n\
-      $HOME/.libvirt/libvirtd.conf\n\
+      $XDG_CONFIG_HOME/libvirt/libvirtd.conf\n\
 \n\
     Sockets:\n\
-      $HOME/.libvirt/libvirt-sock (in UNIX abstract namespace)\n\
+      $XDG_RUNTIME_HOME/libvirt/libvirt-sock (in UNIX abstract namespace)\n\
 \n\
     TLS:\n\
       CA certificate:     $HOME/.pki/libvirt/cacert.pem\n\
@@ -1262,7 +919,7 @@ libvirt management daemon:\n"), argv0);
       Server private key: $HOME/.pki/libvirt/serverkey.pem\n\
 \n\
     PID file:\n\
-      $HOME/.libvirt/libvirtd.pid\n\
+      $XDG_RUNTIME_HOME/libvirt/libvirtd.pid\n\
 \n"));
     }
 }
@@ -1288,7 +945,6 @@ int main(int argc, char **argv) {
     struct daemonConfig *config;
     bool privileged = geteuid() == 0 ? true : false;
     bool implicit_conf = false;
-    bool use_polkit_dbus;
     char *run_dir = NULL;
     mode_t old_umask;
 
@@ -1314,6 +970,30 @@ int main(int argc, char **argv) {
 
     /* initialize early logging */
     virLogSetFromEnv();
+
+#ifdef WITH_DRIVER_MODULES
+    if (strstr(argv[0], "lt-libvirtd")) {
+        char *tmp = strrchr(argv[0], '/');
+        if (!tmp) {
+            fprintf(stderr, _("%s: cannot identify driver directory\n"), argv[0]);
+            exit(EXIT_FAILURE);
+        }
+        *tmp = '\0';
+        char *driverdir;
+        if (virAsprintf(&driverdir, "%s/../../src/.libs", argv[0]) < 0) {
+            fprintf(stderr, _("%s: initialization failed\n"), argv[0]);
+            exit(EXIT_FAILURE);
+        }
+        if (access(driverdir, R_OK) < 0) {
+            fprintf(stderr, _("%s: expected driver directory '%s' is missing\n"),
+                    argv[0], driverdir);
+            exit(EXIT_FAILURE);
+        }
+        virDriverModuleInitialize(driverdir);
+        *tmp = '/';
+        /* Must not free 'driverdir' - it is still used */
+    }
+#endif
 
     while (1) {
         int optidx = 0;
@@ -1381,6 +1061,12 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (optind != argc) {
+        fprintf(stderr, "%s: unexpected, non-option, command line arguments\n",
+                argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
     if (!(config = daemonConfigNew(privileged))) {
         VIR_ERROR(_("Can't create initial configuration"));
         exit(EXIT_FAILURE);
@@ -1398,8 +1084,19 @@ int main(int argc, char **argv) {
 
     /* Read the config file if it exists*/
     if (remote_config_file &&
-        daemonConfigLoad(config, remote_config_file, implicit_conf) < 0) {
-        VIR_ERROR(_("Can't load config file '%s'"), remote_config_file);
+        daemonConfigLoadFile(config, remote_config_file, implicit_conf) < 0) {
+        virErrorPtr err = virGetLastError();
+        if (err && err->message)
+            VIR_ERROR(_("Can't load config file: %s: %s"),
+                      err->message, remote_config_file);
+        else
+            VIR_ERROR(_("Can't load config file: %s"), remote_config_file);
+        exit(EXIT_FAILURE);
+    }
+
+    if (!privileged &&
+        migrateProfile() < 0) {
+        VIR_ERROR(_("Exiting due to failure to migrate profile"));
         exit(EXIT_FAILURE);
     }
 
@@ -1420,6 +1117,7 @@ int main(int argc, char **argv) {
         VIR_ERROR(_("Can't determine pid file path."));
         exit(EXIT_FAILURE);
     }
+    VIR_DEBUG("Decided on pid file path '%s'", NULLSTR(pid_file));
 
     if (daemonUnixSocketPaths(config,
                               privileged,
@@ -1428,6 +1126,8 @@ int main(int argc, char **argv) {
         VIR_ERROR(_("Can't determine socket paths"));
         exit(EXIT_FAILURE);
     }
+    VIR_DEBUG("Decided on socket paths '%s' and '%s'",
+              sock_file, NULLSTR(sock_file_ro));
 
     if (godaemon) {
         char ebuf[1024];
@@ -1440,7 +1140,7 @@ int main(int argc, char **argv) {
 
         if ((statuswrite = daemonForkIntoBackground(argv[0])) < 0) {
             VIR_ERROR(_("Failed to fork as daemon: %s"),
-                      virStrerror(errno, ebuf, sizeof ebuf));
+                      virStrerror(errno, ebuf, sizeof(ebuf)));
             goto cleanup;
         }
     }
@@ -1449,21 +1149,23 @@ int main(int argc, char **argv) {
     if (privileged) {
         run_dir = strdup(LOCALSTATEDIR "/run/libvirt");
     } else {
-        char *user_dir = virGetUserDirectory(geteuid());
+        run_dir = virGetUserRuntimeDirectory();
 
-        if (!user_dir) {
+        if (!run_dir) {
             VIR_ERROR(_("Can't determine user directory"));
             goto cleanup;
         }
-        ignore_value(virAsprintf(&run_dir, "%s/.libvirt/", user_dir));
-        VIR_FREE(user_dir);
     }
     if (!run_dir) {
         virReportOOMError();
         goto cleanup;
     }
 
-    old_umask = umask(022);
+    if (privileged)
+        old_umask = umask(022);
+    else
+        old_umask = umask(077);
+    VIR_DEBUG("Ensuring run dir '%s' exists", run_dir);
     if (virFileMakePath(run_dir) < 0) {
         char ebuf[1024];
         VIR_ERROR(_("unable to create rundir %s: %s"), run_dir,
@@ -1479,8 +1181,11 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    use_polkit_dbus = config->auth_unix_rw == REMOTE_AUTH_POLKIT ||
-            config->auth_unix_ro == REMOTE_AUTH_POLKIT;
+    if (virNetlinkStartup() < 0) {
+        ret = VIR_DAEMON_ERR_INIT;
+        goto cleanup;
+    }
+
     if (!(srv = virNetServerNew(config->min_workers,
                                 config->max_workers,
                                 config->prio_workers,
@@ -1489,8 +1194,8 @@ int main(int argc, char **argv) {
                                 config->keepalive_count,
                                 !!config->keepalive_required,
                                 config->mdns_adv ? config->mdns_name : NULL,
-                                use_polkit_dbus,
-                                remoteClientInitHook))) {
+                                remoteClientInitHook,
+                                NULL))) {
         ret = VIR_DAEMON_ERR_INIT;
         goto cleanup;
     }
@@ -1498,6 +1203,7 @@ int main(int argc, char **argv) {
     /* Beyond this point, nothing should rely on using
      * getuid/geteuid() == 0, for privilege level checks.
      */
+    VIR_DEBUG("Dropping privileges (if required)");
     if (daemonSetupPrivs() < 0) {
         ret = VIR_DAEMON_ERR_PRIVS;
         goto cleanup;
@@ -1534,11 +1240,13 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    if (timeout != -1)
+    if (timeout != -1) {
+        VIR_DEBUG("Registering shutdown timeout %d", timeout);
         virNetServerAutoShutdown(srv,
                                  timeout,
                                  daemonShutdownCheck,
                                  NULL);
+    }
 
     if ((daemonSetupSignals(srv)) < 0) {
         ret = VIR_DAEMON_ERR_SIGNAL;
@@ -1546,11 +1254,13 @@ int main(int argc, char **argv) {
     }
 
     if (config->audit_level) {
+        VIR_DEBUG("Attempting to configure auditing subsystem");
         if (virAuditOpen() < 0) {
             if (config->audit_level > 1) {
                 ret = VIR_DAEMON_ERR_AUDIT;
                 goto cleanup;
             }
+            VIR_DEBUG("Proceeding without auditing");
         }
     }
     virAuditLog(config->audit_logging);
@@ -1571,7 +1281,7 @@ int main(int argc, char **argv) {
      *       an error ?
      */
     virHookCall(VIR_HOOK_DRIVER_DAEMON, "-", VIR_HOOK_DAEMON_OP_START,
-                0, "start", NULL);
+                0, "start", NULL, NULL);
 
     if (daemonSetupNetworking(srv, config,
                               sock_file, sock_file_ro,
@@ -1598,19 +1308,27 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
+    /* Register the netlink event service */
+    if (virNetlinkEventServiceStart() < 0) {
+        ret = VIR_DAEMON_ERR_NETWORK;
+        goto cleanup;
+    }
+
     /* Run event loop. */
     virNetServerRun(srv);
 
     ret = 0;
 
     virHookCall(VIR_HOOK_DRIVER_DAEMON, "-", VIR_HOOK_DAEMON_OP_SHUTDOWN,
-                0, "shutdown", NULL);
+                0, "shutdown", NULL, NULL);
 
 cleanup:
+    virNetlinkEventServiceStop();
     virNetServerProgramFree(remoteProgram);
     virNetServerProgramFree(qemuProgram);
     virNetServerClose(srv);
     virNetServerFree(srv);
+    virNetlinkShutdown();
     if (statuswrite != -1) {
         if (ret != 0) {
             /* Tell parent of daemon what failed */

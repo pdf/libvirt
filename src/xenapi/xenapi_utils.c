@@ -1,6 +1,6 @@
 /*
  * xenapi_utils.c: Xen API driver -- utils parts.
- * Copyright (C) 2011 Red Hat, Inc.
+ * Copyright (C) 2011-2012 Red Hat, Inc.
  * Copyright (C) 2009, 2010 Citrix Ltd.
  *
  * This library is free software; you can redistribute it and/or
@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Sharadha Prabhakar <sharadha.prabhakar@citrix.com>
  */
@@ -25,7 +25,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
-#include <libxml/uri.h>
 #include <xen/api/xen_all.h>
 #include "internal.h"
 #include "domain_conf.h"
@@ -36,7 +35,7 @@
 #include "memory.h"
 #include "buf.h"
 #include "logging.h"
-#include "qparams.h"
+#include "viruri.h"
 #include "xenapi_driver_private.h"
 #include "xenapi_utils.h"
 
@@ -61,7 +60,7 @@ xenapiUtil_RequestPassword(virConnectAuthPtr auth, const char *username,
     virConnectCredential cred;
     char *prompt;
 
-    memset(&cred, 0, sizeof (virConnectCredential));
+    memset(&cred, 0, sizeof(virConnectCredential));
 
     if (virAsprintf(&prompt, "Enter %s password for %s", username,
                     hostname) < 0) {
@@ -94,25 +93,13 @@ xenapiUtil_RequestPassword(virConnectAuthPtr auth, const char *username,
 }
 
 int
-xenapiUtil_ParseQuery(virConnectPtr conn, xmlURIPtr uri, int *noVerify)
+xenapiUtil_ParseQuery(virConnectPtr conn, virURIPtr uri, int *noVerify)
 {
     int result = 0;
     int i;
-    struct qparam_set *queryParamSet = NULL;
-    struct qparam *queryParam = NULL;
 
-#ifdef HAVE_XMLURI_QUERY_RAW
-    queryParamSet = qparam_query_parse(uri->query_raw);
-#else
-    queryParamSet = qparam_query_parse(uri->query);
-#endif
-
-    if (queryParamSet == NULL) {
-        goto failure;
-    }
-
-    for (i = 0; i < queryParamSet->n; i++) {
-        queryParam = &queryParamSet->p[i];
+    for (i = 0; i < uri->paramsCount; i++) {
+        virURIParamPtr queryParam = &uri->params[i];
         if (STRCASEEQ(queryParam->name, "no_verify")) {
             if (noVerify == NULL) {
                 continue;
@@ -127,9 +114,6 @@ xenapiUtil_ParseQuery(virConnectPtr conn, xmlURIPtr uri, int *noVerify)
     }
 
   cleanup:
-    if (queryParamSet != NULL) {
-        free_qparam_set(queryParamSet);
-    }
 
     return result;
 
@@ -388,11 +372,13 @@ xenapiSessionErrorHandle(virConnectPtr conn, virErrorNumber errNum,
 
     if (buf == NULL && priv != NULL && priv->session != NULL) {
         char *ret = returnErrorFromSession(priv->session);
-        virReportErrorHelper(VIR_FROM_XENAPI, errNum, filename, func, lineno, _("%s"), ret);
+        virReportErrorHelper(VIR_FROM_XENAPI, errNum, filename, func, lineno,
+                             "%s", ret);
         xen_session_clear_error(priv->session);
         VIR_FREE(ret);
     } else {
-        virReportErrorHelper(VIR_FROM_XENAPI, errNum, filename, func, lineno, _("%s"), buf);
+        virReportErrorHelper(VIR_FROM_XENAPI, errNum, filename, func, lineno,
+                             "%s", buf);
     }
 }
 
@@ -467,7 +453,6 @@ createVMRecordFromXml (virConnectPtr conn, virDomainDefPtr def,
     char uuidStr[VIR_UUID_STRING_BUFLEN];
     xen_string_string_map *strings = NULL;
     int device_number = 0;
-    char *bridge = NULL, *mac = NULL;
     int i;
 
     *record = xen_vm_record_alloc();
@@ -556,28 +541,21 @@ createVMRecordFromXml (virConnectPtr conn, virDomainDefPtr def,
     }
 
     for (i = 0; i < def->nnets; i++) {
-        if (def->nets[i]->type == VIR_DOMAIN_NET_TYPE_BRIDGE) {
-            if (def->nets[i]->data.bridge.brname)
-                if (!(bridge = strdup(def->nets[i]->data.bridge.brname)))
-                    goto error_cleanup;
-            if (def->nets[i]->mac) {
-                char macStr[VIR_MAC_STRING_BUFLEN];
-                virFormatMacAddr(def->nets[i]->mac, macStr);
-                if (!(mac = strdup(macStr))) {
-                    VIR_FREE(bridge);
-                    goto error_cleanup;
-                }
+        if (def->nets[i]->type == VIR_DOMAIN_NET_TYPE_BRIDGE &&
+            def->nets[i]->data.bridge.brname) {
+            char *mac;
+
+            if (VIR_ALLOC_N(mac, VIR_MAC_STRING_BUFLEN) < 0)
+                goto error_cleanup;
+            virMacAddrFormat(&def->nets[i]->mac, mac);
+
+            if (createVifNetwork(conn, *vm, device_number,
+                                 def->nets[i]->data.bridge.brname,
+                                 mac) < 0) {
+                VIR_FREE(mac);
+                goto error_cleanup;
             }
-            if (mac != NULL && bridge != NULL) {
-                if (createVifNetwork(conn, *vm, device_number, bridge,
-                                     mac) < 0) {
-                    VIR_FREE(bridge);
-                    goto error_cleanup;
-                }
-                VIR_FREE(bridge);
-                device_number++;
-            }
-            VIR_FREE(bridge);
+            device_number++;
         }
     }
     return 0;

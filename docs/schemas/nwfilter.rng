@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <grammar ns="" xmlns="http://relaxng.org/ns/structure/1.0" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes">
+  <include href='basictypes.rng'/>
   <start>
     <ref name="filter"/>
   </start>
@@ -484,6 +485,14 @@
           <ref name="stateflags-type"/>
         </attribute>
       </optional>
+      <optional>
+        <attribute name="ipset">
+          <ref name="ipset-name-type"/>
+        </attribute>
+        <attribute name="ipsetflags">
+          <ref name="ipset-flags-type"/>
+        </attribute>
+      </optional>
     </interleave>
   </define>
 
@@ -799,18 +808,6 @@
 
   <!-- ################  type library ################ -->
 
-  <define name="UUID">
-    <choice>
-      <data type="string">
-        <param name="pattern">[a-fA-F0-9]{32}</param>
-      </data>
-
-      <data type="string">
-        <param name="pattern">[a-fA-F0-9]{8}\-([a-fA-F0-9]{4}\-){3}[a-fA-F0-9]{12}</param>
-      </data>
-    </choice>
-  </define>
-
   <define name="variable-name-type">
     <data type="string">
       <param name="pattern">$[a-zA-Z0-9_]+(\[[ ]*[@]?[0-9]+[ ]*\])?</param>
@@ -926,21 +923,6 @@
       <data type="int">
         <param name="minInclusive">0</param>
         <param name="maxInclusive">4095</param>
-      </data>
-    </choice>
-  </define>
-
-  <define name="uint8range">
-    <choice>
-      <ref name="variable-name-type"/>
-
-      <data type="string">
-        <param name="pattern">0x[0-9a-fA-F]{1,2}</param>
-      </data>
-
-      <data type="int">
-        <param name="minInclusive">0</param>
-        <param name="maxInclusive">255</param>
       </data>
     </choice>
   </define>
@@ -1084,6 +1066,21 @@
   <define name='tcpflags-type'>
     <data type="string">
       <param name="pattern">((SYN|ACK|URG|PSH|FIN|RST)(,(SYN|ACK|URG|PSH|FIN|RST))*|ALL|NONE)/((SYN|ACK|URG|PSH|FIN|RST)(,(SYN|ACK|URG|PSH|FIN|RST))*|ALL|NONE)</param>
+    </data>
+  </define>
+
+  <define name='ipset-name-type'>
+    <choice>
+      <ref name="variable-name-type"/>
+      <data type="string">
+        <param name="pattern">[a-zA-Z0-9_\.:\-\+ ]{1,31}</param>
+      </data>
+    </choice>
+  </define>
+
+  <define name='ipset-flags-type'>
+    <data type="string">
+      <param name="pattern">(src|dst)(,(src|dst)){0,5}</param>
     </data>
   </define>
 </grammar>

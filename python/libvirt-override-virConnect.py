@@ -134,6 +134,42 @@
         cb(self, virDomain(self, _obj=dom), oldSrcPath, newSrcPath, devAlias, reason, opaque)
         return 0;
 
+    def _dispatchDomainEventTrayChangeCallback(self, dom, devAlias, reason, cbData):
+        """Dispatches event to python user domain trayChange event callbacks
+        """
+        cb = cbData["cb"]
+        opaque = cbData["opaque"]
+
+        cb(self, virDomain(self, _obj=dom), devAlias, reason, opaque)
+        return 0;
+
+    def _dispatchDomainEventPMWakeupCallback(self, dom, reason, cbData):
+        """Dispatches event to python user domain pmwakeup event callbacks
+        """
+        cb = cbData["cb"]
+        opaque = cbData["opaque"]
+
+        cb(self, virDomain(self, _obj=dom), reason, opaque)
+        return 0;
+
+    def _dispatchDomainEventPMSuspendCallback(self, dom, reason, cbData):
+        """Dispatches event to python user domain pmsuspend event callbacks
+        """
+        cb = cbData["cb"]
+        opaque = cbData["opaque"]
+
+        cb(self, virDomain(self, _obj=dom), reason, opaque)
+        return 0;
+
+    def _dispatchDomainEventBalloonChangeCallback(self, dom, actual, cbData):
+        """Dispatches events to python user domain balloon change event callbacks
+        """
+        cb = cbData["cb"]
+        opaque = cbData["opaque"]
+
+        cb(self, virDomain(self, _obj=dom), actual, opaque)
+        return 0
+
     def domainEventDeregisterAny(self, callbackID):
         """Removes a Domain Event Callback. De-registering for a
            domain callback will disable delivery of this event type """
@@ -158,3 +194,15 @@
             raise libvirtError ('virConnectDomainEventRegisterAny() failed', conn=self)
         self.domainEventCallbackID[ret] = opaque
         return ret
+
+    def listAllDomains(self, flags):
+        """List all domains and returns a list of domain objects"""
+        ret = libvirtmod.virConnectListAllDomains(self._o, flags)
+        if ret is None:
+            raise libvirtError("virConnectListAllDomains() failed", conn=self)
+
+        retlist = list()
+        for domptr in ret:
+            retlist.append(virDomain(self, _obj=domptr))
+
+        return retlist

@@ -1,6 +1,6 @@
 ## Process this file with automake to produce Makefile.in
 
-## Copyright (C) 2005-2011 Red Hat, Inc.
+## Copyright (C) 2005-2012 Red Hat, Inc.
 ## See COPYING.LIB for the License of this software
 
 SUBDIRS= schemas
@@ -85,6 +85,9 @@ qemu_xml = \
   libvirt-qemu-api.xml \
   libvirt-qemu-refs.xml
 
+apidir = $(pkgdatadir)/api
+api_DATA = libvirt-api.xml libvirt-qemu-api.xml
+
 fig = \
   libvirt-net-logical.fig \
   libvirt-net-physical.fig \
@@ -113,7 +116,7 @@ MAINTAINERCLEANFILES = \
   $(addprefix $(srcdir)/,$(apihtml)) \
   $(addprefix $(srcdir)/,$(devhelphtml))
 
-all: web
+all-am: web
 
 api: $(srcdir)/libvirt-api.xml $(srcdir)/libvirt-refs.xml
 qemu_api: $(srcdir)/libvirt-qemu-api.xml $(srcdir)/libvirt-qemu-refs.xml
@@ -197,12 +200,22 @@ python_generated_files = \
 		$(srcdir)/libvirt-qemu-api.xml \
 		$(srcdir)/libvirt-qemu-refs.xml
 
-$(python_generated_files): $(srcdir)/apibuild.py \
-		$(srcdir)/../include/libvirt/*.h \
+APIBUILD=$(srcdir)/apibuild.py
+APIBUILD_STAMP=$(APIBUILD).stamp
+EXTRA_DIST += $(APIBUILD_STAMP)
+
+$(python_generated_files): $(APIBUILD_STAMP)
+
+$(APIBUILD_STAMP): $(srcdir)/apibuild.py \
+		$(srcdir)/../include/libvirt/libvirt.h.in \
+		$(srcdir)/../include/libvirt/libvirt-qemu.h \
+		$(srcdir)/../include/libvirt/virterror.h \
 		$(srcdir)/../src/libvirt.c \
 		$(srcdir)/../src/libvirt-qemu.c \
 		$(srcdir)/../src/util/virterror.c
-	$(AM_V_GEN)srcdir=$(srcdir) $(PYTHON) $(srcdir)/apibuild.py
+	$(AM_V_GEN)srcdir=$(srcdir) $(PYTHON) $(APIBUILD)
+	touch $@
+
 
 check-local: all
 
@@ -212,6 +225,7 @@ clean-local:
 maintainer-clean-local: clean-local
 	rm -rf $(srcdir)/libvirt-api.xml $(srcdir)/libvirt-refs.xml todo.html.in hvsupport.html.in
 	rm -rf $(srcdir)/libvirt-qemu-api.xml $(srcdir)/libvirt-qemu-refs.xml
+	rm -rf $(APIBUILD_STAMP)
 
 rebuild: api qemu_api all
 

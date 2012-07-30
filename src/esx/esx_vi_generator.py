@@ -16,8 +16,8 @@
 # Lesser General Public License for more details.
 #
 # You should have received a copy of the GNU Lesser General Public
-# License along with this library; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+# License along with this library; if not, see
+# <http://www.gnu.org/licenses/>.
 #
 
 import sys
@@ -832,7 +832,7 @@ class Object(Type):
         else:
             if self.features & Object.FEATURE__DEEP_COPY:
                 source += "/* esxVI_%s_DeepCopy */\n" % self.name
-                source += "ESX_VI__TEMPLATE__DYNAMIC_DEEP_COPY(%s)\n" % self.name
+                source += "ESX_VI__TEMPLATE__DYNAMIC_DEEP_COPY(%s,\n" % self.name
                 source += "{\n"
 
                 for extended_by in self.extended_by:

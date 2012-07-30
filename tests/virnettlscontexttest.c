@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2011 Red Hat, Inc.
+ * Copyright (C) 2011-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -36,7 +36,7 @@
 #include "virsocketaddr.h"
 #include "gnutls_1_0_compat.h"
 
-#if !defined WIN32 && HAVE_LIBTASN1_H && !defined GNUTLS_1_0_COMPAT
+#if !defined WIN32 && HAVE_LIBTASN1_H && LIBGNUTLS_VERSION_NUMBER >= 0x020600
 # include <libtasn1.h>
 
 # include "rpc/virnettlscontext.h"
@@ -749,31 +749,47 @@ mymain(void)
     if (virFileWriteStr(keyfile, PRIVATE_KEY, 0600) < 0)
         return EXIT_FAILURE;
 
-# define DO_CTX_TEST(isServer, caReq, certReq, expectFail)              \
+# define DO_CTX_TEST(_isServer, _caReq, _certReq, _expectFail)          \
     do {                                                                \
-        struct testTLSContextData data = {                              \
-            isServer, caReq, certReq, expectFail,                       \
-        };                                                              \
+        static struct testTLSContextData data;                          \
+        data.isServer = _isServer;                                      \
+        data.careq = _caReq;                                            \
+        data.certreq = _certReq;                                        \
+        data.expectFail = _expectFail;                                  \
         if (virtTestRun("TLS Context", 1, testTLSContextInit, &data) < 0) \
             ret = -1;                                                   \
     } while (0)
 
-# define DO_SESS_TEST(caReq, serverReq, clientReq, expectServerFail, expectClientFail, hostname, wildcards) \
+# define DO_SESS_TEST(_caReq, _serverReq, _clientReq, _expectServerFail,\
+                      _expectClientFail, _hostname, _wildcards)         \
     do {                                                                \
-        struct testTLSSessionData data = {                              \
-            caReq, { 0 }, serverReq, clientReq,                         \
-            expectServerFail, expectClientFail, hostname, wildcards     \
-        };                                                              \
+        static struct testTLSSessionData data;                          \
+        static struct testTLSCertReq other;                             \
+        data.careq = _caReq;                                            \
+        data.othercareq = other;                                        \
+        data.serverreq = _serverReq;                                    \
+        data.clientreq = _clientReq;                                    \
+        data.expectServerFail = _expectServerFail;                      \
+        data.expectClientFail = _expectClientFail;                      \
+        data.hostname = _hostname;                                      \
+        data.wildcards = _wildcards;                                    \
         if (virtTestRun("TLS Session", 1, testTLSSessionInit, &data) < 0) \
             ret = -1;                                                   \
     } while (0)
 
-# define DO_SESS_TEST_EXT(caReq, othercaReq, serverReq, clientReq, expectServerFail, expectClientFail, hostname, wildcards) \
+# define DO_SESS_TEST_EXT(_caReq, _othercaReq, _serverReq, _clientReq,  \
+                          _expectServerFail, _expectClientFail,         \
+                          _hostname, _wildcards)                        \
     do {                                                                \
-        struct testTLSSessionData data = {                              \
-            caReq, othercaReq, serverReq, clientReq,                    \
-            expectServerFail, expectClientFail, hostname, wildcards     \
-        };                                                              \
+        static struct testTLSSessionData data;                          \
+        data.careq = _caReq;                                            \
+        data.othercareq = _othercaReq;                                  \
+        data.serverreq = _serverReq;                                    \
+        data.clientreq = _clientReq;                                    \
+        data.expectServerFail = _expectServerFail;                      \
+        data.expectClientFail = _expectClientFail;                      \
+        data.hostname = _hostname;                                      \
+        data.wildcards = _wildcards;                                    \
         if (virtTestRun("TLS Session", 1, testTLSSessionInit, &data) < 0) \
             ret = -1;                                                   \
     } while (0)
@@ -1245,7 +1261,7 @@ mymain(void)
 
     asn1_delete_structure(&pkix_asn1);
 
-    return (ret==0 ? EXIT_SUCCESS : EXIT_FAILURE);
+    return ret==0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 VIRT_TEST_MAIN(mymain)

@@ -18,8 +18,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  *         Stefan Berger <stefanb@us.ibm.com>
@@ -39,6 +39,8 @@
 #include "nwfilter_gentech_driver.h"
 #include "configmake.h"
 
+#include "nwfilter_ipaddrmap.h"
+#include "nwfilter_dhcpsnoop.h"
 #include "nwfilter_learnipaddr.h"
 
 #define VIR_FROM_THIS VIR_FROM_NWFILTER
@@ -66,8 +68,15 @@ static int
 nwfilterDriverStartup(int privileged) {
     char *base = NULL;
 
-    if (virNWFilterLearnInit() < 0)
+    if (!privileged)
+        return 0;
+
+    if (virNWFilterIPAddrMapInit() < 0)
         return -1;
+    if (virNWFilterLearnInit() < 0)
+        goto err_exit_ipaddrmapshutdown;
+    if (virNWFilterDHCPSnoopInit() < 0)
+        goto err_exit_learnshutdown;
 
     virNWFilterTechDriversInit(privileged);
 
@@ -86,17 +95,9 @@ nwfilterDriverStartup(int privileged) {
         if ((base = strdup (SYSCONFDIR "/libvirt")) == NULL)
             goto out_of_memory;
     } else {
-        uid_t uid = geteuid();
-        char *userdir = virGetUserDirectory(uid);
-
-        if (!userdir)
+        base = virGetUserConfigDirectory();
+        if (!base)
             goto error;
-
-        if (virAsprintf(&base, "%s/.libvirt", userdir) == -1) {
-            VIR_FREE(userdir);
-            goto out_of_memory;
-        }
-        VIR_FREE(userdir);
     }
 
     if (virAsprintf(&driverState->configDir,
@@ -127,7 +128,11 @@ alloc_err_exit:
 
 conf_init_err:
     virNWFilterTechDriversShutdown();
+    virNWFilterDHCPSnoopShutdown();
+err_exit_learnshutdown:
     virNWFilterLearnShutdown();
+err_exit_ipaddrmapshutdown:
+    virNWFilterIPAddrMapShutdown();
 
     return -1;
 }
@@ -149,6 +154,7 @@ nwfilterDriverReload(void) {
     conn = virConnectOpen("qemu:///system");
 
     if (conn) {
+        virNWFilterDHCPSnoopEnd(NULL);
         /* shut down all threads -- they will be restarted if necessary */
         virNWFilterLearnThreadsTerminate(true);
 
@@ -161,6 +167,8 @@ nwfilterDriverReload(void) {
 
         virNWFilterCallbackDriversUnlock();
         nwfilterDriverUnlock(driverState);
+
+        virNWFilterInstFiltersOnAllVMs(conn);
 
         virConnectClose(conn);
     }
@@ -201,7 +209,9 @@ nwfilterDriverShutdown(void) {
 
     virNWFilterConfLayerShutdown();
     virNWFilterTechDriversShutdown();
+    virNWFilterDHCPSnoopShutdown();
     virNWFilterLearnShutdown();
+    virNWFilterIPAddrMapShutdown();
 
     nwfilterDriverLock(driverState);
 
@@ -229,8 +239,8 @@ nwfilterLookupByUUID(virConnectPtr conn,
     nwfilterDriverUnlock(driver);
 
     if (!nwfilter) {
-        virNWFilterReportError(VIR_ERR_NO_NWFILTER,
-                               "%s", _("no nwfilter with matching uuid"));
+        virReportError(VIR_ERR_NO_NWFILTER,
+                       "%s", _("no nwfilter with matching uuid"));
         goto cleanup;
     }
 
@@ -255,8 +265,8 @@ nwfilterLookupByName(virConnectPtr conn,
     nwfilterDriverUnlock(driver);
 
     if (!nwfilter) {
-        virNWFilterReportError(VIR_ERR_NO_NWFILTER,
-                               _("no nwfilter with matching name '%s'"), name);
+        virReportError(VIR_ERR_NO_NWFILTER,
+                       _("no nwfilter with matching name '%s'"), name);
         goto cleanup;
     }
 
@@ -379,15 +389,15 @@ nwfilterUndefine(virNWFilterPtr obj) {
 
     nwfilter = virNWFilterObjFindByUUID(&driver->nwfilters, obj->uuid);
     if (!nwfilter) {
-        virNWFilterReportError(VIR_ERR_NO_NWFILTER,
-                               "%s", _("no nwfilter with matching uuid"));
+        virReportError(VIR_ERR_NO_NWFILTER,
+                       "%s", _("no nwfilter with matching uuid"));
         goto cleanup;
     }
 
     if (virNWFilterTestUnassignDef(obj->conn, nwfilter) < 0) {
-        virNWFilterReportError(VIR_ERR_OPERATION_INVALID,
-                               "%s",
-                               _("nwfilter is in use"));
+        virReportError(VIR_ERR_OPERATION_INVALID,
+                       "%s",
+                       _("nwfilter is in use"));
         goto cleanup;
     }
 
@@ -427,8 +437,8 @@ nwfilterGetXMLDesc(virNWFilterPtr obj,
     nwfilterDriverUnlock(driver);
 
     if (!nwfilter) {
-        virNWFilterReportError(VIR_ERR_NO_NWFILTER,
-                               "%s", _("no nwfilter with matching uuid"));
+        virReportError(VIR_ERR_NO_NWFILTER,
+                       "%s", _("no nwfilter with matching uuid"));
         goto cleanup;
     }
 

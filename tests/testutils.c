@@ -1,9 +1,21 @@
 /*
  * testutils.c: basic test utils
  *
- * Copyright (C) 2005-2011 Red Hat, Inc.
+ * Copyright (C) 2005-2012 Red Hat, Inc.
  *
- * See COPYING.LIB for the License of this software
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Karel Zak <kzak@redhat.com>
  */
@@ -34,6 +46,8 @@
 #include "buf.h"
 #include "logging.h"
 #include "command.h"
+#include "virrandom.h"
+#include "dirname.h"
 
 #if TEST_OOM_TRACE
 # include <execinfo.h>
@@ -42,6 +56,8 @@
 #ifdef HAVE_PATHS_H
 # include <paths.h>
 #endif
+
+#define VIR_FROM_THIS VIR_FROM_NONE
 
 #define GETTIMEOFDAY(T) gettimeofday(T, NULL)
 #define DIFF_MSEC(T, U)                                 \
@@ -71,7 +87,7 @@ virtTestCountAverage(double *items, int nitems)
     return (double) (sum / nitems);
 }
 
-ATTRIBUTE_FMT_PRINTF(3,4)
+
 void virtTestResult(const char *name, int ret, const char *msg, ...)
 {
     va_list vargs;
@@ -88,7 +104,11 @@ void virtTestResult(const char *name, int ret, const char *msg, ...)
         else {
             fprintf(stderr, "FAILED\n");
             if (msg) {
-                vfprintf(stderr, msg, vargs);
+                char *str;
+                if (virVasprintf(&str, msg, vargs) == 0) {
+                    fprintf(stderr, "%s", str);
+                    VIR_FREE(str);
+                }
             }
         }
     } else {
@@ -127,8 +147,7 @@ virtTestRun(const char *title, int nloops, int (*body)(const void *data), const 
             fprintf(stderr, "%2d) %-65s ... ", testCounter, title);
     }
 
-    if (nloops > 1 && (ts = calloc(nloops,
-                                   sizeof(double)))==NULL)
+    if (nloops > 1 && (VIR_ALLOC_N(ts, nloops) < 0))
         return -1;
 
     for (i=0; i < nloops; i++) {
@@ -180,7 +199,7 @@ virtTestRun(const char *title, int nloops, int (*body)(const void *data), const 
         }
     }
 
-    free(ts);
+    VIR_FREE(ts);
     return ret;
 }
 
@@ -235,7 +254,7 @@ virtTestLoadFile(const char *file, char **buf)
         if (ferror(fp)) {
             fprintf (stderr, "%s: read failed: %s\n", file, strerror(errno));
             VIR_FORCE_FCLOSE(fp);
-            free(*buf);
+            VIR_FREE(*buf);
             return -1;
         }
     }
@@ -294,7 +313,7 @@ virtTestCaptureProgramOutput(const char *const argv[], char **buf, int maxlen)
     if (pipe(pipefd) < 0)
         return -1;
 
-    int pid = fork();
+    pid_t pid = fork();
     switch (pid) {
     case 0:
         VIR_FORCE_CLOSE(pipefd[0]);
@@ -465,10 +484,12 @@ virtTestLogOutput(const char *category ATTRIBUTE_UNUSED,
                   const char *funcname ATTRIBUTE_UNUSED,
                   long long lineno ATTRIBUTE_UNUSED,
                   const char *timestamp,
+                  unsigned int flags,
                   const char *str,
                   void *data)
 {
     struct virtTestLogData *log = data;
+    virCheckFlags(VIR_LOG_STACK_TRACE, -1);
     virBufferAsprintf(&log->buf, "%s: %s", timestamp, str);
     return strlen(timestamp) + 2 + strlen(str);
 }
@@ -511,7 +532,7 @@ virtTestErrorHook(int n, void *data ATTRIBUTE_UNUSED)
             if (symbols[i])
                 fprintf(stderr, "  TRACE:  %s\n", symbols[i]);
         }
-        free(symbols);
+        VIR_FREE(symbols);
     }
 }
 #endif
@@ -568,11 +589,15 @@ int virtTestMain(int argc,
     if (!abs_srcdir)
         exit(EXIT_AM_HARDFAIL);
 
-    progname = argv[0];
-    if (STRPREFIX(progname, "./"))
-        progname += 2;
+    progname = last_component(argv[0]);
+    if (STRPREFIX(progname, "lt-"))
+        progname += 3;
     if (argc > 1) {
         fprintf(stderr, "Usage: %s\n", argv[0]);
+        fputs("effective environment variables:\n"
+              "VIR_TEST_VERBOSE set to show names of individual tests\n"
+              "VIR_TEST_DEBUG set to show information for debugging failures\n",
+              stderr);
         return EXIT_FAILURE;
     }
     fprintf(stderr, "TEST: %s\n", progname);

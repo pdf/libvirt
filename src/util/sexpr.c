@@ -24,9 +24,6 @@
 
 #define VIR_FROM_THIS VIR_FROM_SEXPR
 
-#define virSexprError(code, ...)                                           \
-        virReportErrorHelper(VIR_FROM_SEXPR, code, __FILE__,               \
-                             __FUNCTION__, __LINE__, __VA_ARGS__)
 
 /**
  * sexpr_new:
@@ -42,7 +39,7 @@ sexpr_new(void)
 
     if (VIR_ALLOC(ret) < 0) {
         virReportOOMError();
-        return (NULL);
+        return NULL;
     }
     ret->kind = SEXPR_NIL;
     return ret;
@@ -187,12 +184,12 @@ struct sexpr *
 sexpr_append(struct sexpr *lst, const struct sexpr *value)
 {
     if (lst == NULL)
-        return (NULL);
+        return NULL;
     if (value == NULL)
-        return (lst);
+        return lst;
     if (append(lst, value) < 0)
-        return (NULL);
-    return (lst);
+        return NULL;
+    return lst;
 }
 
 /**
@@ -241,8 +238,8 @@ sexpr2string(const struct sexpr *sexpr, virBufferPtr buffer)
         virBufferAddLit(buffer, "()");
         break;
     default:
-        virSexprError(VIR_ERR_SEXPR_SERIAL,
-                      _("unknown s-expression kind %d"), sexpr->kind);
+        virReportError(VIR_ERR_SEXPR_SERIAL,
+                       _("unknown s-expression kind %d"), sexpr->kind);
         return -1;
     }
 
@@ -256,7 +253,7 @@ trim(const char *string)
 {
     while (IS_SPACE(*string))
         string++;
-    return (string);
+    return string;
 }
 
 /**
@@ -351,7 +348,7 @@ _string2sexpr(const char *buffer, size_t * end)
 
   error:
     sexpr_free(ret);
-    return (NULL);
+    return NULL;
 }
 
 /**

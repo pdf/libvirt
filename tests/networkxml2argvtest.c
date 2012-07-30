@@ -15,6 +15,37 @@
 #include "memory.h"
 #include "network/bridge_driver.h"
 
+/* Replace all occurrences of @token in @buf by @replacement and adjust size of
+ * @buf accordingly. Returns 0 on success and -1 on out-of-memory errors. */
+static int replaceTokens(char **buf, const char *token, const char *replacement) {
+    size_t token_start, token_end;
+    size_t buf_len, rest_len;
+    const size_t token_len = strlen(token);
+    const size_t replacement_len = strlen(replacement);
+    const int diff = replacement_len - token_len;
+
+    buf_len = rest_len = strlen(*buf) + 1;
+    token_end = 0;
+    for (;;) {
+        char *match = strstr(*buf + token_end, token);
+        if (match == NULL)
+            break;
+        token_start = match - *buf;
+        rest_len -= token_start + token_len - token_end;
+        token_end = token_start + token_len;
+        buf_len += diff;
+        if (diff > 0)
+            if (VIR_REALLOC_N(*buf, buf_len) < 0)
+                return -1;
+        if (diff != 0)
+            memmove(*buf + token_end + diff, *buf + token_end, rest_len);
+        memcpy(*buf + token_start, replacement, replacement_len);
+        token_end += diff;
+    }
+    /* if diff < 0, we could shrink the buffer here... */
+    return 0;
+}
+
 static int testCompareXMLToArgvFiles(const char *inxml, const char *outargv) {
     char *inXmlData = NULL;
     char *outArgvData = NULL;
@@ -30,6 +61,9 @@ static int testCompareXMLToArgvFiles(const char *inxml, const char *outargv) {
         goto fail;
 
     if (virtTestLoadFile(outargv, &outArgvData) < 0)
+        goto fail;
+
+    if (replaceTokens(&outArgvData, "@DNSMASQ@", DNSMASQ))
         goto fail;
 
     if (!(dev = virNetworkDefParseString(inXmlData)))
@@ -58,9 +92,9 @@ static int testCompareXMLToArgvFiles(const char *inxml, const char *outargv) {
     ret = 0;
 
  fail:
-    free(inXmlData);
-    free(outArgvData);
-    free(actual);
+    VIR_FREE(inXmlData);
+    VIR_FREE(outArgvData);
+    VIR_FREE(actual);
     VIR_FREE(pidfile);
     virCommandFree(cmd);
     virNetworkObjFree(obj);
@@ -85,8 +119,8 @@ testCompareXMLToArgvHelper(const void *data)
     result = testCompareXMLToArgvFiles(inxml, outxml);
 
 cleanup:
-    free(inxml);
-    free(outxml);
+    VIR_FREE(inxml);
+    VIR_FREE(outxml);
 
     return result;
 }
@@ -124,7 +158,7 @@ mymain(void)
     DO_TEST("nat-network-dns-srv-record-minimal");
     DO_TEST("nat-network-dns-hosts");
 
-    return (ret==0 ? EXIT_SUCCESS : EXIT_FAILURE);
+    return ret==0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 VIRT_TEST_MAIN(mymain)

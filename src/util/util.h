@@ -1,7 +1,7 @@
 /*
  * utils.h: common, generic utility functions
  *
- * Copyright (C) 2010-2011 Red Hat, Inc.
+ * Copyright (C) 2010-2012 Red Hat, Inc.
  * Copyright (C) 2006, 2007 Binary Karma
  * Copyright (C) 2006 Shuveb Hussain
  *
@@ -16,8 +16,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * File created Jul 18, 2007 - Shuveb Hussain <shuveb@binarykarma.com>
  */
@@ -77,12 +77,15 @@ int virFileLinkPointsTo(const char *checkLink,
 
 int virFileResolveLink(const char *linkpath,
                        char **resultpath) ATTRIBUTE_RETURN_CHECK;
+int virFileResolveAllLinks(const char *linkpath,
+                           char **resultpath) ATTRIBUTE_RETURN_CHECK;
 
 int virFileIsLink(const char *linkpath)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
 
 char *virFindFileInPath(const char *file);
 
+bool virFileIsDir (const char *file) ATTRIBUTE_NONNULL(1);
 bool virFileExists(const char *file) ATTRIBUTE_NONNULL(1);
 bool virFileIsExecutable(const char *file) ATTRIBUTE_NONNULL(1);
 
@@ -90,8 +93,10 @@ char *virFileSanitizePath(const char *path);
 
 enum {
     VIR_FILE_OPEN_NONE        = 0,
-    VIR_FILE_OPEN_AS_UID      = (1 << 0),
-    VIR_FILE_OPEN_FORCE_PERMS = (1 << 1),
+    VIR_FILE_OPEN_NOFORK      = (1 << 0),
+    VIR_FILE_OPEN_FORK        = (1 << 1),
+    VIR_FILE_OPEN_FORCE_MODE  = (1 << 2),
+    VIR_FILE_OPEN_FORCE_OWNER = (1 << 3),
 };
 int virFileAccessibleAs(const char *path, int mode,
                         uid_t uid, gid_t gid)
@@ -110,13 +115,39 @@ enum {
 int virDirCreate(const char *path, mode_t mode, uid_t uid, gid_t gid,
                  unsigned int flags) ATTRIBUTE_RETURN_CHECK;
 int virFileMakePath(const char *path) ATTRIBUTE_RETURN_CHECK;
+int virFileMakePathWithMode(const char *path,
+                            mode_t mode) ATTRIBUTE_RETURN_CHECK;
 
 char *virFileBuildPath(const char *dir,
                        const char *name,
                        const char *ext) ATTRIBUTE_RETURN_CHECK;
 
+
+# ifdef WIN32
+/* On Win32, the canonical directory separator is the backslash, and
+ * the search path separator is the semicolon. Note that also the
+ * (forward) slash works as directory separator.
+ */
+#  define VIR_FILE_DIR_SEPARATOR '\\'
+#  define VIR_FILE_DIR_SEPARATOR_S "\\"
+#  define VIR_FILE_IS_DIR_SEPARATOR(c) ((c) == VIR_FILE_DIR_SEPARATOR || (c) == '/')
+#  define VIR_FILE_PATH_SEPARATOR ';'
+#  define VIR_FILE_PATH_SEPARATOR_S ";"
+
+# else  /* !WIN32 */
+
+#  define VIR_FILE_DIR_SEPARATOR '/'
+#  define VIR_FILE_DIR_SEPARATOR_S "/"
+#  define VIR_FILE_IS_DIR_SEPARATOR(c) ((c) == VIR_FILE_DIR_SEPARATOR)
+#  define VIR_FILE_PATH_SEPARATOR ':'
+#  define VIR_FILE_PATH_SEPARATOR_S ":"
+
+# endif /* !WIN32 */
+
+bool virFileIsAbsPath(const char *path);
 int virFileAbsPath(const char *path,
                    char **abspath) ATTRIBUTE_RETURN_CHECK;
+const char *virFileSkipRoot(const char *path);
 
 int virFileOpenTty(int *ttymaster,
                    char **ttyName,
@@ -153,9 +184,11 @@ int virStrToDouble(char const *s,
                    char **end_ptr,
                    double *result);
 
-int virHexToBin(unsigned char c);
+int virScaleInteger(unsigned long long *value, const char *suffix,
+                    unsigned long long scale, unsigned long long limit)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
 
-int virMacAddrCompare (const char *mac1, const char *mac2);
+int virHexToBin(unsigned char c);
 
 void virSkipSpaces(const char **str) ATTRIBUTE_NONNULL(1);
 void virSkipSpacesAndBackslash(const char **str) ATTRIBUTE_NONNULL(1);
@@ -175,17 +208,6 @@ char *virStrncpy(char *dest, const char *src, size_t n, size_t destbytes)
 char *virStrcpy(char *dest, const char *src, size_t destbytes)
     ATTRIBUTE_RETURN_CHECK;
 # define virStrcpyStatic(dest, src) virStrcpy((dest), (src), sizeof(dest))
-
-# define VIR_MAC_BUFLEN 6
-# define VIR_MAC_PREFIX_BUFLEN 3
-# define VIR_MAC_STRING_BUFLEN VIR_MAC_BUFLEN * 3
-
-int virParseMacAddr(const char* str,
-                    unsigned char *addr) ATTRIBUTE_RETURN_CHECK;
-void virFormatMacAddr(const unsigned char *addr,
-                      char *str);
-void virGenerateMacAddr(const unsigned char *prefix,
-                        unsigned char *addr);
 
 int virDiskNameToIndex(const char* str);
 char *virIndexToDiskName(int idx, const char *prefix);
@@ -232,15 +254,16 @@ char *virGetHostname(virConnectPtr conn);
 
 int virKillProcess(pid_t pid, int sig);
 
-char *virGetUserDirectory(uid_t uid);
+char *virGetUserDirectory(void);
+char *virGetUserConfigDirectory(void);
+char *virGetUserCacheDirectory(void);
+char *virGetUserRuntimeDirectory(void);
 char *virGetUserName(uid_t uid);
+char *virGetGroupName(gid_t gid);
 int virGetUserID(const char *name,
                  uid_t *uid) ATTRIBUTE_RETURN_CHECK;
 int virGetGroupID(const char *name,
                   gid_t *gid) ATTRIBUTE_RETURN_CHECK;
-
-int virRandomInitialize(unsigned int seed) ATTRIBUTE_RETURN_CHECK;
-int virRandom(int max);
 
 char *virFileFindMountPoint(const char *type);
 
@@ -250,11 +273,5 @@ void virFileWaitForDevices(void);
 int virBuildPathInternal(char **path, ...) ATTRIBUTE_SENTINEL;
 
 bool virIsDevMapperDevice(const char *dev_name) ATTRIBUTE_NONNULL(1);
-
-int virEmitXMLWarning(int fd,
-                      const char *name,
-                      const char *cmd) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3);
-
-void virTypedParameterArrayClear(virTypedParameterPtr params, int nparams);
 
 #endif /* __VIR_UTIL_H__ */

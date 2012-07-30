@@ -18,8 +18,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Stefan Berger <stefanb@us.ibm.com>
  */
@@ -32,10 +32,11 @@
 # include "internal.h"
 
 # include "util.h"
-# include "hash.h"
+# include "virhash.h"
 # include "xml.h"
 # include "buf.h"
 # include "virsocketaddr.h"
+# include "virmacaddr.h"
 
 /* XXX
  * The config parser/structs should not be using platform specific
@@ -79,6 +80,7 @@ enum virNWFilterEntryItemFlags {
 
 
 # define MAX_COMMENT_LENGTH  256
+# define MAX_IPSET_NAME_LENGTH 32 /* incl. terminating '\0' */
 
 # define HAS_ENTRY_ITEM(data) \
   (((data)->flags) & NWFILTER_ENTRY_ITEM_FLAG_EXISTS)
@@ -103,18 +105,13 @@ enum attrDatatype {
     DATATYPE_BOOLEAN          = (1 << 12),
     DATATYPE_UINT32           = (1 << 13),
     DATATYPE_UINT32_HEX       = (1 << 14),
+    DATATYPE_IPSETNAME        = (1 << 15),
+    DATATYPE_IPSETFLAGS       = (1 << 16),
 
-    DATATYPE_LAST             = (1 << 15),
+    DATATYPE_LAST             = (1 << 17),
 };
 
 # define NWFILTER_MAC_BGA "01:80:c2:00:00:00"
-
-
-typedef struct _nwMACAddress nwMACAddress;
-typedef nwMACAddress *nwMACAddressPtr;
-struct _nwMACAddress {
-    unsigned char addr[6];
-};
 
 
 typedef struct _nwItemDesc nwItemDesc;
@@ -124,7 +121,7 @@ struct _nwItemDesc {
     virNWFilterVarAccessPtr varAccess;
     enum attrDatatype datatype;
     union {
-        nwMACAddress macaddr;
+        virMacAddr macaddr;
         virSocketAddr ipaddr;
         bool         boolean;
         uint8_t      u8;
@@ -136,9 +133,16 @@ struct _nwItemDesc {
             uint8_t  mask;
             uint8_t  flags;
         } tcpFlags;
+        struct {
+            char setname[MAX_IPSET_NAME_LENGTH];
+            uint8_t numFlags;
+            uint8_t flags;
+        } ipset;
     } u;
 };
 
+# define VALID_IPSETNAME \
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-+ "
 
 typedef struct _ethHdrDataDef ethHdrDataDef;
 typedef ethHdrDataDef *ethHdrDataDefPtr;
@@ -232,6 +236,8 @@ struct _ipHdrDataDef {
     nwItemDesc dataState;
     nwItemDesc dataConnlimitAbove;
     nwItemDesc dataComment;
+    nwItemDesc dataIPSet;
+    nwItemDesc dataIPSetFlags;
 };
 
 
@@ -577,6 +583,7 @@ enum UpdateStep {
     STEP_APPLY_NEW,
     STEP_TEAR_NEW,
     STEP_TEAR_OLD,
+    STEP_APPLY_CURRENT,
 };
 
 struct domUpdateCBStruct {
@@ -620,11 +627,11 @@ typedef int (*virNWFilterRuleDisplayInstanceData)(void *_inst);
 typedef int (*virNWFilterCanApplyBasicRules)(void);
 
 typedef int (*virNWFilterApplyBasicRules)(const char *ifname,
-                                          const unsigned char *macaddr);
+                                          const virMacAddrPtr macaddr);
 
 typedef int (*virNWFilterApplyDHCPOnlyRules)(const char *ifname,
-                                             const unsigned char *macaddr,
-                                             const char *dhcpserver,
+                                             const virMacAddrPtr macaddr,
+                                             virNWFilterVarValuePtr dhcpsrvs,
                                              bool leaveTemporary);
 
 typedef int (*virNWFilterRemoveBasicRules)(const char *ifname);
@@ -722,9 +729,7 @@ void virNWFilterUnlockFilterUpdates(void);
 int virNWFilterConfLayerInit(virHashIterator domUpdateCB);
 void virNWFilterConfLayerShutdown(void);
 
-# define virNWFilterReportError(code, fmt...)                      \
-        virReportErrorHelper(VIR_FROM_NWFILTER, code, __FILE__,    \
-                             __FUNCTION__, __LINE__, fmt)
+int virNWFilterInstFiltersOnAllVMs(virConnectPtr conn);
 
 
 typedef int (*virNWFilterRebuild)(virConnectPtr conn,

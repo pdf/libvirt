@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *     Mark McLoughlin <markmc@redhat.com>
@@ -24,22 +24,35 @@
 # define __VIR_NETDEV_TAP_H__
 
 # include "internal.h"
+# include "virnetdevvportprofile.h"
 
 int virNetDevTapCreate(char **ifname,
-                       int vnet_hdr,
-                       int *tapfd)
+                       int *tapfd,
+                       unsigned int flags)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
 
 int virNetDevTapDelete(const char *ifname)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
 
+typedef enum {
+   VIR_NETDEV_TAP_CREATE_NONE = 0,
+   /* Bring the interface up */
+   VIR_NETDEV_TAP_CREATE_IFUP               = 1 << 0,
+   /* Enable IFF_VNET_HDR on the tap device */
+   VIR_NETDEV_TAP_CREATE_VNET_HDR           = 1 << 1,
+   /* Set this interface's MAC as the bridge's MAC address */
+   VIR_NETDEV_TAP_CREATE_USE_MAC_FOR_BRIDGE = 1 << 2,
+} virNetDevTapCreateFlags;
+
 int virNetDevTapCreateInBridgePort(const char *brname,
                                    char **ifname,
-                                   const unsigned char *macaddr,
-                                   int vnet_hdr,
-                                   bool up,
-                                   int *tapfd)
+                                   const virMacAddrPtr macaddr,
+                                   const unsigned char *vmuuid,
+                                   int *tapfd,
+                                   virNetDevVPortProfilePtr virtPortProfile,
+                                   unsigned int flags)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3)
     ATTRIBUTE_RETURN_CHECK;
+
 
 #endif /* __VIR_NETDEV_TAP_H__ */

@@ -1,8 +1,8 @@
 /*
  * json.h: JSON object parsing/formatting
  *
+ * Copyright (C) 2009, 2012 Red Hat, Inc.
  * Copyright (C) 2009 Daniel P. Berrange
- * Copyright (C) 2009 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -27,14 +27,14 @@
 # include "internal.h"
 
 
-enum {
+typedef enum {
     VIR_JSON_TYPE_OBJECT,
     VIR_JSON_TYPE_ARRAY,
     VIR_JSON_TYPE_STRING,
     VIR_JSON_TYPE_NUMBER,
     VIR_JSON_TYPE_BOOLEAN,
     VIR_JSON_TYPE_NULL,
-};
+} virJSONType;
 
 typedef struct _virJSONValue virJSONValue;
 typedef virJSONValue *virJSONValuePtr;
@@ -65,7 +65,8 @@ struct _virJSONArray {
 };
 
 struct _virJSONValue {
-    int type;
+    int type; /* enum virJSONType */
+    bool protect; /* prevents deletion when embedded in another object */
 
     union {
         virJSONObject object;
@@ -98,6 +99,10 @@ virJSONValuePtr virJSONValueObjectGet(virJSONValuePtr object, const char *key);
 
 int virJSONValueArraySize(virJSONValuePtr object);
 virJSONValuePtr virJSONValueArrayGet(virJSONValuePtr object, unsigned int element);
+
+int virJSONValueObjectKeysNumber(virJSONValuePtr object);
+const char *virJSONValueObjectGetKey(virJSONValuePtr object, unsigned int n);
+virJSONValuePtr virJSONValueObjectGetValue(virJSONValuePtr object, unsigned int n);
 
 const char *virJSONValueGetString(virJSONValuePtr object);
 int virJSONValueGetNumberInt(virJSONValuePtr object, int *value);

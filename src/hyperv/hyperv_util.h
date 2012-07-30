@@ -15,17 +15,16 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
 #ifndef __HYPERV_UTIL_H__
 # define __HYPERV_UTIL_H__
 
-# include <libxml/uri.h>
-
 # include "internal.h"
+# include "viruri.h"
 
 typedef struct _hypervParsedUri hypervParsedUri;
 
@@ -33,7 +32,7 @@ struct _hypervParsedUri {
     char *transport;
 };
 
-int hypervParseUri(hypervParsedUri **parsedUri, xmlURIPtr uri);
+int hypervParseUri(hypervParsedUri **parsedUri, virURIPtr uri);
 
 void hypervFreeParsedUri(hypervParsedUri **parsedUri);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2011 Red Hat, Inc.
+ * Copyright (C) 2010-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * POSIX DAC security driver
  */
@@ -65,7 +65,7 @@ void virSecurityDACSetDynamicOwnership(virSecurityManagerPtr mgr,
 }
 
 static virSecurityDriverStatus
-virSecurityDACProbe(void)
+virSecurityDACProbe(const char *virtDriver ATTRIBUTE_UNUSED)
 {
     return SECURITY_DRIVER_ENABLE;
 }
@@ -94,9 +94,10 @@ static const char * virSecurityDACGetDOI(virSecurityManagerPtr mgr ATTRIBUTE_UNU
 }
 
 static int
-virSecurityDACSetOwnership(const char *path, int uid, int gid)
+virSecurityDACSetOwnership(const char *path, uid_t uid, gid_t gid)
 {
-    VIR_INFO("Setting DAC user and group on '%s' to '%d:%d'", path, uid, gid);
+    VIR_INFO("Setting DAC user and group on '%s' to '%ld:%ld'",
+             path, (long) uid, (long) gid);
 
     if (chown(path, uid, gid) < 0) {
         struct stat sb;
@@ -111,18 +112,22 @@ virSecurityDACSetOwnership(const char *path, int uid, int gid)
         }
 
         if (chown_errno == EOPNOTSUPP || chown_errno == EINVAL) {
-            VIR_INFO("Setting user and group to '%d:%d' on '%s' not supported by filesystem",
-                     uid, gid, path);
+            VIR_INFO("Setting user and group to '%ld:%ld' on '%s' not "
+                     "supported by filesystem",
+                     (long) uid, (long) gid, path);
         } else if (chown_errno == EPERM) {
-            VIR_INFO("Setting user and group to '%d:%d' on '%s' not permitted",
-                     uid, gid, path);
+            VIR_INFO("Setting user and group to '%ld:%ld' on '%s' not "
+                     "permitted",
+                     (long) uid, (long) gid, path);
         } else if (chown_errno == EROFS) {
-            VIR_INFO("Setting user and group to '%d:%d' on '%s' not possible on readonly filesystem",
-                     uid, gid, path);
+            VIR_INFO("Setting user and group to '%ld:%ld' on '%s' not "
+                     "possible on readonly filesystem",
+                     (long) uid, (long) gid, path);
         } else {
             virReportSystemError(chown_errno,
-                                 _("unable to set user and group to '%d:%d' on '%s'"),
-                                 uid, gid, path);
+                                 _("unable to set user and group to '%ld:%ld' "
+                                   "on '%s'"),
+                                 (long) uid, (long) gid, path);
             return -1;
         }
     }
@@ -186,6 +191,7 @@ virSecurityDACSetSecurityImageLabel(virSecurityManagerPtr mgr,
     return virDomainDiskDefForeachPath(disk,
                                        virSecurityManagerGetAllowDiskFormatProbing(mgr),
                                        false,
+                                       priv->user, priv->group,
                                        virSecurityDACSetSecurityFileLabel,
                                        mgr);
 }
@@ -711,41 +717,47 @@ virSecurityDACSetImageFDLabel(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
     return 0;
 }
 
+static char *virSecurityDACGetMountOptions(virSecurityManagerPtr mgr ATTRIBUTE_UNUSED,
+                                           virDomainDefPtr vm ATTRIBUTE_UNUSED) {
+    return NULL;
+}
+
 virSecurityDriver virSecurityDriverDAC = {
-    sizeof(virSecurityDACData),
-    "virDAC",
+    .privateDataLen                     = sizeof(virSecurityDACData),
+    .name                               = "virDAC",
+    .probe                              = virSecurityDACProbe,
+    .open                               = virSecurityDACOpen,
+    .close                              = virSecurityDACClose,
 
-    virSecurityDACProbe,
-    virSecurityDACOpen,
-    virSecurityDACClose,
+    .getModel                           = virSecurityDACGetModel,
+    .getDOI                             = virSecurityDACGetDOI,
 
-    virSecurityDACGetModel,
-    virSecurityDACGetDOI,
+    .domainSecurityVerify               = virSecurityDACVerify,
 
-    virSecurityDACVerify,
+    .domainSetSecurityImageLabel        = virSecurityDACSetSecurityImageLabel,
+    .domainRestoreSecurityImageLabel    = virSecurityDACRestoreSecurityImageLabel,
 
-    virSecurityDACSetSecurityImageLabel,
-    virSecurityDACRestoreSecurityImageLabel,
+    .domainSetSecurityDaemonSocketLabel = virSecurityDACSetDaemonSocketLabel,
+    .domainSetSecuritySocketLabel       = virSecurityDACSetSocketLabel,
+    .domainClearSecuritySocketLabel     = virSecurityDACClearSocketLabel,
 
-    virSecurityDACSetDaemonSocketLabel,
-    virSecurityDACSetSocketLabel,
-    virSecurityDACClearSocketLabel,
+    .domainGenSecurityLabel             = virSecurityDACGenLabel,
+    .domainReserveSecurityLabel         = virSecurityDACReserveLabel,
+    .domainReleaseSecurityLabel         = virSecurityDACReleaseLabel,
 
-    virSecurityDACGenLabel,
-    virSecurityDACReserveLabel,
-    virSecurityDACReleaseLabel,
+    .domainGetSecurityProcessLabel      = virSecurityDACGetProcessLabel,
+    .domainSetSecurityProcessLabel      = virSecurityDACSetProcessLabel,
 
-    virSecurityDACGetProcessLabel,
-    virSecurityDACSetProcessLabel,
+    .domainSetSecurityAllLabel          = virSecurityDACSetSecurityAllLabel,
+    .domainRestoreSecurityAllLabel      = virSecurityDACRestoreSecurityAllLabel,
 
-    virSecurityDACSetSecurityAllLabel,
-    virSecurityDACRestoreSecurityAllLabel,
+    .domainSetSecurityHostdevLabel      = virSecurityDACSetSecurityHostdevLabel,
+    .domainRestoreSecurityHostdevLabel  = virSecurityDACRestoreSecurityHostdevLabel,
 
-    virSecurityDACSetSecurityHostdevLabel,
-    virSecurityDACRestoreSecurityHostdevLabel,
+    .domainSetSavedStateLabel           = virSecurityDACSetSavedStateLabel,
+    .domainRestoreSavedStateLabel       = virSecurityDACRestoreSavedStateLabel,
 
-    virSecurityDACSetSavedStateLabel,
-    virSecurityDACRestoreSavedStateLabel,
+    .domainSetSecurityImageFDLabel      = virSecurityDACSetImageFDLabel,
 
-    virSecurityDACSetImageFDLabel,
+    .domainGetSecurityMountOptions      = virSecurityDACGetMountOptions,
 };

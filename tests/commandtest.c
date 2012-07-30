@@ -1,7 +1,7 @@
 /*
  * commandtest.c: Test the libCommand API
  *
- * Copyright (C) 2010-2011 Red Hat, Inc.
+ * Copyright (C) 2010-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  */
 
 #include <config.h>
@@ -36,6 +36,9 @@
 #include "command.h"
 #include "virfile.h"
 #include "virpidfile.h"
+#include "virterror_internal.h"
+
+#define VIR_FROM_THIS VIR_FROM_NONE
 
 #ifdef WIN32
 
@@ -481,7 +484,7 @@ static int test13(const void *unused ATTRIBUTE_UNUSED)
     cmd = NULL;
 
     if (!STREQ(outactual, outexpect)) {
-        virtTestDifference(stderr, outactual, outexpect);
+        virtTestDifference(stderr, outexpect, outactual);
         goto cleanup;
     }
 
@@ -508,6 +511,14 @@ static int test14(const void *unused ATTRIBUTE_UNUSED)
     const char *errexpect = "BEGIN STDERR\n"
         "Hello World\n"
         "END STDERR\n";
+
+    char *jointactual = NULL;
+    const char *jointexpect = "BEGIN STDOUT\n"
+        "BEGIN STDERR\n"
+        "Hello World\n"
+        "Hello World\n"
+        "END STDOUT\n"
+        "END STDERR\n";
     int ret = -1;
 
     virCommandSetInputBuffer(cmd, "Hello World\n");
@@ -523,14 +534,29 @@ static int test14(const void *unused ATTRIBUTE_UNUSED)
         goto cleanup;
 
     virCommandFree(cmd);
-    cmd = NULL;
+
+    cmd = virCommandNew(abs_builddir "/commandhelper");
+    virCommandSetInputBuffer(cmd, "Hello World\n");
+    virCommandSetOutputBuffer(cmd, &jointactual);
+    virCommandSetErrorBuffer(cmd, &jointactual);
+    if (virCommandRun(cmd, NULL) < 0) {
+        virErrorPtr err = virGetLastError();
+        printf("Cannot run child %s\n", err->message);
+        goto cleanup;
+    }
+    if (!jointactual)
+        goto cleanup;
 
     if (!STREQ(outactual, outexpect)) {
-        virtTestDifference(stderr, outactual, outexpect);
+        virtTestDifference(stderr, outexpect, outactual);
         goto cleanup;
     }
     if (!STREQ(erractual, errexpect)) {
-        virtTestDifference(stderr, erractual, errexpect);
+        virtTestDifference(stderr, errexpect, erractual);
+        goto cleanup;
+    }
+    if (!STREQ(jointactual, jointexpect)) {
+        virtTestDifference(stderr, jointexpect, jointactual);
         goto cleanup;
     }
 
@@ -540,6 +566,7 @@ cleanup:
     virCommandFree(cmd);
     VIR_FREE(outactual);
     VIR_FREE(erractual);
+    VIR_FREE(jointactual);
     return ret;
 }
 
@@ -604,7 +631,7 @@ static int test16(const void *unused ATTRIBUTE_UNUSED)
     }
 
     if (!STREQ(outactual, outexpect)) {
-        virtTestDifference(stderr, outactual, outexpect);
+        virtTestDifference(stderr, outexpect, outactual);
         goto cleanup;
     }
 
@@ -760,6 +787,44 @@ cleanup:
     return ret;
 }
 
+/*
+ * Run program, no args, inherit all ENV, keep CWD.
+ * Ignore huge stdin data, to provoke SIGPIPE or EPIPE in parent.
+ */
+static int test20(const void *unused ATTRIBUTE_UNUSED)
+{
+    virCommandPtr cmd = virCommandNewArgList(abs_builddir "/commandhelper",
+                                             "--close-stdin", NULL);
+    char *buf;
+    int ret = -1;
+
+    struct sigaction sig_action;
+
+    sig_action.sa_handler = SIG_IGN;
+    sig_action.sa_flags = 0;
+    sigemptyset(&sig_action.sa_mask);
+
+    sigaction(SIGPIPE, &sig_action, NULL);
+
+    if (virAsprintf(&buf, "1\n%100000d\n", 2) < 0) {
+        virReportOOMError();
+        goto cleanup;
+    }
+    virCommandSetInputBuffer(cmd, buf);
+
+    if (virCommandRun(cmd, NULL) < 0) {
+        virErrorPtr err = virGetLastError();
+        printf("Cannot run child %s\n", err->message);
+        goto cleanup;
+    }
+
+    ret = checkoutput("test20");
+cleanup:
+    virCommandFree(cmd);
+    VIR_FREE(buf);
+    return ret;
+}
+
 static const char *const newenv[] = {
     "PATH=/usr/bin:/bin",
     "HOSTNAME=test",
@@ -779,10 +844,10 @@ mymain(void)
     int fd;
 
     if (chdir("/tmp") < 0)
-        return(EXIT_FAILURE);
+        return EXIT_FAILURE;
 
     setpgid(0, 0);
-    setsid();
+    ignore_value(setsid());
 
     /* Our test expects particular fd values; to get that, we must not
      * leak fds that we inherited from a lazy parent.  At the same
@@ -803,10 +868,11 @@ mymain(void)
 
     /* Prime the debug/verbose settings from the env vars,
      * since we're about to reset 'environ' */
-    virTestGetDebug();
-    virTestGetVerbose();
+    ignore_value(virTestGetDebug());
+    ignore_value(virTestGetVerbose());
 
-    virInitialize();
+    if (virInitialize() < 0)
+        return EXIT_FAILURE;
 
     /* Phase two of killing interfering fds; see above.  */
     fd = 3;
@@ -843,8 +909,9 @@ mymain(void)
     DO_TEST(test17);
     DO_TEST(test18);
     DO_TEST(test19);
+    DO_TEST(test20);
 
-    return(ret==0 ? EXIT_SUCCESS : EXIT_FAILURE);
+    return ret==0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 VIRT_TEST_MAIN(mymain)

@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -24,7 +24,6 @@
 
 #include "internal.h"
 #include "datatypes.h"
-#include "qparams.h"
 #include "util.h"
 #include "memory.h"
 #include "logging.h"
@@ -37,15 +36,13 @@
 
 
 int
-hypervParseUri(hypervParsedUri **parsedUri, xmlURIPtr uri)
+hypervParseUri(hypervParsedUri **parsedUri, virURIPtr uri)
 {
     int result = -1;
-    struct qparam_set *queryParamSet = NULL;
-    struct qparam *queryParam = NULL;
     int i;
 
     if (parsedUri == NULL || *parsedUri != NULL) {
-        HYPERV_ERROR(VIR_ERR_INTERNAL_ERROR, "%s", _("Invalid argument"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _("Invalid argument"));
         return -1;
     }
 
@@ -54,18 +51,8 @@ hypervParseUri(hypervParsedUri **parsedUri, xmlURIPtr uri)
         return -1;
     }
 
-#ifdef HAVE_XMLURI_QUERY_RAW
-    queryParamSet = qparam_query_parse(uri->query_raw);
-#else
-    queryParamSet = qparam_query_parse(uri->query);
-#endif
-
-    if (queryParamSet == NULL) {
-        goto cleanup;
-    }
-
-    for (i = 0; i < queryParamSet->n; i++) {
-        queryParam = &queryParamSet->p[i];
+    for (i = 0; i < uri->paramsCount; i++) {
+        virURIParamPtr queryParam = &uri->params[i];
 
         if (STRCASEEQ(queryParam->name, "transport")) {
             VIR_FREE((*parsedUri)->transport);
@@ -79,10 +66,10 @@ hypervParseUri(hypervParsedUri **parsedUri, xmlURIPtr uri)
 
             if (STRNEQ((*parsedUri)->transport, "http") &&
                 STRNEQ((*parsedUri)->transport, "https")) {
-                HYPERV_ERROR(VIR_ERR_INVALID_ARG,
-                             _("Query parameter 'transport' has unexpected value "
-                               "'%s' (should be http|https)"),
-                             (*parsedUri)->transport);
+                virReportError(VIR_ERR_INVALID_ARG,
+                               _("Query parameter 'transport' has unexpected value "
+                                 "'%s' (should be http|https)"),
+                               (*parsedUri)->transport);
                 goto cleanup;
             }
         } else {
@@ -105,10 +92,6 @@ hypervParseUri(hypervParsedUri **parsedUri, xmlURIPtr uri)
   cleanup:
     if (result < 0) {
         hypervFreeParsedUri(parsedUri);
-    }
-
-    if (queryParamSet != NULL) {
-        free_qparam_set(queryParamSet);
     }
 
     return result;

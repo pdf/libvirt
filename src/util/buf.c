@@ -1,9 +1,21 @@
 /*
  * buf.c: buffers for libvirt
  *
- * Copyright (C) 2005-2008, 2010-2011 Red Hat, Inc.
+ * Copyright (C) 2005-2008, 2010-2012 Red Hat, Inc.
  *
- * See COPYING.LIB for the License of this software
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Daniel Veillard <veillard@redhat.com>
  */
@@ -175,12 +187,32 @@ virBufferAddChar(virBufferPtr buf, char c)
 }
 
 /**
+ * virBufferCurrentContent:
+ * @buf: Buffer
+ *
+ * Get the current content from the buffer.  The content is only valid
+ * until the next operation on @buf, and an empty string is returned if
+ * no content is present yet.
+ *
+ * Returns the buffer content or NULL in case of error.
+ */
+const char *
+virBufferCurrentContent(virBufferPtr buf)
+{
+    if (!buf || buf->error)
+        return NULL;
+    return buf->use ? buf->content : "";
+}
+
+/**
  * virBufferContentAndReset:
  * @buf: Buffer
  *
  * Get the content from the buffer and free (only) the buffer structure.
  * The caller owns the returned string & should free it when no longer
- * required. The buffer object is reset to its initial state.
+ * required. The buffer object is reset to its initial state.  This
+ * interface intentionally returns NULL instead of an empty string if
+ * there is no content.
  *
  * Returns the buffer content or NULL in case of error.
  */
@@ -423,22 +455,23 @@ virBufferEscapeSexpr(virBufferPtr buf,
                      const char *format,
                      const char *str)
 {
-    virBufferEscape(buf, "\\'", format, str);
+    virBufferEscape(buf, '\\', "\\'", format, str);
 }
 
 /**
  * virBufferEscape:
  * @buf: the buffer to append to
+ * @escape: the escape character to inject
  * @toescape: NUL-terminated list of characters to escape
  * @format: a printf like format string but with only one %s parameter
  * @str: the string argument which needs to be escaped
  *
  * Do a formatted print with a single string to a buffer.  Any characters
- * in the provided list are escaped with a preceeding \.  Auto indentation
+ * in the provided list are escaped with the given escape.  Auto indentation
  * may be applied.
  */
 void
-virBufferEscape(virBufferPtr buf, const char *toescape,
+virBufferEscape(virBufferPtr buf, char escape, const char *toescape,
                 const char *format, const char *str)
 {
     int len;
@@ -471,7 +504,7 @@ virBufferEscape(virBufferPtr buf, const char *toescape,
          */
         char needle[2] = { *cur, 0 };
         if (strstr(toescape, needle))
-            *out++ = '\\';
+            *out++ = escape;
         *out++ = *cur;
         cur++;
     }
@@ -610,4 +643,40 @@ virBufferStrcat(virBufferPtr buf, ...)
     while ((str = va_arg(ap, char *)) != NULL)
         virBufferAdd(buf, str, -1);
     va_end(ap);
+}
+
+/**
+ * virBufferTrim:
+ * @buf: the buffer to trim
+ * @str: the optional string, to force an exact trim
+ * @len: the number of bytes to trim, or -1 to use @str
+ *
+ * Trim the tail of a buffer.  If @str is provided, the trim only occurs
+ * if the current tail of the buffer matches @str; a non-negative @len
+ * further limits how much of the tail is trimmed.  If @str is NULL, then
+ * @len must be non-negative.
+ *
+ * Returns -1 if @buf has previously encountered an error or if @len is
+ * invalid, 0 if there was nothing to trim (@buf was too short or @str
+ * didn't match), and 1 if the trim was successful.
+ */
+int
+virBufferTrim(virBufferPtr buf, const char *str, int len)
+{
+    size_t len2 = 0;
+
+    if (!buf || buf->error || (!str && len < 0))
+        return -1;
+
+    if (len > 0 && len > buf->use)
+        return 0;
+    if (str) {
+        len2 = strlen(str);
+        if (len2 > buf->use ||
+            memcmp(&buf->content[buf->use - len2], str, len2) != 0)
+            return 0;
+    }
+    buf->use -= len < 0 ? len2 : len;
+    buf->content[buf->use] = '\0';
+    return 1;
 }

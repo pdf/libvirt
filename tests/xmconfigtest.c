@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  *
@@ -87,9 +87,9 @@ testCompareParseXML(const char *xmcfg, const char *xml, int xendConfigVersion)
     ret = 0;
 
  fail:
-    free(xmlData);
-    free(xmcfgData);
-    free(gotxmcfgData);
+    VIR_FREE(xmlData);
+    VIR_FREE(xmcfgData);
+    VIR_FREE(gotxmcfgData);
     if (conf)
         virConfFree(conf);
     virDomainDefFree(def);
@@ -179,8 +179,8 @@ testCompareHelper(const void *data)
         result = testCompareFormatXML(cfg, xml, info->version);
 
 cleanup:
-    free(xml);
-    free(cfg);
+    VIR_FREE(xml);
+    VIR_FREE(cfg);
 
     return result;
 }
@@ -192,7 +192,7 @@ mymain(void)
     int ret = 0;
 
     if (!(caps = testXenCapsInit()))
-        return(EXIT_FAILURE);
+        return EXIT_FAILURE;
 
 #define DO_TEST(name, version)                                          \
     do {                                                                \
@@ -247,7 +247,7 @@ mymain(void)
 
     virCapabilitiesFree(caps);
 
-    return(ret==0 ? EXIT_SUCCESS : EXIT_FAILURE);
+    return ret==0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 VIRT_TEST_MAIN(mymain)

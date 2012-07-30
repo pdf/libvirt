@@ -3,9 +3,85 @@
   <body>
     <h1 >Storage Management</h1>
     <p>
-This page describes the backends for the storage management capabilities in
-libvirt.
-</p>
+      Libvirt provides storage management on the physical host through
+      storage pools and volumes.
+    </p>
+    <p>
+      A storage pool is a quantity of storage set aside by an
+      administrator, often a dedicated storage administrator, for use
+      by virtual machines.  Storage pools are divided into storage
+      volumes either by the storage administrator or the system
+      administrator, and the volumes are assigned to VMs as block
+      devices.
+    </p>
+    <p>
+      For example, the storage administrator responsible for an NFS
+      server creates a share to store virtual machines' data.  The
+      system administrator defines a pool on the virtualization host
+      with the details of the share
+      (e.g. nfs.example.com:/path/to/share should be mounted on
+      /vm_data).  When the pool is started, libvirt mounts the share
+      on the specified directory, just as if the system administrator
+      logged in and executed 'mount nfs.example.com:/path/to/share
+      /vmdata'.  If the pool is configured to autostart, libvirt
+      ensures that the NFS share is mounted on the directory specified
+      when libvirt is started.
+    </p>
+    <p>
+      Once the pool is started, the files in the NFS share are
+      reported as volumes, and the storage volumes' paths may be
+      queried using the libvirt APIs.  The volumes' paths can then be
+      copied into the section of a VM's XML definition describing the
+      source storage for the VM's block devices.  In the case of NFS,
+      an application using the libvirt APIs can create and delete
+      volumes in the pool (files in the NFS share) up to the limit of
+      the size of the pool (the storage capacity of the share).  Not
+      all pool types support creating and deleting volumes.  Stopping
+      the pool (somewhat unfortunately referred to by virsh and the
+      API as "pool-destroy") undoes the start operation, in this case,
+      unmounting the NFS share.  The data on the share is not modified
+      by the destroy operation, despite the name.  See man virsh for
+      more details.
+    </p>
+    <p>
+      A second example is an iSCSI pool.  A storage administrator
+      provisions an iSCSI target to present a set of LUNs to the host
+      running the VMs.  When libvirt is configured to manage that
+      iSCSI target as a pool, libvirt will ensure that the host logs
+      into the iSCSI target and libvirt can then report the available
+      LUNs as storage volumes.  The volumes' paths can be queried and
+      used in VM's XML definitions as in the NFS example.  In this
+      case, the LUNs are defined on the iSCSI server, and libvirt
+      cannot create and delete volumes.
+    </p>
+    <p>
+      Storage pools and volumes are not required for the proper
+      operation of VMs.  Pools and volumes provide a way for libvirt
+      to ensure that a particular piece of storage will be available
+      for a VM, but some administrators will prefer to manage their
+      own storage and VMs will operate properly without any pools or
+      volumes defined.  On systems that do not use pools, system
+      administrators must ensure the availability of the VMs' storage
+      using whatever tools they prefer, for example, adding the NFS
+      share to the host's fstab so that the share is mounted at boot
+      time.
+    </p>
+    <p>
+      If at this point the value of pools and volumes over traditional
+      system administration tools is unclear, note that one of the
+      features of libvirt is its remote protocol, so it's possible to
+      manage all aspects of a virtual machine's lifecycle as well as
+      the configuration of the resources required by the VM.  These
+      operations can be performed on a remote host entirely within the
+      libvirt API.  In other words, a management application using
+      libvirt can enable a user to perform all the required tasks for
+      configuring the host for a VM: allocating resources, running the
+      VM, shutting it down and deallocating the resources, without
+      requiring shell access or any other control channel.
+    </p>
+    <p>
+      Libvirt supports the following storage pool types:
+    </p>
     <ul>
       <li>
         <a href="#StorageBackendDir">Directory backend</a>
@@ -30,6 +106,12 @@ libvirt.
       </li>
       <li>
         <a href="#StorageBackendMultipath">Multipath backend</a>
+      </li>
+      <li>
+        <a href="#StorageBackendRBD">RBD (RADOS Block Device) backend</a>
+      </li>
+      <li>
+        <a href="#StorageBackendSheepdog">Sheepdog backend</a>
       </li>
     </ul>
 
@@ -415,6 +497,135 @@ libvirt.
       The Multipath volume pool does not use the volume format type element.
     </p>
 
+    <h2><a name="StorageBackendRBD">RBD pools</a></h2>
+    <p>
+      This storage driver provides a pool which contains all RBD
+      images in a RADOS pool.  RBD (RADOS Block Device) is part
+      of the Ceph distributed storage project.<br/>
+      This backend <i>only</i> supports Qemu with RBD support. Kernel RBD
+      which exposes RBD devices as block devices in /dev is <i>not</i>
+      supported. RBD images created with this storage backend
+      can be accessed through kernel RBD if configured manually, but
+      this backend does not provide mapping for these images.<br/>
+      Images created with this backend can be attached to Qemu guests
+      when Qemu is build with RBD support (Since Qemu 0.14.0). The
+      backend supports cephx authentication for communication with the
+      Ceph cluster. Storing the cephx authentication key is done with
+      the libvirt secret mechanism. The UUID in the example pool input
+      refers to the UUID of the stored secret.
+      <span class="since">Since 0.9.13</span>
+    </p>
+
+    <h3>Example pool input</h3>
+    <pre>
+      &lt;pool type="rbd"&gt;
+        &lt;name&gt;myrbdpool&lt;/name&gt;
+        &lt;source&gt;
+          &lt;name&gt;rbdpool&lt;/name&gt;
+            &lt;host name='1.2.3.4' port='6789'/&gt;
+            &lt;host name='my.ceph.monitor' port='6789'/&gt;
+            &lt;host name='third.ceph.monitor' port='6789'/&gt;
+            &lt;auth username='admin' type='ceph'&gt;
+              &lt;secret uuid='2ec115d7-3a88-3ceb-bc12-0ac909a6fd87'/&gt;
+            &lt;/auth&gt;
+        &lt;/source&gt;
+      &lt;/pool&gt;</pre>
+
+    <h3>Example volume output</h3>
+    <pre>
+       &lt;volume&gt;
+         &lt;name&gt;myvol&lt;/name&gt;
+         &lt;key&gt;rbd/myvol&lt;/key&gt;
+         &lt;source&gt;
+         &lt;/source&gt;
+         &lt;capacity unit='bytes'&gt;53687091200&lt;/capacity&gt;
+         &lt;allocation unit='bytes'&gt;53687091200&lt;/allocation&gt;
+         &lt;target&gt;
+           &lt;path&gt;rbd:rbd/myvol&lt;/path&gt;
+           &lt;format type='unknown'/&gt;
+           &lt;permissions&gt;
+             &lt;mode&gt;00&lt;/mode&gt;
+             &lt;owner&gt;0&lt;/owner&gt;
+             &lt;group&gt;0&lt;/group&gt;
+           &lt;/permissions&gt;
+         &lt;/target&gt;
+       &lt;/volume&gt;</pre>
+
+    <h3>Example disk attachement</h3>
+    <p>RBD images can be attached to Qemu guests when Qemu is built
+    with RBD support. Information about attaching a RBD image to a
+    guest can be found
+    at <a href="formatdomain.html#elementsDisks">format domain</a>
+    page.</p>
+
+    <h3>Valid pool format types</h3>
+    <p>
+      The RBD pool does not use the pool format type element.
+    </p>
+
+    <h3>Valid volume format types</h3>
+    <p>
+      The RBD pool does not use the volume format type element.
+    </p>
+
+    <h2><a name="StorageBackendSheepdog">Sheepdog pools</a></h2>
+    <p>
+      This provides a pool based on a Sheepdog Cluster.
+      Sheepdog is a distributed storage system for QEMU/KVM.
+      It provides highly available block level storage volumes that
+      can be attached to QEMU/KVM virtual machines.
+
+      The cluster must already be formatted.
+
+      <span class="since">Since 0.9.13</span>
+    </p>
+
+    <h3>Example pool input</h3>
+    <pre>
+      &lt;pool type="sheepdog"&gt;
+        &lt;name&gt;mysheeppool&lt;/name&gt;
+        &lt;source&gt;
+          &lt;name&gt;mysheeppool&lt;/name&gt;
+          &lt;host name='localhost' port='7000'/&gt;
+        &lt;/source&gt;
+      &lt;/pool&gt;</pre>
+
+    <h3>Example volume output</h3>
+    <pre>
+       &lt;volume&gt;
+         &lt;name&gt;myvol&lt;/name&gt;
+         &lt;key&gt;sheep/myvol&lt;/key&gt;
+         &lt;source&gt;
+         &lt;/source&gt;
+         &lt;capacity unit='bytes'&gt;53687091200&lt;/capacity&gt;
+         &lt;allocation unit='bytes'&gt;53687091200&lt;/allocation&gt;
+         &lt;target&gt;
+           &lt;path&gt;sheepdog:myvol&lt;/path&gt;
+           &lt;format type='unknown'/&gt;
+           &lt;permissions&gt;
+             &lt;mode&gt;00&lt;/mode&gt;
+             &lt;owner&gt;0&lt;/owner&gt;
+             &lt;group&gt;0&lt;/group&gt;
+           &lt;/permissions&gt;
+         &lt;/target&gt;
+       &lt;/volume&gt;</pre>
+
+    <h3>Example disk attachment</h3>
+    <p>Sheepdog images can be attached to Qemu guests.
+    Information about attaching a Sheepdog image to a
+    guest can be found
+    at the <a href="formatdomain.html#elementsDisks">format domain</a>
+    page.</p>
+
+    <h3>Valid pool format types</h3>
+    <p>
+      The Sheepdog pool does not use the pool format type element.
+    </p>
+
+    <h3>Valid volume format types</h3>
+    <p>
+      The Sheepdog pool does not use the volume format type element.
+    </p>
 
   </body>
 </html>

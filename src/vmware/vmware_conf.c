@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------*/
 /*
- * Copyright (C) 2011 Red Hat, Inc.
+ * Copyright (C) 2011-2012 Red Hat, Inc.
  * Copyright 2010, diateam (www.diateam.net)
  *
  * This library is free software; you can redistribute it and/or
@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  */
 /*---------------------------------------------------------------------------*/
 
@@ -252,14 +252,14 @@ vmwareExtractVersion(struct vmware_driver *driver)
         goto cleanup;
 
     if ((tmp = STRSKIP(outbuf, pattern)) == NULL) {
-        vmwareError(VIR_ERR_INTERNAL_ERROR,
-                    _("failed to parse %s version"), bin);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("failed to parse %s version"), bin);
         goto cleanup;
     }
 
     if (virParseVersionString(tmp, &version, false) < 0) {
-        vmwareError(VIR_ERR_INTERNAL_ERROR, "%s",
-                    _("version parsing error"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("version parsing error"));
         goto cleanup;
     }
 
@@ -303,8 +303,8 @@ vmwareParsePath(char *path, char **directory, char **filename)
         *separator++ = '\0';
 
         if (*separator == '\0') {
-            vmwareError(VIR_ERR_INTERNAL_ERROR,
-                        _("path '%s' doesn't reference a file"), path);
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("path '%s' doesn't reference a file"), path);
             return -1;
         }
 
@@ -361,9 +361,9 @@ vmwareVmxPath(virDomainDefPtr vmdef, char **vmxPath)
      * isn't perfect but should work in the majority of cases.
      */
     if (vmdef->ndisks < 1) {
-        vmwareError(VIR_ERR_INTERNAL_ERROR, "%s",
-                    _("Domain XML doesn't contain any disks, "
-                      "cannot deduce datastore and path for VMX file"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Domain XML doesn't contain any disks, "
+                         "cannot deduce datastore and path for VMX file"));
         goto cleanup;
     }
 
@@ -376,16 +376,16 @@ vmwareVmxPath(virDomainDefPtr vmdef, char **vmxPath)
     }
 
     if (disk == NULL) {
-        vmwareError(VIR_ERR_INTERNAL_ERROR, "%s",
-                    _("Domain XML doesn't contain any file-based harddisks, "
-                      "cannot deduce datastore and path for VMX file"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Domain XML doesn't contain any file-based harddisks, "
+                         "cannot deduce datastore and path for VMX file"));
         goto cleanup;
     }
 
     if (disk->src == NULL) {
-        vmwareError(VIR_ERR_INTERNAL_ERROR, "%s",
-                    _("First file-based harddisk has no source, cannot "
-                      "deduce datastore and path for VMX file"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("First file-based harddisk has no source, cannot "
+                         "deduce datastore and path for VMX file"));
         goto cleanup;
     }
 
@@ -394,9 +394,9 @@ vmwareVmxPath(virDomainDefPtr vmdef, char **vmxPath)
     }
 
     if (!virFileHasSuffix(fileName, ".vmdk")) {
-        vmwareError(VIR_ERR_INTERNAL_ERROR,
-                    _("Expecting source '%s' of first file-based harddisk "
-                      "to be a VMDK image"), disk->src);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Expecting source '%s' of first file-based harddisk "
+                         "to be a VMDK image"), disk->src);
         goto cleanup;
     }
 
@@ -420,8 +420,8 @@ vmwareMoveFile(char *srcFile, char *dstFile)
         { "mv", PROGRAM_SENTINAL, PROGRAM_SENTINAL, NULL };
 
     if (!virFileExists(srcFile)) {
-        vmwareError(VIR_ERR_INTERNAL_ERROR, _("file %s does not exist"),
-                    srcFile);
+        virReportError(VIR_ERR_INTERNAL_ERROR, _("file %s does not exist"),
+                       srcFile);
         return -1;
     }
 
@@ -431,8 +431,8 @@ vmwareMoveFile(char *srcFile, char *dstFile)
     vmwareSetSentinal(cmdmv, srcFile);
     vmwareSetSentinal(cmdmv, dstFile);
     if (virRun(cmdmv, NULL) < 0) {
-        vmwareError(VIR_ERR_INTERNAL_ERROR,
-                    _("failed to move file to %s "), dstFile);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("failed to move file to %s "), dstFile);
         return -1;
     }
 
@@ -457,7 +457,7 @@ vmwareExtractPid(const char * vmxPath)
     FILE *logFile = NULL;
     char line[1024];
     char *tmp = NULL;
-    int pid = -1;
+    int pid_value = -1;
 
     if ((vmxDir = mdir_name(vmxPath)) == NULL)
         goto cleanup;
@@ -472,22 +472,24 @@ vmwareExtractPid(const char * vmxPath)
         goto cleanup;
 
     if (!fgets(line, sizeof(line), logFile)) {
-        vmwareError(VIR_ERR_INTERNAL_ERROR, "%s",
-                    _("unable to read vmware log file"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("unable to read vmware log file"));
         goto cleanup;
     }
 
     if ((tmp = strstr(line, " pid=")) == NULL) {
-        vmwareError(VIR_ERR_INTERNAL_ERROR, "%s",
-                    _("cannot find pid in vmware log file"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("cannot find pid in vmware log file"));
         goto cleanup;
     }
 
     tmp += strlen(" pid=");
 
-    if (virStrToLong_i(tmp, &tmp, 10, &pid) < 0 || *tmp != ' ') {
-        vmwareError(VIR_ERR_INTERNAL_ERROR, "%s",
-                    _("cannot parse pid in vmware log file"));
+    /* Although 64-bit windows allows 64-bit pid_t, a domain id has to be
+     * 32 bits.  For now, we just reject pid values that overflow int.  */
+    if (virStrToLong_i(tmp, &tmp, 10, &pid_value) < 0 || *tmp != ' ') {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("cannot parse pid in vmware log file"));
         goto cleanup;
     }
 
@@ -495,7 +497,7 @@ cleanup:
     VIR_FREE(vmxDir);
     VIR_FREE(logFilePath);
     VIR_FORCE_FCLOSE(logFile);
-    return pid;
+    return pid_value;
 }
 
 char *

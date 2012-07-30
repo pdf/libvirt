@@ -1,7 +1,7 @@
 /*
  * virnetserver.c: generic network RPC server
  *
- * Copyright (C) 2006-2011 Red Hat, Inc.
+ * Copyright (C) 2006-2012 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -39,14 +39,12 @@
 #if HAVE_AVAHI
 # include "virnetservermdns.h"
 #endif
-#if HAVE_DBUS
-# include <dbus/dbus.h>
+
+#ifndef SA_SIGINFO
+# define SA_SIGINFO 0
 #endif
 
 #define VIR_FROM_THIS VIR_FROM_RPC
-#define virNetError(code, ...)                                    \
-    virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,           \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
 
 typedef struct _virNetServerSignal virNetServerSignal;
 typedef virNetServerSignal *virNetServerSignalPtr;
@@ -88,10 +86,6 @@ struct _virNetServer {
     virNetServerMDNSGroupPtr mdnsGroup;
 #endif
 
-#if HAVE_DBUS
-    DBusConnection *sysbus;
-#endif
-
     size_t nservices;
     virNetServerServicePtr *services;
 
@@ -115,6 +109,7 @@ struct _virNetServer {
     void *autoShutdownOpaque;
 
     virNetServerClientInitHook clientInitHook;
+    void *clientInitOpaque;
 };
 
 
@@ -129,6 +124,49 @@ static void virNetServerUnlock(virNetServerPtr srv)
 }
 
 
+static int virNetServerProcessMsg(virNetServerPtr srv,
+                                  virNetServerClientPtr client,
+                                  virNetServerProgramPtr prog,
+                                  virNetMessagePtr msg)
+{
+    int ret = -1;
+    if (!prog) {
+        /* Only send back an error for type == CALL. Other
+         * message types are not expecting replies, so we
+         * must just log it & drop them
+         */
+        if (msg->header.type == VIR_NET_CALL ||
+            msg->header.type == VIR_NET_CALL_WITH_FDS) {
+            if (virNetServerProgramUnknownError(client,
+                                                msg,
+                                                &msg->header) < 0)
+                goto cleanup;
+        } else {
+            VIR_INFO("Dropping client mesage, unknown program %d version %d type %d proc %d",
+                     msg->header.prog, msg->header.vers,
+                     msg->header.type, msg->header.proc);
+            /* Send a dummy reply to free up 'msg' & unblock client rx */
+            virNetMessageClear(msg);
+            msg->header.type = VIR_NET_REPLY;
+            if (virNetServerClientSendMessage(client, msg) < 0)
+                goto cleanup;
+        }
+        goto done;
+    }
+
+    if (virNetServerProgramDispatch(prog,
+                                    srv,
+                                    client,
+                                    msg) < 0)
+        goto cleanup;
+
+done:
+    ret = 0;
+
+cleanup:
+    return ret;
+}
+
 static void virNetServerHandleJob(void *jobOpaque, void *opaque)
 {
     virNetServerPtr srv = opaque;
@@ -137,41 +175,13 @@ static void virNetServerHandleJob(void *jobOpaque, void *opaque)
     VIR_DEBUG("server=%p client=%p message=%p prog=%p",
               srv, job->client, job->msg, job->prog);
 
-    if (!job->prog) {
-        /* Only send back an error for type == CALL. Other
-         * message types are not expecting replies, so we
-         * must just log it & drop them
-         */
-        if (job->msg->header.type == VIR_NET_CALL ||
-            job->msg->header.type == VIR_NET_CALL_WITH_FDS) {
-            if (virNetServerProgramUnknownError(job->client,
-                                                job->msg,
-                                                &job->msg->header) < 0)
-                goto error;
-        } else {
-            VIR_INFO("Dropping client mesage, unknown program %d version %d type %d proc %d",
-                     job->msg->header.prog, job->msg->header.vers,
-                     job->msg->header.type, job->msg->header.proc);
-            /* Send a dummy reply to free up 'msg' & unblock client rx */
-            virNetMessageClear(job->msg);
-            job->msg->header.type = VIR_NET_REPLY;
-            if (virNetServerClientSendMessage(job->client, job->msg) < 0)
-                goto error;
-        }
-        goto cleanup;
-    }
-
-    if (virNetServerProgramDispatch(job->prog,
-                                    srv,
-                                    job->client,
-                                    job->msg) < 0)
+    if (virNetServerProcessMsg(srv, job->client, job->prog, job->msg) < 0)
         goto error;
 
     virNetServerLock(srv);
     virNetServerProgramFree(job->prog);
     virNetServerUnlock(srv);
 
-cleanup:
     virNetServerClientFree(job->client);
     VIR_FREE(job);
     return;
@@ -189,7 +199,6 @@ static int virNetServerDispatchNewMessage(virNetServerClientPtr client,
                                           void *opaque)
 {
     virNetServerPtr srv = opaque;
-    virNetServerJobPtr job;
     virNetServerProgramPtr prog = NULL;
     unsigned int priority = 0;
     size_t i;
@@ -198,34 +207,42 @@ static int virNetServerDispatchNewMessage(virNetServerClientPtr client,
     VIR_DEBUG("server=%p client=%p message=%p",
               srv, client, msg);
 
-    if (VIR_ALLOC(job) < 0) {
-        virReportOOMError();
-        return -1;
-    }
-
-    job->client = client;
-    job->msg = msg;
-
     virNetServerLock(srv);
     for (i = 0 ; i < srv->nprograms ; i++) {
-        if (virNetServerProgramMatches(srv->programs[i], job->msg)) {
+        if (virNetServerProgramMatches(srv->programs[i], msg)) {
             prog = srv->programs[i];
             break;
         }
     }
 
-    if (prog) {
-        virNetServerProgramRef(prog);
-        job->prog = prog;
-        priority = virNetServerProgramGetPriority(prog, msg->header.proc);
+    if (srv->workers) {
+        virNetServerJobPtr job;
+
+        if (VIR_ALLOC(job) < 0) {
+            virReportOOMError();
+            goto cleanup;
+        }
+
+        job->client = client;
+        job->msg = msg;
+
+        if (prog) {
+            virNetServerProgramRef(prog);
+            job->prog = prog;
+            priority = virNetServerProgramGetPriority(prog, msg->header.proc);
+        }
+
+        ret = virThreadPoolSendJob(srv->workers, priority, job);
+
+        if (ret < 0) {
+            VIR_FREE(job);
+            virNetServerProgramFree(prog);
+        }
+    } else {
+        ret = virNetServerProcessMsg(srv, client, prog, msg);
     }
 
-    ret = virThreadPoolSendJob(srv->workers, priority, job);
-
-    if (ret < 0) {
-        VIR_FREE(job);
-        virNetServerProgramFree(prog);
-    }
+cleanup:
     virNetServerUnlock(srv);
 
     return ret;
@@ -241,9 +258,9 @@ static int virNetServerDispatchNewClient(virNetServerServicePtr svc ATTRIBUTE_UN
     virNetServerLock(srv);
 
     if (srv->nclients >= srv->nclients_max) {
-        virNetError(VIR_ERR_RPC,
-                    _("Too many active clients (%zu), dropping connection from %s"),
-                    srv->nclients_max, virNetServerClientRemoteAddrString(client));
+        virReportError(VIR_ERR_RPC,
+                       _("Too many active clients (%zu), dropping connection from %s"),
+                       srv->nclients_max, virNetServerClientRemoteAddrString(client));
         goto error;
     }
 
@@ -251,7 +268,7 @@ static int virNetServerDispatchNewClient(virNetServerServicePtr svc ATTRIBUTE_UN
         goto error;
 
     if (srv->clientInitHook &&
-        srv->clientInitHook(srv, client) < 0)
+        srv->clientInitHook(srv, client, srv->clientInitOpaque) < 0)
         goto error;
 
     if (VIR_EXPAND_N(srv->clients, srv->nclients, 1) < 0) {
@@ -277,8 +294,9 @@ error:
 }
 
 
-static void virNetServerFatalSignal(int sig, siginfo_t *siginfo ATTRIBUTE_UNUSED,
-                                    void *context ATTRIBUTE_UNUSED)
+static void
+virNetServerFatalSignal(int sig, siginfo_t *siginfo ATTRIBUTE_UNUSED,
+                        void *context ATTRIBUTE_UNUSED)
 {
     struct sigaction sig_action;
     int origerrno;
@@ -293,6 +311,7 @@ static void virNetServerFatalSignal(int sig, siginfo_t *siginfo ATTRIBUTE_UNUSED
 #ifdef SIGUSR2
     if (sig != SIGUSR2) {
 #endif
+        memset(&sig_action, 0, sizeof(sig_action));
         sig_action.sa_handler = SIG_DFL;
         sigaction(sig, &sig_action, NULL);
         raise(sig);
@@ -311,8 +330,8 @@ virNetServerPtr virNetServerNew(size_t min_workers,
                                 unsigned int keepaliveCount,
                                 bool keepaliveRequired,
                                 const char *mdnsGroupName,
-                                bool connectDBus ATTRIBUTE_UNUSED,
-                                virNetServerClientInitHook clientInitHook)
+                                virNetServerClientInitHook clientInitHook,
+                                void *opaque)
 {
     virNetServerPtr srv;
     struct sigaction sig_action;
@@ -324,7 +343,8 @@ virNetServerPtr virNetServerNew(size_t min_workers,
 
     srv->refs = 1;
 
-    if (!(srv->workers = virThreadPoolNew(min_workers, max_workers,
+    if (max_workers &&
+        !(srv->workers = virThreadPoolNew(min_workers, max_workers,
                                           priority_workers,
                                           virNetServerHandleJob,
                                           srv)))
@@ -336,6 +356,7 @@ virNetServerPtr virNetServerNew(size_t min_workers,
     srv->keepaliveRequired = keepaliveRequired;
     srv->sigwrite = srv->sigread = -1;
     srv->clientInitHook = clientInitHook;
+    srv->clientInitOpaque = opaque;
     srv->privileged = geteuid() == 0 ? true : false;
 
     if (mdnsGroupName &&
@@ -353,28 +374,9 @@ virNetServerPtr virNetServerNew(size_t min_workers,
     }
 #endif
 
-#if HAVE_DBUS
-    if (connectDBus) {
-        DBusError derr;
-
-        dbus_connection_set_change_sigpipe(FALSE);
-        dbus_threads_init_default();
-
-        dbus_error_init(&derr);
-        srv->sysbus = dbus_bus_get(DBUS_BUS_SYSTEM, &derr);
-        if (!(srv->sysbus)) {
-            VIR_ERROR(_("Failed to connect to system bus for PolicyKit auth: %s"),
-                      derr.message);
-            dbus_error_free(&derr);
-            goto error;
-        }
-        dbus_connection_set_exit_on_disconnect(srv->sysbus, FALSE);
-    }
-#endif
-
     if (virMutexInit(&srv->lock) < 0) {
-        virNetError(VIR_ERR_INTERNAL_ERROR, "%s",
-                    _("cannot initialize mutex"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("cannot initialize mutex"));
         goto error;
     }
 
@@ -390,6 +392,7 @@ virNetServerPtr virNetServerNew(size_t min_workers,
      * debugging purposes or testing
      */
     sig_action.sa_sigaction = virNetServerFatalSignal;
+    sig_action.sa_flags = SA_SIGINFO;
     sigaction(SIGFPE, &sig_action, NULL);
     sigaction(SIGSEGV, &sig_action, NULL);
     sigaction(SIGILL, &sig_action, NULL);
@@ -429,14 +432,6 @@ bool virNetServerIsPrivileged(virNetServerPtr srv)
 }
 
 
-#if HAVE_DBUS
-DBusConnection* virNetServerGetDBusConn(virNetServerPtr srv)
-{
-    return srv->sysbus;
-}
-#endif
-
-
 void virNetServerAutoShutdown(virNetServerPtr srv,
                               unsigned int timeout,
                               virNetServerAutoShutdownFunc func,
@@ -455,17 +450,24 @@ static sig_atomic_t sigErrors = 0;
 static int sigLastErrno = 0;
 static int sigWrite = -1;
 
-static void virNetServerSignalHandler(int sig, siginfo_t * siginfo,
-                                      void* context ATTRIBUTE_UNUSED)
+static void
+virNetServerSignalHandler(int sig, siginfo_t * siginfo,
+                          void* context ATTRIBUTE_UNUSED)
 {
     int origerrno;
     int r;
+    siginfo_t tmp;
+
+    if (SA_SIGINFO)
+        tmp = *siginfo;
+    else
+        memset(&tmp, 0, sizeof(tmp));
 
     /* set the sig num in the struct */
-    siginfo->si_signo = sig;
+    tmp.si_signo = sig;
 
     origerrno = errno;
-    r = safewrite(sigWrite, siginfo, sizeof(*siginfo));
+    r = safewrite(sigWrite, &tmp, sizeof(tmp));
     if (r == -1) {
         sigErrors++;
         sigLastErrno = errno;
@@ -502,8 +504,8 @@ virNetServerSignalEvent(int watch,
         }
     }
 
-    virNetError(VIR_ERR_INTERNAL_ERROR,
-                _("Unexpected signal received: %d"), siginfo.si_signo);
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   _("Unexpected signal received: %d"), siginfo.si_signo);
 
 cleanup:
     virNetServerUnlock(srv);
@@ -526,8 +528,8 @@ static int virNetServerSignalSetup(virNetServerPtr srv)
                                            VIR_EVENT_HANDLE_READABLE,
                                            virNetServerSignalEvent,
                                            srv, NULL)) < 0) {
-        virNetError(VIR_ERR_INTERNAL_ERROR, "%s",
-                    _("Failed to add signal handle watch"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Failed to add signal handle watch"));
         goto error;
     }
 
@@ -568,9 +570,7 @@ int virNetServerAddSignalHandler(virNetServerPtr srv,
 
     memset(&sig_action, 0, sizeof(sig_action));
     sig_action.sa_sigaction = virNetServerSignalHandler;
-#ifdef SA_SIGINFO
     sig_action.sa_flags = SA_SIGINFO;
-#endif
     sigemptyset(&sig_action.sa_mask);
 
     sigaction(signum, &sig_action, &sigdata->oldaction);
@@ -700,12 +700,14 @@ void virNetServerRun(virNetServerPtr srv)
         goto cleanup;
 #endif
 
+    srv->quit = 0;
+
     if (srv->autoShutdownTimeout &&
         (timerid = virEventAddTimeout(-1,
                                       virNetServerAutoShutdownTimer,
                                       srv, NULL)) < 0) {
-        virNetError(VIR_ERR_INTERNAL_ERROR, "%s",
-                    _("Failed to register shutdown timeout"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Failed to register shutdown timeout"));
         goto cleanup;
     }
 
@@ -782,17 +784,17 @@ void virNetServerQuit(virNetServerPtr srv)
 void virNetServerFree(virNetServerPtr srv)
 {
     int i;
+    int refs;
 
     if (!srv)
         return;
 
     virNetServerLock(srv);
     VIR_DEBUG("srv=%p refs=%d", srv, srv->refs);
-    srv->refs--;
-    if (srv->refs > 0) {
-        virNetServerUnlock(srv);
+    refs = --srv->refs;
+    virNetServerUnlock(srv);
+    if (refs > 0)
         return;
-    }
 
     for (i = 0 ; i < srv->nservices ; i++)
         virNetServerServiceToggle(srv->services[i], false);
@@ -828,12 +830,6 @@ void virNetServerFree(virNetServerPtr srv)
     virNetServerMDNSFree(srv->mdns);
 #endif
 
-#if HAVE_DBUS
-    if (srv->sysbus)
-        dbus_connection_unref(srv->sysbus);
-#endif
-
-    virNetServerUnlock(srv);
     virMutexDestroy(&srv->lock);
     VIR_FREE(srv);
 }

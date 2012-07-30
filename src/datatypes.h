@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -31,7 +31,7 @@
  * VIR_CONNECT_MAGIC:
  *
  * magic value used to protect the API when pointers to connection structures
- * are passed down by the uers.
+ * are passed down by the users.
  */
 # define VIR_CONNECT_MAGIC	0x4F23DEAD
 # define VIR_IS_CONNECT(obj)	((obj) && (obj)->magic==VIR_CONNECT_MAGIC)
@@ -151,7 +151,7 @@ struct _virConnect {
      */
     unsigned int magic;     /* specific value to check */
     unsigned int flags;     /* a set of connection flags */
-    xmlURIPtr uri;          /* connection URI */
+    virURIPtr uri;          /* connection URI */
 
     /* The underlying hypervisor driver and network driver. */
     virDriverPtr      driver;
@@ -186,6 +186,13 @@ struct _virConnect {
     virError err;           /* the last error */
     virErrorFunc handler;   /* associated handlet */
     void *userData;         /* the user data */
+
+    /* Per-connection close callback */
+    virConnectCloseFunc closeCallback;
+    void *closeOpaque;
+    virFreeCallback closeFreeCallback;
+    bool closeDispatch;
+    unsigned closeUnregisterCount;
 
     int refs;                 /* reference count */
 };

@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -154,8 +154,11 @@ struct virThreadArgs {
 static void *virThreadHelper(void *data)
 {
     struct virThreadArgs *args = data;
-    args->func(args->opaque);
+    struct virThreadArgs local = *args;
+
+    /* Free args early, rather than tying it up during the entire thread.  */
     VIR_FREE(args);
+    local.func(local.opaque);
     return NULL;
 }
 
@@ -249,7 +252,12 @@ void *virThreadLocalGet(virThreadLocalPtr l)
     return pthread_getspecific(l->key);
 }
 
-void virThreadLocalSet(virThreadLocalPtr l, void *val)
+int virThreadLocalSet(virThreadLocalPtr l, void *val)
 {
-    pthread_setspecific(l->key, val);
+    int err = pthread_setspecific(l->key, val);
+    if (err) {
+        errno = err;
+        return -1;
+    }
+    return 0;
 }

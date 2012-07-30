@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -497,6 +497,26 @@ virCapabilitiesAddGuestFeature(virCapsGuestPtr guest,
     return NULL;
 }
 
+/**
+ * virCapabilitiesSupportsGuestArch:
+ * @caps: capabilities to query
+ * @arch: Architecture to search for (eg, 'i686', 'x86_64')
+ *
+ * Returns non-zero if the capabilities support the
+ * requested architecture
+ */
+extern int
+virCapabilitiesSupportsGuestArch(virCapsPtr caps,
+                                 const char *arch)
+{
+    int i;
+    for (i = 0 ; i < caps->nguests ; i++) {
+        if (STREQ(caps->guests[i]->arch.name, arch))
+            return 1;
+    }
+    return 0;
+}
+
 
 /**
  * virCapabilitiesSupportsGuestOSType:
@@ -520,7 +540,7 @@ virCapabilitiesSupportsGuestOSType(virCapsPtr caps,
 
 
 /**
- * virCapabilitiesSupportsGuestOSType:
+ * virCapabilitiesSupportsGuestOSTypeArch:
  * @caps: capabilities to query
  * @ostype: OS type to search for (eg 'hvm', 'xen')
  * @arch: Architecture to search for (eg, 'i686', 'x86_64')
@@ -529,9 +549,9 @@ virCapabilitiesSupportsGuestOSType(virCapsPtr caps,
  * requested operating system type
  */
 extern int
-virCapabilitiesSupportsGuestArch(virCapsPtr caps,
-                                 const char *ostype,
-                                 const char *arch)
+virCapabilitiesSupportsGuestOSTypeArch(virCapsPtr caps,
+                                       const char *ostype,
+                                       const char *arch)
 {
     int i;
     for (i = 0 ; i < caps->nguests ; i++) {
@@ -839,16 +859,16 @@ virCapabilitiesFormatXML(virCapsPtr caps)
 
 extern void
 virCapabilitiesSetMacPrefix(virCapsPtr caps,
-                            unsigned char *prefix)
+                            const unsigned char prefix[VIR_MAC_PREFIX_BUFLEN])
 {
     memcpy(caps->macPrefix, prefix, sizeof(caps->macPrefix));
 }
 
 extern void
 virCapabilitiesGenerateMac(virCapsPtr caps,
-                           unsigned char *mac)
+                           virMacAddrPtr mac)
 {
-    virGenerateMacAddr(caps->macPrefix, mac);
+    virMacAddrGenerate(caps->macPrefix, mac);
 }
 
 extern void

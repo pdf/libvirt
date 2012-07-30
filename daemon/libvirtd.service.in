@@ -5,16 +5,16 @@
 
 [Unit]
 Description=Virtualization daemon
-After=syslog.target
-After=udev.target
-After=avahi.target
-After=dbus.target
 Before=libvirt-guests.service
+After=network.target
 
 [Service]
 EnvironmentFile=-/etc/sysconfig/libvirtd
 ExecStart=@sbindir@/libvirtd $LIBVIRTD_ARGS
 ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+# Override the maximum number of opened files
+#LimitNOFILE=2048
 
 [Install]
 WantedBy=multi-user.target

@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *     Mark McLoughlin <markmc@redhat.com>
@@ -45,9 +45,6 @@
 #include "logging.h"
 
 #define VIR_FROM_THIS VIR_FROM_NONE
-#define iptablesError(code, ...)                                        \
-    virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,                 \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
 
 enum {
     ADD = 0,
@@ -293,14 +290,14 @@ static char *iptablesFormatNetwork(virSocketAddr *netaddr,
 
     if (!(VIR_SOCKET_ADDR_IS_FAMILY(netaddr, AF_INET) ||
           VIR_SOCKET_ADDR_IS_FAMILY(netaddr, AF_INET6))) {
-        iptablesError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                      _("Only IPv4 or IPv6 addresses can be used with iptables"));
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                       _("Only IPv4 or IPv6 addresses can be used with iptables"));
         return NULL;
     }
 
     if (virSocketAddrMaskByPrefix(netaddr, prefix, &network) < 0) {
-        iptablesError(VIR_ERR_INTERNAL_ERROR, "%s",
-                      _("Failure to mask address"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Failure to mask address"));
         return NULL;
     }
 
@@ -763,9 +760,9 @@ iptablesForwardMasquerade(iptablesContext *ctx,
 
     if (!VIR_SOCKET_ADDR_IS_FAMILY(netaddr, AF_INET)) {
         /* Higher level code *should* guaranteee it's impossible to get here. */
-        iptablesError(VIR_ERR_INTERNAL_ERROR,
-                      _("Attempted to NAT '%s'. NAT is only supported for IPv4."),
-                      networkstr);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Attempted to NAT '%s'. NAT is only supported for IPv4."),
+                       networkstr);
         VIR_FREE(networkstr);
         return -1;
     }

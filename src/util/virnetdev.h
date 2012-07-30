@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *     Mark McLoughlin <markmc@redhat.com>
@@ -24,6 +24,8 @@
 # define __VIR_NETDEV_H__
 
 # include "virsocketaddr.h"
+# include "virnetlink.h"
+# include "virmacaddr.h"
 
 int virNetDevExists(const char *brname)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
@@ -48,14 +50,14 @@ int virNetDevGetIPv4Address(const char *ifname, virSocketAddrPtr addr)
 
 
 int virNetDevSetMAC(const char *ifname,
-                    const unsigned char *macaddr)
+                    const virMacAddrPtr macaddr)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_RETURN_CHECK;
 int virNetDevGetMAC(const char *ifname,
-                    unsigned char *macaddr)
+                    virMacAddrPtr macaddr)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_RETURN_CHECK;
 
 int virNetDevReplaceMacAddress(const char *linkdev,
-                               const unsigned char *macaddress,
+                               const virMacAddrPtr macaddress,
                                const char *stateDir)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3)
     ATTRIBUTE_RETURN_CHECK;
@@ -73,7 +75,7 @@ int virNetDevSetMTUFromDevice(const char *ifname,
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_RETURN_CHECK;
 int virNetDevGetMTU(const char *ifname)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
-int virNetDevSetNamespace(const char *ifname, int pidInNs)
+int virNetDevSetNamespace(const char *ifname, pid_t pidInNs)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
 int virNetDevSetName(const char *ifname, const char *newifname)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_RETURN_CHECK;
@@ -85,7 +87,7 @@ int virNetDevGetVLanID(const char *ifname, int *vlanid)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_RETURN_CHECK;
 
 int virNetDevValidateConfig(const char *ifname,
-                            const unsigned char *macaddr, int ifindex)
+                            const virMacAddrPtr macaddr, int ifindex)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
 
 int virNetDevIsVirtualFunction(const char *ifname)
@@ -104,5 +106,23 @@ int virNetDevGetVirtualFunctions(const char *pfname,
                                  unsigned int *n_vfname)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3)
     ATTRIBUTE_RETURN_CHECK;
+
+int virNetDevLinkDump(const char *ifname, int ifindex,
+                      struct nlattr **tb,
+                      unsigned char **recvbuf,
+                      uint32_t src_pid, uint32_t dst_pid)
+    ATTRIBUTE_RETURN_CHECK;
+
+int virNetDevReplaceNetConfig(char *linkdev, int vf,
+                              const virMacAddrPtr macaddress, int vlanid,
+                              char *stateDir)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(3) ATTRIBUTE_NONNULL(5);
+
+int virNetDevRestoreNetConfig(char *linkdev, int vf, char *stateDir)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(3);
+
+int virNetDevGetVirtualFunctionInfo(const char *vfname, char **pfname,
+                                    int *vf)
+    ATTRIBUTE_NONNULL(1);
 
 #endif /* __VIR_NETDEV_H__ */

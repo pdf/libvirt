@@ -1,7 +1,7 @@
 /*
  * utils.c: common, generic utility functions
  *
- * Copyright (C) 2006-2011 Red Hat, Inc.
+ * Copyright (C) 2006-2012 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  * Copyright (C) 2006, 2007 Binary Karma
  * Copyright (C) 2006 Shuveb Hussain
@@ -17,8 +17,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  * File created Jul 18, 2007 - Shuveb Hussain <shuveb@binarykarma.com>
@@ -64,12 +64,21 @@
 # include <mntent.h>
 #endif
 
+#ifdef WIN32
+# ifdef HAVE_WINSOCK2_H
+#  include <winsock2.h>
+# endif
+# include <windows.h>
+# include <shlobj.h>
+#endif
+
 #include "c-ctype.h"
 #include "dirname.h"
 #include "virterror_internal.h"
 #include "logging.h"
 #include "buf.h"
 #include "util.h"
+#include "storage_file.h"
 #include "memory.h"
 #include "threads.h"
 #include "verify.h"
@@ -82,14 +91,10 @@
 # define NSIG 32
 #endif
 
-verify(sizeof(gid_t) <= sizeof (unsigned int) &&
-       sizeof(uid_t) <= sizeof (unsigned int));
+verify(sizeof(gid_t) <= sizeof(unsigned int) &&
+       sizeof(uid_t) <= sizeof(unsigned int));
 
 #define VIR_FROM_THIS VIR_FROM_NONE
-
-#define virUtilError(code, ...)                                            \
-        virReportErrorHelper(VIR_FROM_NONE, code, __FILE__,                \
-                             __FUNCTION__, __LINE__, __VA_ARGS__)
 
 /* Like read(), but restarts after EINTR */
 ssize_t
@@ -324,8 +329,8 @@ virPipeReadUntilEOF(int outfd, int errfd,
                 if (fds[i].revents & POLLHUP)
                     continue;
 
-                virUtilError(VIR_ERR_INTERNAL_ERROR,
-                             "%s", _("Unknown poll response."));
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               "%s", _("Unknown poll response."));
                 goto error;
             }
 
@@ -536,16 +541,10 @@ int virFileLinkPointsTo(const char *checkLink,
 
 
 
-/*
- * Attempt to resolve a symbolic link, returning an
- * absolute path where only the last component is guaranteed
- * not to be a symlink.
- *
- * Return 0 if path was not a symbolic, or the link was
- * resolved. Return -1 with errno set upon error
- */
-int virFileResolveLink(const char *linkpath,
-                       char **resultpath)
+static int
+virFileResolveLinkHelper(const char *linkpath,
+                         bool intermediatePaths,
+                         char **resultpath)
 {
     struct stat st;
 
@@ -554,7 +553,7 @@ int virFileResolveLink(const char *linkpath,
     /* We don't need the full canonicalization of intermediate
      * directories, if linkpath is absolute and the basename is
      * already a non-symlink.  */
-    if (IS_ABSOLUTE_FILE_NAME(linkpath)) {
+    if (IS_ABSOLUTE_FILE_NAME(linkpath) && !intermediatePaths) {
         if (lstat(linkpath, &st) < 0)
             return -1;
 
@@ -570,6 +569,33 @@ int virFileResolveLink(const char *linkpath,
     return *resultpath == NULL ? -1 : 0;
 }
 
+/*
+ * Attempt to resolve a symbolic link, returning an
+ * absolute path where only the last component is guaranteed
+ * not to be a symlink.
+ *
+ * Return 0 if path was not a symbolic, or the link was
+ * resolved. Return -1 with errno set upon error
+ */
+int virFileResolveLink(const char *linkpath,
+                       char **resultpath)
+{
+    return virFileResolveLinkHelper(linkpath, false, resultpath);
+}
+
+/*
+ * Attempt to resolve a symbolic link, returning an
+ * absolute path where every component is guaranteed
+ * not to be a symlink.
+ *
+ * Return 0 if path was not a symbolic, or the link was
+ * resolved. Return -1 with errno set upon error
+ */
+int virFileResolveAllLinks(const char *linkpath,
+                           char **resultpath)
+{
+    return virFileResolveLinkHelper(linkpath, true, resultpath);
+}
 
 /*
  * Check whether the given file is a link.
@@ -583,7 +609,7 @@ int virFileIsLink(const char *linkpath)
     if (lstat(linkpath, &st) < 0)
         return -errno;
 
-    return (S_ISLNK(st.st_mode) != 0);
+    return S_ISLNK(st.st_mode) != 0;
 }
 
 
@@ -641,6 +667,12 @@ char *virFindFileInPath(const char *file)
 
     VIR_FREE(path);
     return fullpath;
+}
+
+bool virFileIsDir(const char *path)
+{
+    struct stat s;
+    return (stat (path, &s) == 0) && S_ISDIR (s.st_mode);
 }
 
 bool virFileExists(const char *path)
@@ -702,8 +734,17 @@ virFileAccessibleAs(const char *path, int mode,
                 return -1;
         }
 
-        errno = status;
-        return -1;
+        if (!WIFEXITED(status)) {
+            errno = EINTR;
+            return -1;
+        }
+
+        if (status) {
+            errno = WEXITSTATUS(status);
+            return -1;
+        }
+
+        return 0;
     }
 
     /* child.
@@ -732,53 +773,306 @@ childerror:
     _exit(ret);
 }
 
-/* return -errno on failure, or 0 on success */
+/* virFileOpenForceOwnerMode() - an internal utility function called
+ * only by virFileOpenAs().  Sets the owner and mode of the file
+ * opened as "fd" if it's not correct AND the flags say it should be
+ * forced. */
 static int
-virFileOpenAsNoFork(const char *path, int openflags, mode_t mode,
-                    uid_t uid, gid_t gid, unsigned int flags)
+virFileOpenForceOwnerMode(const char *path, int fd, mode_t mode,
+                          uid_t uid, gid_t gid, unsigned int flags)
 {
-    int fd = -1;
     int ret = 0;
+    struct stat st;
 
-    if ((fd = open(path, openflags, mode)) < 0) {
+    if (!(flags & (VIR_FILE_OPEN_FORCE_OWNER | VIR_FILE_OPEN_FORCE_MODE)))
+        return 0;
+
+    if (fstat(fd, &st) == -1) {
         ret = -errno;
-        virReportSystemError(errno, _("failed to create file '%s'"),
-                             path);
-        goto error;
+        virReportSystemError(errno, _("stat of '%s' failed"), path);
+        return ret;
     }
-
-    /* VIR_FILE_OPEN_AS_UID in flags means we are running in a child process
-     * owned by uid and gid */
-    if (!(flags & VIR_FILE_OPEN_AS_UID)) {
-        struct stat st;
-
-        if (fstat(fd, &st) == -1) {
-            ret = -errno;
-            virReportSystemError(errno, _("stat of '%s' failed"), path);
-            goto error;
-        }
-        if (((st.st_uid != uid) || (st.st_gid != gid))
-            && (openflags & O_CREAT)
-            && (fchown(fd, uid, gid) < 0)) {
-            ret = -errno;
-            virReportSystemError(errno, _("cannot chown '%s' to (%u, %u)"),
-                                 path, (unsigned int) uid, (unsigned int) gid);
-            goto error;
-        }
+    /* NB: uid:gid are never "-1" (default) at this point - the caller
+     * has always changed -1 to the value of get[gu]id().
+    */
+    if ((flags & VIR_FILE_OPEN_FORCE_OWNER) &&
+        ((st.st_uid != uid) || (st.st_gid != gid)) &&
+        (fchown(fd, uid, gid) < 0)) {
+        ret = -errno;
+        virReportSystemError(errno,
+                             _("cannot chown '%s' to (%u, %u)"),
+                             path, (unsigned int) uid,
+                             (unsigned int) gid);
+        return ret;
     }
-
-    if ((flags & VIR_FILE_OPEN_FORCE_PERMS)
-        && (fchmod(fd, mode) < 0)) {
+    if ((flags & VIR_FILE_OPEN_FORCE_MODE) &&
+        ((mode & (S_IRWXU|S_IRWXG|S_IRWXO)) !=
+         (st.st_mode & (S_IRWXU|S_IRWXG|S_IRWXO))) &&
+        (fchmod(fd, mode) < 0)) {
         ret = -errno;
         virReportSystemError(errno,
                              _("cannot set mode of '%s' to %04o"),
                              path, mode);
-        goto error;
+        return ret;
     }
+    return ret;
+}
+
+/* virFileOpenForked() - an internal utility function called only by
+ * virFileOpenAs(). It forks, then the child does setuid+setgid to
+ * given uid:gid and attempts to open the file, while the parent just
+ * calls recvfd to get the open fd back from the child. returns the
+ * fd, or -errno if there is an error. */
+static int
+virFileOpenForked(const char *path, int openflags, mode_t mode,
+                  uid_t uid, gid_t gid, unsigned int flags)
+{
+    pid_t pid;
+    int waitret, status, ret = 0;
+    int fd = -1;
+    int pair[2] = { -1, -1 };
+    int forkRet;
+
+    /* parent is running as root, but caller requested that the
+     * file be opened as some other user and/or group). The
+     * following dance avoids problems caused by root-squashing
+     * NFS servers. */
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) < 0) {
+        ret = -errno;
+        virReportSystemError(errno,
+                             _("failed to create socket needed for '%s'"),
+                             path);
+        return ret;
+    }
+
+    forkRet = virFork(&pid);
+    if (pid < 0)
+        return -errno;
+
+    if (pid == 0) {
+
+        /* child */
+
+        VIR_FORCE_CLOSE(pair[0]); /* preserves errno */
+        if (forkRet < 0) {
+            /* error encountered and logged in virFork() after the fork. */
+            ret = -errno;
+            goto childerror;
+        }
+
+        /* set desired uid/gid, then attempt to create the file */
+
+        if (virSetUIDGID(uid, gid) < 0) {
+            ret = -errno;
+            goto childerror;
+        }
+
+        if ((fd = open(path, openflags, mode)) < 0) {
+            ret = -errno;
+            virReportSystemError(errno,
+                                 _("child process failed to create file '%s'"),
+                                 path);
+            goto childerror;
+        }
+
+        /* File is successfully open. Set permissions if requested. */
+        ret = virFileOpenForceOwnerMode(path, fd, mode, uid, gid, flags);
+        if (ret < 0)
+            goto childerror;
+
+        do {
+            ret = sendfd(pair[1], fd);
+        } while (ret < 0 && errno == EINTR);
+
+        if (ret < 0) {
+            ret = -errno;
+            virReportSystemError(errno, "%s",
+                                 _("child process failed to send fd to parent"));
+            goto childerror;
+        }
+
+    childerror:
+        /* ret tracks -errno on failure, but exit value must be positive.
+         * If the child exits with EACCES, then the parent tries again.  */
+        /* XXX This makes assumptions about errno being < 255, which is
+         * not true on Hurd.  */
+        VIR_FORCE_CLOSE(pair[1]);
+        if (ret < 0) {
+            VIR_FORCE_CLOSE(fd);
+        }
+        ret = -ret;
+        if ((ret & 0xff) != ret) {
+            VIR_WARN("unable to pass desired return value %d", ret);
+            ret = 0xff;
+        }
+        _exit(ret);
+    }
+
+    /* parent */
+
+    VIR_FORCE_CLOSE(pair[1]);
+
+    do {
+        fd = recvfd(pair[0], 0);
+    } while (fd < 0 && errno == EINTR);
+    VIR_FORCE_CLOSE(pair[0]); /* NB: this preserves errno */
+
+    if (fd < 0 && errno != EACCES) {
+        ret = -errno;
+        while (waitpid(pid, NULL, 0) == -1 && errno == EINTR);
+        return ret;
+    }
+
+    /* wait for child to complete, and retrieve its exit code */
+    while ((waitret = waitpid(pid, &status, 0) == -1)
+           && (errno == EINTR));
+    if (waitret == -1) {
+        ret = -errno;
+        virReportSystemError(errno,
+                             _("failed to wait for child creating '%s'"),
+                             path);
+        VIR_FORCE_CLOSE(fd);
+        return ret;
+    }
+    if (!WIFEXITED(status) || (ret = -WEXITSTATUS(status)) == -EACCES ||
+        fd == -1) {
+        /* fall back to the simpler method, which works better in
+         * some cases */
+        VIR_FORCE_CLOSE(fd);
+        if (flags & VIR_FILE_OPEN_NOFORK) {
+            /* If we had already tried opening w/o fork+setuid and
+             * failed, no sense trying again. Just set return the
+             * original errno that we got at that time (by
+             * definition, always either EACCES or EPERM - EACCES
+             * is close enough).
+             */
+            return -EACCES;
+        }
+        if ((fd = open(path, openflags, mode)) < 0)
+            return -errno;
+        ret = virFileOpenForceOwnerMode(path, fd, mode, uid, gid, flags);
+        if (ret < 0) {
+            VIR_FORCE_CLOSE(fd);
+            return ret;
+        }
+    }
+    return fd;
+}
+
+/**
+ * virFileOpenAs:
+ * @path: file to open or create
+ * @openflags: flags to pass to open
+ * @mode: mode to use on creation or when forcing permissions
+ * @uid: uid that should own file on creation
+ * @gid: gid that should own file
+ * @flags: bit-wise or of VIR_FILE_OPEN_* flags
+ *
+ * Open @path, and return an fd to the open file. @openflags contains
+ * the flags normally passed to open(2), while those in @flags are
+ * used internally. If @flags includes VIR_FILE_OPEN_NOFORK, then try
+ * opening the file while executing with the current uid:gid
+ * (i.e. don't fork+setuid+setgid before the call to open()).  If
+ * @flags includes VIR_FILE_OPEN_FORK, then try opening the file while
+ * the effective user id is @uid (by forking a child process); this
+ * allows one to bypass root-squashing NFS issues; NOFORK is always
+ * tried before FORK (the absence of both flags is treated identically
+ * to (VIR_FILE_OPEN_NOFORK | VIR_FILE_OPEN_FORK)). If @flags includes
+ * VIR_FILE_OPEN_FORCE_OWNER, then ensure that @path is owned by
+ * uid:gid before returning (even if it already existed with a
+ * different owner). If @flags includes VIR_FILE_OPEN_FORCE_MODE,
+ * ensure it has those permissions before returning (again, even if
+ * the file already existed with different permissions).  The return
+ * value (if non-negative) is the file descriptor, left open.  Returns
+ * -errno on failure.  */
+int
+virFileOpenAs(const char *path, int openflags, mode_t mode,
+              uid_t uid, gid_t gid, unsigned int flags)
+{
+    int ret = 0, fd = -1;
+
+    /* allow using -1 to mean "current value" */
+    if (uid == (uid_t) -1)
+        uid = getuid();
+    if (gid == (gid_t) -1)
+        gid = getgid();
+
+    /* treat absence of both flags as presence of both for simpler
+     * calling. */
+    if (!(flags & (VIR_FILE_OPEN_NOFORK|VIR_FILE_OPEN_FORK)))
+        flags |= VIR_FILE_OPEN_NOFORK|VIR_FILE_OPEN_FORK;
+
+    if ((flags & VIR_FILE_OPEN_NOFORK)
+        || (getuid() != 0)
+        || ((uid == 0) && (gid == 0))) {
+
+        if ((fd = open(path, openflags, mode)) < 0) {
+            ret = -errno;
+        } else {
+            ret = virFileOpenForceOwnerMode(path, fd, mode, uid, gid, flags);
+            if (ret < 0)
+                goto error;
+        }
+    }
+
+    /* If we either 1) didn't try opening as current user at all, or
+     * 2) failed, and errno/virStorageFileIsSharedFS indicate we might
+     * be successful if we try as a different uid, then try doing
+     * fork+setuid+setgid before opening.
+     */
+    if ((fd < 0) && (flags & VIR_FILE_OPEN_FORK)) {
+
+        if (ret < 0) {
+            /* An open(2) that failed due to insufficient permissions
+             * could return one or the other of these depending on OS
+             * version and circumstances. Any other errno indicates a
+             * problem that couldn't be remedied by fork+setuid
+             * anyway. */
+            if (ret != -EACCES && ret != -EPERM)
+                goto error;
+
+            /* On Linux we can also verify the FS-type of the
+             * directory.  (this is a NOP on other platforms). */
+            switch (virStorageFileIsSharedFS(path)) {
+            case 1:
+                /* it was on a network share, so we'll re-try */
+                break;
+            case -1:
+                /* failure detecting fstype */
+                virReportSystemError(errno, _("couldn't determine fs type "
+                                              "of mount containing '%s'"), path);
+                goto error;
+            case 0:
+            default:
+                /* file isn't on a recognized network FS */
+                goto error;
+            }
+        }
+
+        /* passed all prerequisites - retry the open w/fork+setuid */
+        if ((fd = virFileOpenForked(path, openflags, mode, uid, gid, flags)) < 0) {
+            ret = fd;
+            fd = -1;
+            goto error;
+        }
+    }
+
+    /* File is successfully opened */
+
     return fd;
 
 error:
-    VIR_FORCE_CLOSE(fd);
+    if (fd < 0) {
+        /* whoever failed the open last has already set ret = -errno */
+        virReportSystemError(-ret, openflags & O_CREAT
+                             ? _("failed to create file '%s'")
+                             : _("failed to open file '%s'"),
+                             path);
+    } else {
+        /* some other failure after the open succeeded */
+        VIR_FORCE_CLOSE(fd);
+    }
     return ret;
 }
 
@@ -820,149 +1114,6 @@ error:
     return ret;
 }
 
-/**
- * virFileOpenAs:
- * @path: file to open or create
- * @openflags: flags to pass to open
- * @mode: mode to use on creation or when forcing permissions
- * @uid: uid that should own file on creation
- * @gid: gid that should own file
- * @flags: bit-wise or of VIR_FILE_OPEN_* flags
- *
- * Open @path, and execute an optional callback @hook on the open file
- * description.  @hook must return 0 on success, or -errno on failure.
- * If @flags includes VIR_FILE_OPEN_AS_UID, then open the file while the
- * effective user id is @uid (by using a child process); this allows
- * one to bypass root-squashing NFS issues.  If @flags includes
- * VIR_FILE_OPEN_FORCE_PERMS, then ensure that @path has those
- * permissions before the callback, even if the file already existed
- * with different permissions.  The return value (if non-negative)
- * is the file descriptor, left open.  Return -errno on failure.  */
-int
-virFileOpenAs(const char *path, int openflags, mode_t mode,
-              uid_t uid, gid_t gid, unsigned int flags)
-{
-    pid_t pid;
-    int waitret, status, ret = 0;
-    int fd = -1;
-    int pair[2] = { -1, -1 };
-    int forkRet;
-
-    if ((!(flags & VIR_FILE_OPEN_AS_UID))
-        || (getuid() != 0)
-        || ((uid == 0) && (gid == 0))) {
-        flags &= ~VIR_FILE_OPEN_AS_UID;
-        return virFileOpenAsNoFork(path, openflags, mode, uid, gid, flags);
-    }
-
-    /* parent is running as root, but caller requested that the
-     * file be created as some other user and/or group). The
-     * following dance avoids problems caused by root-squashing
-     * NFS servers. */
-
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) < 0) {
-        ret = -errno;
-        virReportSystemError(errno,
-                             _("failed to create socket needed for '%s'"),
-                             path);
-        return ret;
-    }
-
-    forkRet = virFork(&pid);
-
-    if (pid < 0) {
-        ret = -errno;
-        return ret;
-    }
-
-    if (pid) { /* parent */
-        VIR_FORCE_CLOSE(pair[1]);
-
-        do {
-            ret = recvfd(pair[0], 0);
-        } while (ret < 0 && errno == EINTR);
-
-        if (ret < 0 && errno != EACCES) {
-            ret = -errno;
-            VIR_FORCE_CLOSE(pair[0]);
-            while (waitpid(pid, NULL, 0) == -1 && errno == EINTR);
-            goto parenterror;
-        } else {
-            fd = ret;
-        }
-        VIR_FORCE_CLOSE(pair[0]);
-
-        /* wait for child to complete, and retrieve its exit code */
-        while ((waitret = waitpid(pid, &status, 0) == -1)
-               && (errno == EINTR));
-        if (waitret == -1) {
-            ret = -errno;
-            virReportSystemError(errno,
-                                 _("failed to wait for child creating '%s'"),
-                                 path);
-            VIR_FORCE_CLOSE(fd);
-            goto parenterror;
-        }
-        if (!WIFEXITED(status) || (ret = -WEXITSTATUS(status)) == -EACCES ||
-            fd == -1) {
-            /* fall back to the simpler method, which works better in
-             * some cases */
-            VIR_FORCE_CLOSE(fd);
-            flags &= ~VIR_FILE_OPEN_AS_UID;
-            return virFileOpenAsNoFork(path, openflags, mode, uid, gid, flags);
-        }
-        if (!ret)
-            ret = fd;
-parenterror:
-        return ret;
-    }
-
-
-    /* child */
-
-    if (forkRet < 0) {
-        /* error encountered and logged in virFork() after the fork. */
-        ret = -errno;
-        goto childerror;
-    }
-    VIR_FORCE_CLOSE(pair[0]);
-
-    /* set desired uid/gid, then attempt to create the file */
-
-    if (virSetUIDGID(uid, gid) < 0) {
-        ret = -errno;
-        goto childerror;
-    }
-
-    ret = virFileOpenAsNoFork(path, openflags, mode, uid, gid, flags);
-    if (ret < 0)
-        goto childerror;
-    fd = ret;
-
-    do {
-        ret = sendfd(pair[1], fd);
-    } while (ret < 0 && errno == EINTR);
-
-    if (ret < 0) {
-        ret = -errno;
-        goto childerror;
-    }
-
-childerror:
-    /* ret tracks -errno on failure, but exit value must be positive.
-     * If the child exits with EACCES, then the parent tries again.  */
-    /* XXX This makes assumptions about errno being < 255, which is
-     * not true on Hurd.  */
-    VIR_FORCE_CLOSE(pair[1]);
-    ret = -ret;
-    if ((ret & 0xff) != ret) {
-        VIR_WARN("unable to pass desired return value %d", ret);
-        ret = 0xff;
-    }
-    _exit(ret);
-
-}
-
 /* return -errno on failure, or 0 on success */
 int virDirCreate(const char *path, mode_t mode,
                  uid_t uid, gid_t gid, unsigned int flags) {
@@ -970,6 +1121,12 @@ int virDirCreate(const char *path, mode_t mode,
     pid_t pid;
     int waitret;
     int status, ret = 0;
+
+    /* allow using -1 to mean "current value" */
+    if (uid == (uid_t) -1)
+        uid = getuid();
+    if (gid == (gid_t) -1)
+        gid = getgid();
 
     if ((!(flags & VIR_DIR_CREATE_AS_UID))
         || (getuid() != 0)
@@ -1074,8 +1231,8 @@ int virFileOpenAs(const char *path ATTRIBUTE_UNUSED,
                   gid_t gid ATTRIBUTE_UNUSED,
                   unsigned int flags_unused ATTRIBUTE_UNUSED)
 {
-    virUtilError(VIR_ERR_INTERNAL_ERROR,
-                 "%s", _("virFileOpenAs is not implemented for WIN32"));
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   "%s", _("virFileOpenAs is not implemented for WIN32"));
 
     return -ENOSYS;
 }
@@ -1086,14 +1243,14 @@ int virDirCreate(const char *path ATTRIBUTE_UNUSED,
                  gid_t gid ATTRIBUTE_UNUSED,
                  unsigned int flags_unused ATTRIBUTE_UNUSED)
 {
-    virUtilError(VIR_ERR_INTERNAL_ERROR,
-                 "%s", _("virDirCreate is not implemented for WIN32"));
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   "%s", _("virDirCreate is not implemented for WIN32"));
 
     return -ENOSYS;
 }
 #endif /* WIN32 */
 
-static int virFileMakePathHelper(char *path)
+static int virFileMakePathHelper(char *path, mode_t mode)
 {
     struct stat st;
     char *p;
@@ -1117,13 +1274,13 @@ static int virFileMakePathHelper(char *path)
     if (p != path) {
         *p = '\0';
 
-        if (virFileMakePathHelper(path) < 0)
+        if (virFileMakePathHelper(path, mode) < 0)
             return -1;
 
         *p = '/';
     }
 
-    if (mkdir(path, 0777) < 0 && errno != EEXIST)
+    if (mkdir(path, mode) < 0 && errno != EEXIST)
         return -1;
 
     return 0;
@@ -1137,13 +1294,20 @@ static int virFileMakePathHelper(char *path)
  */
 int virFileMakePath(const char *path)
 {
+    return virFileMakePathWithMode(path, 0777);
+}
+
+int
+virFileMakePathWithMode(const char *path,
+                        mode_t mode)
+{
     int ret = -1;
     char *tmp;
 
     if ((tmp = strdup(path)) == NULL)
         goto cleanup;
 
-    ret = virFileMakePathHelper(tmp);
+    ret = virFileMakePathHelper(tmp, mode);
 
 cleanup:
     VIR_FREE(tmp);
@@ -1264,6 +1428,77 @@ int virFileOpenTty(int *ttymaster ATTRIBUTE_UNUSED,
 }
 #endif /* WIN32 */
 
+bool virFileIsAbsPath(const char *path)
+{
+    if (!path)
+        return false;
+
+    if (VIR_FILE_IS_DIR_SEPARATOR(path[0]))
+        return true;
+
+#ifdef WIN32
+    if (c_isalpha(path[0]) &&
+        path[1] == ':' &&
+        VIR_FILE_IS_DIR_SEPARATOR(path[2]))
+        return true;
+#endif
+
+    return false;
+}
+
+
+const char *virFileSkipRoot(const char *path)
+{
+#ifdef WIN32
+    /* Skip \\server\share or //server/share */
+    if (VIR_FILE_IS_DIR_SEPARATOR(path[0]) &&
+        VIR_FILE_IS_DIR_SEPARATOR(path[1]) &&
+        path[2] &&
+        !VIR_FILE_IS_DIR_SEPARATOR(path[2]))
+    {
+        const char *p = strchr(path + 2, VIR_FILE_DIR_SEPARATOR);
+        const char *q = strchr(path + 2, '/');
+
+        if (p == NULL || (q != NULL && q < p))
+            p = q;
+
+        if (p && p > path + 2 && p[1]) {
+            path = p + 1;
+
+            while (path[0] &&
+                   !VIR_FILE_IS_DIR_SEPARATOR(path[0]))
+                path++;
+
+            /* Possibly skip a backslash after the share name */
+            if (VIR_FILE_IS_DIR_SEPARATOR(path[0]))
+                path++;
+
+            return path;
+        }
+    }
+#endif
+
+    /* Skip initial slashes */
+    if (VIR_FILE_IS_DIR_SEPARATOR(path[0])) {
+        while (VIR_FILE_IS_DIR_SEPARATOR(path[0]))
+            path++;
+
+        return path;
+    }
+
+#ifdef WIN32
+    /* Skip X:\ */
+    if (c_isalpha(path[0]) &&
+        path[1] == ':' &&
+        VIR_FILE_IS_DIR_SEPARATOR(path[2]))
+        return path + 3;
+#endif
+
+    return path;
+}
+
+
+
 /*
  * Creates an absolute path for a potentially relative path.
  * Return 0 if the path was not relative, or on success.
@@ -1356,7 +1591,7 @@ virStrToLong_i(char const *s, char **end_ptr, int base, int *result)
     int err;
 
     errno = 0;
-    val = strtol(s, &p, base);
+    val = strtol(s, &p, base); /* exempt from syntax-check */
     err = (errno || (!end_ptr && *p) || p == s || (int) val != val);
     if (end_ptr)
         *end_ptr = p;
@@ -1375,7 +1610,7 @@ virStrToLong_ui(char const *s, char **end_ptr, int base, unsigned int *result)
     int err;
 
     errno = 0;
-    val = strtoul(s, &p, base);
+    val = strtoul(s, &p, base); /* exempt from syntax-check */
     err = (errno || (!end_ptr && *p) || p == s || (unsigned int) val != val);
     if (end_ptr)
         *end_ptr = p;
@@ -1394,7 +1629,7 @@ virStrToLong_l(char const *s, char **end_ptr, int base, long *result)
     int err;
 
     errno = 0;
-    val = strtol(s, &p, base);
+    val = strtol(s, &p, base); /* exempt from syntax-check */
     err = (errno || (!end_ptr && *p) || p == s);
     if (end_ptr)
         *end_ptr = p;
@@ -1413,7 +1648,7 @@ virStrToLong_ul(char const *s, char **end_ptr, int base, unsigned long *result)
     int err;
 
     errno = 0;
-    val = strtoul(s, &p, base);
+    val = strtoul(s, &p, base); /* exempt from syntax-check */
     err = (errno || (!end_ptr && *p) || p == s);
     if (end_ptr)
         *end_ptr = p;
@@ -1432,8 +1667,8 @@ virStrToLong_ll(char const *s, char **end_ptr, int base, long long *result)
     int err;
 
     errno = 0;
-    val = strtoll(s, &p, base);
-    err = (errno || (!end_ptr && *p) || p == s || (long long) val != val);
+    val = strtoll(s, &p, base); /* exempt from syntax-check */
+    err = (errno || (!end_ptr && *p) || p == s);
     if (end_ptr)
         *end_ptr = p;
     if (err)
@@ -1451,8 +1686,8 @@ virStrToLong_ull(char const *s, char **end_ptr, int base, unsigned long long *re
     int err;
 
     errno = 0;
-    val = strtoull(s, &p, base);
-    err = (errno || (!end_ptr && *p) || p == s || (unsigned long long) val != val);
+    val = strtoull(s, &p, base); /* exempt from syntax-check */
+    err = (errno || (!end_ptr && *p) || p == s);
     if (end_ptr)
         *end_ptr = p;
     if (err)
@@ -1471,7 +1706,7 @@ virStrToDouble(char const *s,
     int err;
 
     errno = 0;
-    val = strtod(s, &p);
+    val = strtod(s, &p); /* exempt from syntax-check */
     err = (errno || (!end_ptr && *p) || p == s);
     if (end_ptr)
         *end_ptr = p;
@@ -1494,6 +1729,76 @@ virHexToBin(unsigned char c)
     case 'e': case 'E': return 14;
     case 'f': case 'F': return 15;
     }
+}
+
+/* Scale an integer VALUE in-place by an optional case-insensitive
+ * SUFFIX, defaulting to SCALE if suffix is NULL or empty (scale is
+ * typically 1 or 1024).  Recognized suffixes include 'b' or 'bytes',
+ * as well as power-of-two scaling via binary abbreviations ('KiB',
+ * 'MiB', ...) or their one-letter counterpart ('k', 'M', ...), and
+ * power-of-ten scaling via SI abbreviations ('KB', 'MB', ...).
+ * Ensure that the result does not exceed LIMIT.  Return 0 on success,
+ * -1 with error message raised on failure.  */
+int
+virScaleInteger(unsigned long long *value, const char *suffix,
+                unsigned long long scale, unsigned long long limit)
+{
+    if (!suffix || !*suffix) {
+        if (!scale) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("invalid scale %llu"), scale);
+            return -1;
+        }
+        suffix = "";
+    } else if (STRCASEEQ(suffix, "b") || STRCASEEQ(suffix, "byte") ||
+               STRCASEEQ(suffix, "bytes")) {
+        scale = 1;
+    } else {
+        int base;
+
+        if (!suffix[1] || STRCASEEQ(suffix + 1, "iB")) {
+            base = 1024;
+        } else if (c_tolower(suffix[1]) == 'b' && !suffix[2]) {
+            base = 1000;
+        } else {
+            virReportError(VIR_ERR_INVALID_ARG,
+                         _("unknown suffix '%s'"), suffix);
+            return -1;
+        }
+        scale = 1;
+        switch (c_tolower(*suffix)) {
+        case 'e':
+            scale *= base;
+            /* fallthrough */
+        case 'p':
+            scale *= base;
+            /* fallthrough */
+        case 't':
+            scale *= base;
+            /* fallthrough */
+        case 'g':
+            scale *= base;
+            /* fallthrough */
+        case 'm':
+            scale *= base;
+            /* fallthrough */
+        case 'k':
+            scale *= base;
+            break;
+        default:
+            virReportError(VIR_ERR_INVALID_ARG,
+                           _("unknown suffix '%s'"), suffix);
+            return -1;
+        }
+    }
+
+    if (*value && *value >= (limit / scale)) {
+        virReportError(VIR_ERR_OVERFLOW, _("value too large: %llu%s"),
+                       *value, suffix);
+        return -1;
+    }
+    *value *= scale;
+    return 0;
 }
 
 /**
@@ -1602,19 +1907,19 @@ virParseNumber(const char **str)
     const char *cur = *str;
 
     if ((*cur < '0') || (*cur > '9'))
-        return (-1);
+        return -1;
 
     while (c_isdigit(*cur)) {
         unsigned int c = *cur - '0';
 
         if ((ret > INT_MAX / 10) ||
             ((ret == INT_MAX / 10) && (c > INT_MAX % 10)))
-            return (-1);
+            return -1;
         ret = ret * 10 + c;
         cur++;
     }
     *str = cur;
-    return (ret);
+    return ret;
 }
 
 
@@ -1740,104 +2045,6 @@ virStrcpy(char *dest, const char *src, size_t destbytes)
     return virStrncpy(dest, src, strlen(src), destbytes);
 }
 
-/* Compare two MAC addresses, ignoring differences in case,
- * as well as leading zeros.
- */
-int
-virMacAddrCompare (const char *p, const char *q)
-{
-    unsigned char c, d;
-    do {
-        while (*p == '0' && c_isxdigit (p[1]))
-            ++p;
-        while (*q == '0' && c_isxdigit (q[1]))
-            ++q;
-        c = c_tolower (*p);
-        d = c_tolower (*q);
-
-        if (c == 0 || d == 0)
-            break;
-
-        ++p;
-        ++q;
-    } while (c == d);
-
-    if (UCHAR_MAX <= INT_MAX)
-        return c - d;
-
-    /* On machines where 'char' and 'int' are types of the same size, the
-       difference of two 'unsigned char' values - including the sign bit -
-       doesn't fit in an 'int'.  */
-    return (c > d ? 1 : c < d ? -1 : 0);
-}
-
-/**
- * virParseMacAddr:
- * @str: string representation of MAC address, e.g., "0:1E:FC:E:3a:CB"
- * @addr: 6-byte MAC address
- *
- * Parse a MAC address
- *
- * Return 0 upon success, or -1 in case of error.
- */
-int
-virParseMacAddr(const char* str, unsigned char *addr)
-{
-    int i;
-
-    errno = 0;
-    for (i = 0; i < VIR_MAC_BUFLEN; i++) {
-        char *end_ptr;
-        unsigned long result;
-
-        /* This is solely to avoid accepting the leading
-         * space or "+" that strtoul would otherwise accept.
-         */
-        if (!c_isxdigit(*str))
-            break;
-
-        result = strtoul(str, &end_ptr, 16);
-
-        if ((end_ptr - str) < 1 || 2 < (end_ptr - str) ||
-            (errno != 0) ||
-            (0xFF < result))
-            break;
-
-        addr[i] = (unsigned char) result;
-
-        if ((i == 5) && (*end_ptr == '\0'))
-            return 0;
-        if (*end_ptr != ':')
-            break;
-
-        str = end_ptr + 1;
-    }
-
-    return -1;
-}
-
-void virFormatMacAddr(const unsigned char *addr,
-                      char *str)
-{
-    snprintf(str, VIR_MAC_STRING_BUFLEN,
-             "%02X:%02X:%02X:%02X:%02X:%02X",
-             addr[0], addr[1], addr[2],
-             addr[3], addr[4], addr[5]);
-    str[VIR_MAC_STRING_BUFLEN-1] = '\0';
-}
-
-void virGenerateMacAddr(const unsigned char *prefix,
-                        unsigned char *addr)
-{
-    addr[0] = prefix[0];
-    addr[1] = prefix[1];
-    addr[2] = prefix[2];
-    addr[3] = virRandom(256);
-    addr[4] = virRandom(256);
-    addr[5] = virRandom(256);
-}
-
-
 int virEnumFromString(const char *const*types,
                       unsigned int ntypes,
                       const char *type)
@@ -1909,8 +2116,8 @@ char *virIndexToDiskName(int idx, const char *prefix)
     int i, k, offset;
 
     if (idx < 0) {
-        virUtilError(VIR_ERR_INTERNAL_ERROR,
-                     _("Disk index %d is negative"), idx);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Disk index %d is negative"), idx);
         return NULL;
     }
 
@@ -2076,36 +2283,6 @@ int virKillProcess(pid_t pid, int sig)
 }
 
 
-static char randomState[128];
-static struct random_data randomData;
-static virMutex randomLock;
-
-int virRandomInitialize(unsigned int seed)
-{
-    if (virMutexInit(&randomLock) < 0)
-        return -1;
-
-    if (initstate_r(seed,
-                    randomState,
-                    sizeof(randomState),
-                    &randomData) < 0)
-        return -1;
-
-    return 0;
-}
-
-int virRandom(int max)
-{
-    int32_t ret;
-
-    virMutexLock(&randomLock);
-    random_r(&randomData, &ret);
-    virMutexUnlock(&randomLock);
-
-    return (int) ((double)max * ((double)ret / (double)RAND_MAX));
-}
-
-
 #ifdef HAVE_GETPWUID_R
 enum {
     VIR_USER_ENT_DIRECTORY,
@@ -2166,14 +2343,119 @@ static char *virGetUserEnt(uid_t uid,
     return ret;
 }
 
-char *virGetUserDirectory(uid_t uid)
+static char *virGetGroupEnt(gid_t gid)
 {
-    return virGetUserEnt(uid, VIR_USER_ENT_DIRECTORY);
+    char *strbuf;
+    char *ret;
+    struct group grbuf;
+    struct group *gr = NULL;
+    long val = sysconf(_SC_GETGR_R_SIZE_MAX);
+    size_t strbuflen = val;
+    int rc;
+
+    /* sysconf is a hint; if it fails, fall back to a reasonable size */
+    if (val < 0)
+        strbuflen = 1024;
+
+    if (VIR_ALLOC_N(strbuf, strbuflen) < 0) {
+        virReportOOMError();
+        return NULL;
+    }
+
+    /*
+     * From the manpage (terrifying but true):
+     *
+     * ERRORS
+     *  0 or ENOENT or ESRCH or EBADF or EPERM or ...
+     *        The given name or gid was not found.
+     */
+    while ((rc = getgrgid_r(gid, &grbuf, strbuf, strbuflen, &gr)) == ERANGE) {
+        if (VIR_RESIZE_N(strbuf, strbuflen, strbuflen, strbuflen) < 0) {
+            virReportOOMError();
+            VIR_FREE(strbuf);
+            return NULL;
+        }
+    }
+    if (rc != 0 || gr == NULL) {
+        virReportSystemError(rc,
+                             _("Failed to find group record for gid '%u'"),
+                             (unsigned int) gid);
+        VIR_FREE(strbuf);
+        return NULL;
+    }
+
+    ret = strdup(gr->gr_name);
+
+    VIR_FREE(strbuf);
+    if (!ret)
+        virReportOOMError();
+
+    return ret;
+}
+
+char *virGetUserDirectory(void)
+{
+    return virGetUserEnt(geteuid(), VIR_USER_ENT_DIRECTORY);
+}
+
+static char *virGetXDGDirectory(const char *xdgenvname, const char *xdgdefdir)
+{
+    const char *path = getenv(xdgenvname);
+    char *ret = NULL;
+    char *home = virGetUserEnt(geteuid(), VIR_USER_ENT_DIRECTORY);
+
+    if (path && path[0]) {
+        if (virAsprintf(&ret, "%s/libvirt", path) < 0)
+            goto no_memory;
+    } else {
+        if (virAsprintf(&ret, "%s/%s/libvirt", home, xdgdefdir) < 0)
+            goto no_memory;
+    }
+
+ cleanup:
+    VIR_FREE(home);
+    return ret;
+ no_memory:
+    virReportOOMError();
+    goto cleanup;
+}
+
+char *virGetUserConfigDirectory(void)
+{
+    return virGetXDGDirectory("XDG_CONFIG_HOME", ".config");
+}
+
+char *virGetUserCacheDirectory(void)
+{
+     return virGetXDGDirectory("XDG_CACHE_HOME", ".cache");
+}
+
+char *virGetUserRuntimeDirectory(void)
+{
+    const char *path = getenv("XDG_RUNTIME_DIR");
+
+    if (!path || !path[0]) {
+        return virGetUserCacheDirectory();
+    } else {
+        char *ret;
+
+        if (virAsprintf(&ret, "%s/libvirt", path) < 0) {
+            virReportOOMError();
+            return NULL;
+        }
+
+        return ret;
+    }
 }
 
 char *virGetUserName(uid_t uid)
 {
     return virGetUserEnt(uid, VIR_USER_ENT_NAME);
+}
+
+char *virGetGroupName(gid_t gid)
+{
+    return virGetGroupEnt(gid);
 }
 
 
@@ -2348,22 +2630,195 @@ error:
     return -1;
 }
 
-#else /* HAVE_GETPWUID_R */
+#else /* ! HAVE_GETPWUID_R */
+
+# ifdef WIN32
+/* These methods are adapted from GLib2 under terms of LGPLv2+ */
+static int
+virGetWin32SpecialFolder(int csidl, char **path)
+{
+    char buf[MAX_PATH+1];
+    LPITEMIDLIST pidl = NULL;
+    int ret = 0;
+
+    *path = NULL;
+
+    if (SHGetSpecialFolderLocation(NULL, csidl, &pidl) == S_OK) {
+        if (SHGetPathFromIDList(pidl, buf)) {
+            if (!(*path = strdup(buf))) {
+                virReportOOMError();
+                ret = -1;
+            }
+        }
+        CoTaskMemFree(pidl);
+    }
+    return ret;
+}
+
+static int
+virGetWin32DirectoryRoot(char **path)
+{
+    char windowsdir[MAX_PATH];
+    int ret = 0;
+
+    *path = NULL;
+
+    if (GetWindowsDirectory(windowsdir, ARRAY_CARDINALITY(windowsdir)))
+    {
+        const char *tmp;
+        /* Usually X:\Windows, but in terminal server environments
+         * might be an UNC path, AFAIK.
+         */
+        tmp = virFileSkipRoot(windowsdir);
+        if (VIR_FILE_IS_DIR_SEPARATOR(tmp[-1]) &&
+            tmp[-2] != ':')
+            tmp--;
+
+        windowsdir[tmp - windowsdir] = '\0';
+    } else {
+        strcpy(windowsdir, "C:\\");
+    }
+
+    if (!(*path = strdup(windowsdir))) {
+        virReportOOMError();
+        ret = -1;
+    }
+
+    return ret;
+}
+
+
 
 char *
-virGetUserDirectory(uid_t uid ATTRIBUTE_UNUSED)
+virGetUserDirectory(void)
 {
-    virUtilError(VIR_ERR_INTERNAL_ERROR,
-                 "%s", _("virGetUserDirectory is not available"));
+    const char *dir;
+    char *ret;
+
+    dir = getenv("HOME");
+
+    /* Only believe HOME if it is an absolute path and exists */
+    if (dir) {
+        if (!virFileIsAbsPath(dir) ||
+            !virFileExists(dir))
+            dir = NULL;
+    }
+
+    /* In case HOME is Unix-style (it happens), convert it to
+     * Windows style.
+     */
+    if (dir) {
+        char *p;
+        while ((p = strchr (dir, '/')) != NULL)
+            *p = '\\';
+    }
+
+    if (!dir)
+        /* USERPROFILE is probably the closest equivalent to $HOME? */
+        dir = getenv("USERPROFILE");
+
+    if (dir) {
+        if (!(ret = strdup(dir))) {
+            virReportOOMError();
+            return NULL;
+        }
+    }
+
+    if (!ret &&
+        virGetWin32SpecialFolder(CSIDL_PROFILE, &ret) < 0)
+        return NULL;
+
+    if (!ret &&
+        virGetWin32DirectoryRoot(&ret) < 0)
+        return NULL;
+
+    if (!ret) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Unable to determine home directory"));
+        return NULL;
+    }
+
+    return ret;
+}
+
+char *
+virGetUserConfigDirectory(void)
+{
+    char *ret;
+    if (virGetWin32SpecialFolder(CSIDL_LOCAL_APPDATA, &ret) < 0)
+        return NULL;
+
+    if (!ret) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Unable to determine config directory"));
+        return NULL;
+    }
+    return ret;
+}
+
+char *
+virGetUserCacheDirectory(void)
+{
+    char *ret;
+    if (virGetWin32SpecialFolder(CSIDL_INTERNET_CACHE, &ret) < 0)
+        return NULL;
+
+    if (!ret) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Unable to determine config directory"));
+        return NULL;
+    }
+    return ret;
+}
+
+char *
+virGetUserRuntimeDirectory(void)
+{
+    return virGetUserCacheDirectory();
+}
+# else /* !HAVE_GETPWUID_R && !WIN32 */
+char *
+virGetUserDirectory(void)
+{
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   "%s", _("virGetUserDirectory is not available"));
 
     return NULL;
 }
 
 char *
+virGetUserConfigDirectory(void)
+{
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   "%s", _("virGetUserConfigDirectory is not available"));
+
+    return NULL;
+}
+
+char *
+virGetUserCacheDirectory(void)
+{
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   "%s", _("virGetUserCacheDirectory is not available"));
+
+    return NULL;
+}
+
+char *
+virGetUserRuntimeDirectory(void)
+{
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   "%s", _("virGetUserRuntimeDirectory is not available"));
+
+    return NULL;
+}
+# endif /* ! HAVE_GETPWUID_R && ! WIN32 */
+
+char *
 virGetUserName(uid_t uid ATTRIBUTE_UNUSED)
 {
-    virUtilError(VIR_ERR_INTERNAL_ERROR,
-                 "%s", _("virGetUserName is not available"));
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   "%s", _("virGetUserName is not available"));
 
     return NULL;
 }
@@ -2371,8 +2826,8 @@ virGetUserName(uid_t uid ATTRIBUTE_UNUSED)
 int virGetUserID(const char *name ATTRIBUTE_UNUSED,
                  uid_t *uid ATTRIBUTE_UNUSED)
 {
-    virUtilError(VIR_ERR_INTERNAL_ERROR,
-                 "%s", _("virGetUserID is not available"));
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   "%s", _("virGetUserID is not available"));
 
     return 0;
 }
@@ -2381,8 +2836,8 @@ int virGetUserID(const char *name ATTRIBUTE_UNUSED,
 int virGetGroupID(const char *name ATTRIBUTE_UNUSED,
                   gid_t *gid ATTRIBUTE_UNUSED)
 {
-    virUtilError(VIR_ERR_INTERNAL_ERROR,
-                 "%s", _("virGetGroupID is not available"));
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   "%s", _("virGetGroupID is not available"));
 
     return 0;
 }
@@ -2391,9 +2846,18 @@ int
 virSetUIDGID(uid_t uid ATTRIBUTE_UNUSED,
              gid_t gid ATTRIBUTE_UNUSED)
 {
-    virUtilError(VIR_ERR_INTERNAL_ERROR,
-                 "%s", _("virSetUIDGID is not available"));
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   "%s", _("virSetUIDGID is not available"));
     return -1;
+}
+
+char *
+virGetGroupName(gid_t gid ATTRIBUTE_UNUSED)
+{
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   "%s", _("virGetGroupName is not available"));
+
+    return NULL;
 }
 #endif /* HAVE_GETPWUID_R */
 
@@ -2515,56 +2979,3 @@ bool virIsDevMapperDevice(const char *dev_name ATTRIBUTE_UNUSED)
     return false;
 }
 #endif
-
-int virEmitXMLWarning(int fd,
-                      const char *name,
-                      const char *cmd) {
-    size_t len;
-    const char *prologue = "<!--\n\
-WARNING: THIS IS AN AUTO-GENERATED FILE. CHANGES TO IT ARE LIKELY TO BE \n\
-OVERWRITTEN AND LOST. Changes to this xml configuration should be made using:\n\
-  virsh ";
-    const char *epilogue = "\n\
-or other application using the libvirt API.\n\
--->\n\n";
-
-    if (fd < 0 || !name || !cmd) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    len = strlen(prologue);
-    if (safewrite(fd, prologue, len) != len)
-        return -1;
-
-    len = strlen(cmd);
-    if (safewrite(fd, cmd, len) != len)
-        return -1;
-
-    if (safewrite(fd, " ", 1) != 1)
-        return -1;
-
-    len = strlen(name);
-    if (safewrite(fd, name, len) != len)
-        return -1;
-
-    len = strlen(epilogue);
-    if (safewrite(fd, epilogue, len) != len)
-        return -1;
-
-    return 0;
-}
-
-void
-virTypedParameterArrayClear(virTypedParameterPtr params, int nparams)
-{
-    int i;
-
-    if (!params)
-        return;
-
-    for (i = 0; i < nparams; i++) {
-        if (params[i].type == VIR_TYPED_PARAM_STRING)
-            VIR_FREE(params[i].value.s);
-    }
-}

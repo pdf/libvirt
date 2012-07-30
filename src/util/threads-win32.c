@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -155,7 +155,10 @@ int virCondWait(virCondPtr c, virMutexPtr m)
         if (!event) {
             return -1;
         }
-        virThreadLocalSet(&virCondEvent, event);
+        if (virThreadLocalSet(&virCondEvent, event) < 0) {
+            CloseHandle(event);
+            return -1;
+        }
     }
 
     virMutexLock(&c->lock);
@@ -313,8 +316,15 @@ int virThreadCreate(virThreadPtr thread,
 void virThreadSelf(virThreadPtr thread)
 {
     virThreadPtr self = TlsGetValue(selfkey);
-    thread->thread = self->thread;
-    thread->joinable = self->joinable;
+
+    if (self == NULL) {
+        /* called on a thread not created by virThreadCreate, e.g. the main thread */
+        thread->thread = 0;
+        thread->joinable = false;
+    } else {
+        thread->thread = self->thread;
+        thread->joinable = self->joinable;
+    }
 }
 
 bool virThreadIsSelf(virThreadPtr thread)
@@ -333,7 +343,7 @@ int virThreadSelfID(void)
 /* For debugging use only; see comments in threads-pthread.c.  */
 int virThreadID(virThreadPtr thread)
 {
-    return (int)thread->thread;
+    return (intptr_t)thread->thread;
 }
 
 
@@ -376,7 +386,7 @@ void *virThreadLocalGet(virThreadLocalPtr l)
     return TlsGetValue(l->key);
 }
 
-void virThreadLocalSet(virThreadLocalPtr l, void *val)
+int virThreadLocalSet(virThreadLocalPtr l, void *val)
 {
-    TlsSetValue(l->key, val);
+    return TlsSetValue(l->key, val) == 0 ? -1 : 0;
 }

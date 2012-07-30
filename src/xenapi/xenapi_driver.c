@@ -1,6 +1,6 @@
 /*
  * xenapi_driver.c: Xen API driver.
- * Copyright (C) 2011 Red Hat, Inc.
+ * Copyright (C) 2011-2012 Red Hat, Inc.
  * Copyright (C) 2009, 2010 Citrix Ltd.
  *
  * This library is free software; you can redistribute it and/or
@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Sharadha Prabhakar <sharadha.prabhakar@citrix.com>
  */
@@ -25,28 +25,23 @@
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
-#include <libxml/uri.h>
 #include <curl/curl.h>
 #include <xen/api/xen_all.h>
 #include "internal.h"
 #include "domain_conf.h"
 #include "virterror_internal.h"
 #include "datatypes.h"
-#include "authhelper.h"
+#include "virauth.h"
 #include "util.h"
 #include "uuid.h"
 #include "memory.h"
 #include "buf.h"
+#include "viruri.h"
 #include "xenapi_driver.h"
 #include "xenapi_driver_private.h"
 #include "xenapi_utils.h"
-#include "ignore-value.h"
 
 #define VIR_FROM_THIS VIR_FROM_XENAPI
-
-#define xenapiError(code, ...)                                    \
-        virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,       \
-                             __FUNCTION__, __LINE__, __VA_ARGS__)
 
 
 static int xenapiDefaultConsoleType(const char *ostype)
@@ -138,7 +133,7 @@ xenapiOpen (virConnectPtr conn, virConnectAuthPtr auth,
             goto error;
         }
     } else {
-        username = virRequestUsername(auth, NULL, conn->uri->server);
+        username = virAuthGetUsername(conn, auth, "xen", NULL, conn->uri->server);
 
         if (username == NULL) {
             xenapiSessionErrorHandler(conn, VIR_ERR_AUTH_FAILED,
@@ -147,7 +142,7 @@ xenapiOpen (virConnectPtr conn, virConnectAuthPtr auth,
         }
     }
 
-    password = virRequestPassword(auth, username, conn->uri->server);
+    password = virAuthGetPassword(conn, auth, "xen", username, conn->uri->server);
 
     if (password == NULL) {
         xenapiSessionErrorHandler(conn, VIR_ERR_AUTH_FAILED,
@@ -783,12 +778,15 @@ xenapiDomainResume (virDomainPtr dom)
  * Returns 0 on success or -1 in case of error
  */
 static int
-xenapiDomainShutdown (virDomainPtr dom)
+xenapiDomainShutdownFlags(virDomainPtr dom, unsigned int flags)
 {
     /* vm.clean_shutdown */
     xen_vm vm;
     xen_vm_set *vms;
     xen_session *session = ((struct _xenapiPrivate *)(dom->conn->privateData))->session;
+
+    virCheckFlags(0, -1);
+
     if (xen_vm_get_by_name_label(session, &vms, dom->name) && vms->size > 0) {
         if (vms->size != 1) {
             xenapiSessionErrorHandler(dom->conn, VIR_ERR_INTERNAL_ERROR,
@@ -809,6 +807,12 @@ xenapiDomainShutdown (virDomainPtr dom)
     if (vms) xen_vm_set_free(vms);
     xenapiSessionErrorHandler(dom->conn, VIR_ERR_NO_DOMAIN, NULL);
     return -1;
+}
+
+static int
+xenapiDomainShutdown(virDomainPtr dom)
+{
+    return xenapiDomainShutdownFlags(dom, 0);
 }
 
 /*
@@ -946,7 +950,7 @@ xenapiDomainGetOSType (virDomainPtr dom)
  * Returns maximum static memory for VM on success
  * or 0 in case of error
  */
-static unsigned long
+static unsigned long long
 xenapiDomainGetMaxMemory (virDomainPtr dom)
 {
     int64_t mem_static_max = 0;
@@ -963,7 +967,7 @@ xenapiDomainGetMaxMemory (virDomainPtr dom)
         vm = vms->contents[0];
         xen_vm_get_memory_static_max(session, &mem_static_max, vm);
         xen_vm_set_free(vms);
-        return (unsigned long)(mem_static_max / 1024);
+        return mem_static_max / 1024;
     } else {
         if (vms) xen_vm_set_free(vms);
         xenapiSessionErrorHandler(dom->conn, VIR_ERR_NO_DOMAIN, NULL);
@@ -1115,8 +1119,8 @@ xenapiDomainSetVcpusFlags (virDomainPtr dom, unsigned int nvcpus,
     xen_session *session = ((struct _xenapiPrivate *)(dom->conn->privateData))->session;
 
     if (flags != VIR_DOMAIN_VCPU_LIVE) {
-        xenapiError(VIR_ERR_INVALID_ARG, _("unsupported flags: (0x%x)"),
-                    flags);
+        virReportError(VIR_ERR_INVALID_ARG, _("unsupported flags: (0x%x)"),
+                       flags);
         return -1;
     }
 
@@ -1285,8 +1289,8 @@ xenapiDomainGetVcpusFlags (virDomainPtr dom, unsigned int flags)
     xen_session *session = ((struct _xenapiPrivate *)(dom->conn->privateData))->session;
 
     if (flags != (VIR_DOMAIN_VCPU_LIVE | VIR_DOMAIN_VCPU_MAXIMUM)) {
-        xenapiError(VIR_ERR_INVALID_ARG, _("unsupported flags: (0x%x)"),
-                    flags);
+        virReportError(VIR_ERR_INVALID_ARG, _("unsupported flags: (0x%x)"),
+                       flags);
         return -1;
     }
 
@@ -1504,7 +1508,8 @@ xenapiDomainGetXMLDesc(virDomainPtr dom, unsigned int flags)
             }
             xen_vif_get_record(session, &vif_rec, vif);
             if (vif_rec != NULL) {
-                if (virParseMacAddr((const char *)vif_rec->mac,defPtr->nets[i]->mac) < 0)
+                if (virMacAddrParse((const char *)vif_rec->mac,
+                                    &defPtr->nets[i]->mac) < 0)
                     xenapiSessionErrorHandler(dom->conn, VIR_ERR_INTERNAL_ERROR,
                                               _("Unable to parse given mac address"));
                 xen_vif_record_free(vif_rec);
@@ -1928,6 +1933,7 @@ static virDriver xenapiDriver = {
     .domainSuspend = xenapiDomainSuspend, /* 0.8.0 */
     .domainResume = xenapiDomainResume, /* 0.8.0 */
     .domainShutdown = xenapiDomainShutdown, /* 0.8.0 */
+    .domainShutdownFlags = xenapiDomainShutdownFlags, /* 0.9.10 */
     .domainReboot = xenapiDomainReboot, /* 0.8.0 */
     .domainDestroy = xenapiDomainDestroy, /* 0.8.0 */
     .domainDestroyFlags = xenapiDomainDestroyFlags, /* 0.9.4 */

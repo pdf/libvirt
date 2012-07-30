@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Richard W.M. Jones <rjones@redhat.com>
  * Author: Markus Groß <gross@univention.de>
@@ -29,6 +29,7 @@
 
 # include <stdint.h>
 # include <xen/xen.h>
+# include "xen_sxpr.h"
 
 /* xen-unstable changeset 19788 removed MAX_VIRT_CPUS from public
  * headers.  Its semantic was retained with XEN_LEGACY_MAX_VCPUS.
@@ -40,10 +41,10 @@
 
 # ifdef WITH_RHEL5_API
 #  define XEND_CONFIG_MAX_VERS_NET_TYPE_IOEMU 0
-#  define XEND_CONFIG_MIN_VERS_PVFB_NEWCONF 2
+#  define XEND_CONFIG_MIN_VERS_PVFB_NEWCONF XEND_CONFIG_VERSION_3_0_3
 # else
-#  define XEND_CONFIG_MAX_VERS_NET_TYPE_IOEMU 3
-#  define XEND_CONFIG_MIN_VERS_PVFB_NEWCONF 3
+#  define XEND_CONFIG_MAX_VERS_NET_TYPE_IOEMU XEND_CONFIG_VERSION_3_0_4
+#  define XEND_CONFIG_MIN_VERS_PVFB_NEWCONF XEND_CONFIG_VERSION_3_0_4
 # endif
 
 # define MIN_XEN_GUEST_SIZE 64  /* 64 megabytes */
@@ -55,9 +56,5 @@
 # endif
 
 # define VIR_FROM_THIS VIR_FROM_NONE
-
-# define XENXS_ERROR(code, ...)                                               \
-    virReportErrorHelper(VIR_FROM_NONE, code, __FILE__, __FUNCTION__,         \
-                         __LINE__, __VA_ARGS__)
 
 #endif /* __VIR_XENXS_PRIVATE_H__ */

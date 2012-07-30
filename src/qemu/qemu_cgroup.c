@@ -1,7 +1,7 @@
 /*
  * qemu_cgroup.c: QEMU cgroup management
  *
- * Copyright (C) 2006-2011 Red Hat, Inc.
+ * Copyright (C) 2006-2012 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -96,6 +96,7 @@ int qemuSetupDiskCgroup(struct qemud_driver *driver,
     return virDomainDiskDefForeachPath(disk,
                                        driver->allowDiskFormatProbing,
                                        true,
+                                       driver->user, driver->group,
                                        qemuSetupDiskPathAllow,
                                        &data);
 }
@@ -137,6 +138,7 @@ int qemuTeardownDiskCgroup(struct qemud_driver *driver,
     return virDomainDiskDefForeachPath(disk,
                                        driver->allowDiskFormatProbing,
                                        true,
+                                       driver->user, driver->group,
                                        qemuTeardownDiskPathDeny,
                                        &data);
 }
@@ -192,7 +194,8 @@ int qemuSetupHostUsbDeviceCgroup(usbDevice *dev ATTRIBUTE_UNUSED,
 }
 
 int qemuSetupCgroup(struct qemud_driver *driver,
-                    virDomainObjPtr vm)
+                    virDomainObjPtr vm,
+                    char *nodemask)
 {
     virCgroupPtr cgroup = NULL;
     int rc;
@@ -307,8 +310,8 @@ int qemuSetupCgroup(struct qemud_driver *driver,
                 goto cleanup;
             }
         } else {
-            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                            _("Block I/O tuning is not available on this host"));
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                           _("Block I/O tuning is not available on this host"));
             goto cleanup;
         }
     }
@@ -330,8 +333,8 @@ int qemuSetupCgroup(struct qemud_driver *driver,
                 }
             }
         } else {
-            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                            _("Block I/O tuning is not available on this host"));
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                           _("Block I/O tuning is not available on this host"));
             goto cleanup;
         }
     }
@@ -369,8 +372,8 @@ int qemuSetupCgroup(struct qemud_driver *driver,
                 }
             }
         } else {
-            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                            _("Memory cgroup is not available on this host"));
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                           _("Memory cgroup is not available on this host"));
         }
     }
 
@@ -384,18 +387,26 @@ int qemuSetupCgroup(struct qemud_driver *driver,
                 goto cleanup;
             }
         } else {
-            qemuReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                            _("CPU tuning is not available on this host"));
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                           _("CPU tuning is not available on this host"));
         }
     }
 
-    if (vm->def->numatune.memory.nodemask &&
+    if ((vm->def->numatune.memory.nodemask ||
+         (vm->def->numatune.memory.placement_mode ==
+          VIR_DOMAIN_NUMATUNE_MEM_PLACEMENT_MODE_AUTO)) &&
         vm->def->numatune.memory.mode == VIR_DOMAIN_NUMATUNE_MEM_STRICT &&
         qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_CPUSET)) {
-        char *mask = virDomainCpuSetFormat(vm->def->numatune.memory.nodemask, VIR_DOMAIN_CPUMASK_LEN);
+        char *mask = NULL;
+        if (vm->def->numatune.memory.placement_mode ==
+            VIR_DOMAIN_NUMATUNE_MEM_PLACEMENT_MODE_AUTO)
+            mask = virDomainCpuSetFormat(nodemask, VIR_DOMAIN_CPUMASK_LEN);
+        else
+            mask = virDomainCpuSetFormat(vm->def->numatune.memory.nodemask,
+                                         VIR_DOMAIN_CPUMASK_LEN);
         if (!mask) {
-            qemuReportError(VIR_ERR_INTERNAL_ERROR,
-                            _("failed to convert memory nodemask"));
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("failed to convert memory nodemask"));
             goto cleanup;
         }
 
@@ -461,9 +472,8 @@ cleanup:
     if (period) {
         rc = virCgroupSetCpuCfsPeriod(cgroup, old_period);
         if (rc < 0)
-            virReportSystemError(-rc,
-                                 _("%s"),
-                                 "Unable to rollback cpu bandwidth period");
+            virReportSystemError(-rc, "%s",
+                                 _("Unable to rollback cpu bandwidth period"));
     }
 
     return -1;
@@ -496,9 +506,8 @@ int qemuSetupCgroupForVcpu(struct qemud_driver *driver, virDomainObjPtr vm)
         if (qemuCgroupControllerActive(driver, VIR_CGROUP_CONTROLLER_CPU)) {
             /* Ensure that we can multiply by vcpus without overflowing. */
             if (quota > LLONG_MAX / vm->def->vcpus) {
-                virReportSystemError(EINVAL,
-                                     _("%s"),
-                                     "Unable to set cpu bandwidth quota");
+                virReportSystemError(EINVAL, "%s",
+                                     _("Unable to set cpu bandwidth quota"));
                 goto cleanup;
             }
 
@@ -576,9 +585,9 @@ int qemuRemoveCgroup(struct qemud_driver *driver,
     rc = virCgroupForDomain(driver->cgroup, vm->def->name, &cgroup, 0);
     if (rc != 0) {
         if (!quiet)
-            qemuReportError(VIR_ERR_INTERNAL_ERROR,
-                            _("Unable to find cgroup for %s"),
-                            vm->def->name);
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("Unable to find cgroup for %s"),
+                           vm->def->name);
         return rc;
     }
 

@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -31,9 +31,6 @@
 #include "threads.h"
 
 #define VIR_FROM_THIS VIR_FROM_RPC
-#define virNetError(code, ...)                                    \
-    virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,           \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
 
 struct _virNetClientStream {
     virMutex lock;
@@ -147,8 +144,8 @@ virNetClientStreamPtr virNetClientStreamNew(virNetClientProgramPtr prog,
     st->serial = serial;
 
     if (virMutexInit(&st->lock) < 0) {
-        virNetError(VIR_ERR_INTERNAL_ERROR, "%s",
-                    _("cannot initialize mutex"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("cannot initialize mutex"));
         VIR_FREE(st);
         return NULL;
     }
@@ -452,8 +449,8 @@ int virNetClientStreamEventAddCallback(virNetClientStreamPtr st,
 
     virMutexLock(&st->lock);
     if (st->cb) {
-        virNetError(VIR_ERR_INTERNAL_ERROR,
-                    "%s", _("multiple stream callbacks not supported"));
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       "%s", _("multiple stream callbacks not supported"));
         goto cleanup;
     }
 
@@ -488,8 +485,8 @@ int virNetClientStreamEventUpdateCallback(virNetClientStreamPtr st,
 
     virMutexLock(&st->lock);
     if (!st->cb) {
-        virNetError(VIR_ERR_INTERNAL_ERROR,
-                    "%s", _("no stream callback registered"));
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       "%s", _("no stream callback registered"));
         goto cleanup;
     }
 
@@ -508,10 +505,10 @@ int virNetClientStreamEventRemoveCallback(virNetClientStreamPtr st)
 {
     int ret = -1;
 
-    virMutexUnlock(&st->lock);
+    virMutexLock(&st->lock);
     if (!st->cb) {
-        virNetError(VIR_ERR_INTERNAL_ERROR,
-                    "%s", _("no stream callback registered"));
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       "%s", _("no stream callback registered"));
         goto cleanup;
     }
 

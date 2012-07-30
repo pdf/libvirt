@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *     Daniel Veillard <veillard@redhat.com>
@@ -30,9 +30,6 @@
 #include <netdb.h>
 
 #define VIR_FROM_THIS VIR_FROM_NONE
-#define virSocketError(code, ...)                                       \
-    virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,                 \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
 
 /*
  * Helpers to extract the IP arrays from the virSocketAddrPtr
@@ -48,7 +45,7 @@ static int virSocketAddrGetIPv4Addr(virSocketAddrPtr addr, virSocketAddrIPv4Ptr 
     int i;
 
     if ((addr == NULL) || (tab == NULL) || (addr->data.stor.ss_family != AF_INET))
-        return(-1);
+        return -1;
 
     val = ntohl(addr->data.inet4.sin_addr.s_addr);
 
@@ -57,21 +54,21 @@ static int virSocketAddrGetIPv4Addr(virSocketAddrPtr addr, virSocketAddrIPv4Ptr 
         val >>= 8;
     }
 
-    return(0);
+    return 0;
 }
 
 static int virSocketAddrGetIPv6Addr(virSocketAddrPtr addr, virSocketAddrIPv6Ptr tab) {
     int i;
 
     if ((addr == NULL) || (tab == NULL) || (addr->data.stor.ss_family != AF_INET6))
-        return(-1);
+        return -1;
 
     for (i = 0;i < 8;i++) {
         (*tab)[i] = ((addr->data.inet6.sin6_addr.s6_addr[2 * i] << 8) |
                      addr->data.inet6.sin6_addr.s6_addr[2 * i + 1]);
     }
 
-    return(0);
+    return 0;
 }
 
 /**
@@ -92,7 +89,7 @@ int virSocketAddrParse(virSocketAddrPtr addr, const char *val, int family) {
     int err;
 
     if (val == NULL) {
-        virSocketError(VIR_ERR_INVALID_ARG, "%s", _("Missing address"));
+        virReportError(VIR_ERR_INVALID_ARG, "%s", _("Missing address"));
         return -1;
     }
 
@@ -100,14 +97,14 @@ int virSocketAddrParse(virSocketAddrPtr addr, const char *val, int family) {
     hints.ai_family = family;
     hints.ai_flags = AI_NUMERICHOST;
     if ((err = getaddrinfo(val, NULL, &hints, &res)) != 0) {
-        virSocketError(VIR_ERR_SYSTEM_ERROR,
+        virReportError(VIR_ERR_SYSTEM_ERROR,
                        _("Cannot parse socket address '%s': %s"),
                        val, gai_strerror(err));
         return -1;
     }
 
     if (res == NULL) {
-        virSocketError(VIR_ERR_SYSTEM_ERROR,
+        virReportError(VIR_ERR_SYSTEM_ERROR,
                        _("No socket addresses found for '%s'"),
                        val);
         return -1;
@@ -120,7 +117,7 @@ int virSocketAddrParse(virSocketAddrPtr addr, const char *val, int family) {
     }
 
     freeaddrinfo(res);
-    return(len);
+    return len;
 }
 
 /*
@@ -149,6 +146,51 @@ virSocketAddrParseIPv4(virSocketAddrPtr addr, const char *val) {
 int
 virSocketAddrParseIPv6(virSocketAddrPtr addr, const char *val) {
     return virSocketAddrParse(addr, val, AF_INET6);
+}
+
+/*
+ * virSocketAddrSetIPv4Addr:
+ * @addr: the location to store the result
+ * @val: the 32bit integer in host byte order representing the IPv4 address
+ *
+ * Set the IPv4 address given an integer in host order. This function does not
+ * touch any previously set port.
+ */
+void
+virSocketAddrSetIPv4Addr(virSocketAddrPtr addr, uint32_t val)
+{
+    addr->data.stor.ss_family = AF_INET;
+    addr->data.inet4.sin_addr.s_addr = htonl(val);
+    addr->len = sizeof(struct sockaddr_in);
+}
+
+/*
+ * virSocketAddrEqual:
+ * @s1: the location of the one IP address
+ * @s2: the location of the other IP address
+ *
+ * Compare two IP addresses for equality. Two addresses are equal
+ * if their IP addresses and ports are equal.
+ */
+bool
+virSocketAddrEqual(const virSocketAddrPtr s1, const virSocketAddrPtr s2)
+{
+    if (s1->data.stor.ss_family != s2->data.stor.ss_family)
+        return false;
+
+    switch (s1->data.stor.ss_family) {
+    case AF_INET:
+        return (memcmp(&s1->data.inet4.sin_addr.s_addr,
+                       &s2->data.inet4.sin_addr.s_addr,
+                       sizeof(s1->data.inet4.sin_addr.s_addr)) == 0 &&
+                s1->data.inet4.sin_port == s2->data.inet4.sin_port);
+    case AF_INET6:
+        return (memcmp(&s1->data.inet6.sin6_addr.s6_addr,
+                       &s2->data.inet6.sin6_addr.s6_addr,
+                       sizeof(s1->data.inet6.sin6_addr.s6_addr)) == 0 &&
+                s1->data.inet6.sin6_port == s2->data.inet6.sin6_port);
+    }
+    return false;
 }
 
 /*
@@ -185,7 +227,7 @@ virSocketAddrFormatFull(virSocketAddrPtr addr,
     int err;
 
     if (addr == NULL) {
-        virSocketError(VIR_ERR_INVALID_ARG, "%s", _("Missing address"));
+        virReportError(VIR_ERR_INVALID_ARG, "%s", _("Missing address"));
         return NULL;
     }
 
@@ -208,7 +250,7 @@ virSocketAddrFormatFull(virSocketAddrPtr addr,
                            host, sizeof(host),
                            port, sizeof(port),
                            NI_NUMERICHOST | NI_NUMERICSERV)) != 0) {
-        virSocketError(VIR_ERR_SYSTEM_ERROR,
+        virReportError(VIR_ERR_SYSTEM_ERROR,
                        _("Cannot convert socket address to string: %s"),
                        gai_strerror(err));
         return NULL;
@@ -444,13 +486,13 @@ int virSocketAddrCheckNetmask(virSocketAddrPtr addr1, virSocketAddrPtr addr2,
     int i;
 
     if ((addr1 == NULL) || (addr2 == NULL) || (netmask == NULL))
-        return(-1);
+        return -1;
     if ((addr1->data.stor.ss_family != addr2->data.stor.ss_family) ||
         (addr1->data.stor.ss_family != netmask->data.stor.ss_family))
-        return(-1);
+        return -1;
 
     if (virSocketAddrIsNetmask(netmask) != 0)
-        return(-1);
+        return -1;
 
     if (addr1->data.stor.ss_family == AF_INET) {
         virSocketAddrIPv4 t1, t2, tm;
@@ -458,11 +500,11 @@ int virSocketAddrCheckNetmask(virSocketAddrPtr addr1, virSocketAddrPtr addr2,
         if ((virSocketAddrGetIPv4Addr(addr1, &t1) < 0) ||
             (virSocketAddrGetIPv4Addr(addr2, &t2) < 0) ||
             (virSocketAddrGetIPv4Addr(netmask, &tm) < 0))
-            return(-1);
+            return -1;
 
         for (i = 0;i < 4;i++) {
             if ((t1[i] & tm[i]) != (t2[i] & tm[i]))
-                return(0);
+                return 0;
         }
 
     } else if (addr1->data.stor.ss_family == AF_INET6) {
@@ -471,17 +513,17 @@ int virSocketAddrCheckNetmask(virSocketAddrPtr addr1, virSocketAddrPtr addr2,
         if ((virSocketAddrGetIPv6Addr(addr1, &t1) < 0) ||
             (virSocketAddrGetIPv6Addr(addr2, &t2) < 0) ||
             (virSocketAddrGetIPv6Addr(netmask, &tm) < 0))
-            return(-1);
+            return -1;
 
         for (i = 0;i < 8;i++) {
             if ((t1[i] & tm[i]) != (t2[i] & tm[i]))
-                return(0);
+                return 0;
         }
 
     } else {
-        return(-1);
+        return -1;
     }
-    return(1);
+    return 1;
 }
 
 /**
@@ -500,44 +542,44 @@ int virSocketAddrGetRange(virSocketAddrPtr start, virSocketAddrPtr end) {
     int ret = 0, i;
 
     if ((start == NULL) || (end == NULL))
-        return(-1);
+        return -1;
     if (start->data.stor.ss_family != end->data.stor.ss_family)
-        return(-1);
+        return -1;
 
     if (start->data.stor.ss_family == AF_INET) {
         virSocketAddrIPv4 t1, t2;
 
         if ((virSocketAddrGetIPv4Addr(start, &t1) < 0) ||
             (virSocketAddrGetIPv4Addr(end, &t2) < 0))
-            return(-1);
+            return -1;
 
         for (i = 0;i < 2;i++) {
             if (t1[i] != t2[i])
-                return(-1);
+                return -1;
         }
         ret = (t2[2] - t1[2]) * 256 + (t2[3] - t1[3]);
         if (ret < 0)
-            return(-1);
+            return -1;
         ret++;
     } else if (start->data.stor.ss_family == AF_INET6) {
         virSocketAddrIPv6 t1, t2;
 
         if ((virSocketAddrGetIPv6Addr(start, &t1) < 0) ||
             (virSocketAddrGetIPv6Addr(end, &t2) < 0))
-            return(-1);
+            return -1;
 
         for (i = 0;i < 7;i++) {
             if (t1[i] != t2[i])
-                return(-1);
+                return -1;
         }
         ret = t2[7] - t1[7];
         if (ret < 0)
-            return(-1);
+            return -1;
         ret++;
     } else {
-        return(-1);
+        return -1;
     }
-    return(ret);
+    return ret;
 }
 
 

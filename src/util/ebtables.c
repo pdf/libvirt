@@ -13,8 +13,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * based on iptables.c
  * Authors:
@@ -114,7 +114,7 @@ ebtRulesRemove(ebtRules *rules,
 
     memmove(&rules->rules[i],
             &rules->rules[i+1],
-            (rules->nrules - i - 1) * sizeof (ebtRule));
+            (rules->nrules - i - 1) * sizeof(ebtRule));
 
     rules->nrules--;
 
@@ -392,15 +392,15 @@ ebtablesForwardAllowIn(ebtablesContext *ctx,
 int
 ebtablesAddForwardAllowIn(ebtablesContext *ctx,
                           const char *iface,
-                          const unsigned char *mac)
+                          const virMacAddrPtr mac)
 {
     char *macaddr;
 
     if (virAsprintf(&macaddr,
                     "%02x:%02x:%02x:%02x:%02x:%02x",
-                    mac[0], mac[1],
-                    mac[2], mac[3],
-                    mac[4], mac[5]) < 0) {
+                    mac->addr[0], mac->addr[1],
+                    mac->addr[2], mac->addr[3],
+                    mac->addr[4], mac->addr[5]) < 0) {
         return -1;
     }
     return ebtablesForwardAllowIn(ctx, iface, macaddr, ADD);
@@ -421,15 +421,15 @@ ebtablesAddForwardAllowIn(ebtablesContext *ctx,
 int
 ebtablesRemoveForwardAllowIn(ebtablesContext *ctx,
                              const char *iface,
-                             const unsigned char *mac)
+                             const virMacAddrPtr mac)
 {
     char *macaddr;
 
     if (virAsprintf(&macaddr,
                     "%02x:%02x:%02x:%02x:%02x:%02x",
-                    mac[0], mac[1],
-                    mac[2], mac[3],
-                    mac[4], mac[5]) < 0) {
+                    mac->addr[0], mac->addr[1],
+                    mac->addr[2], mac->addr[3],
+                    mac->addr[4], mac->addr[5]) < 0) {
        return -1;
     }
     return ebtablesForwardAllowIn(ctx, iface, macaddr, REMOVE);

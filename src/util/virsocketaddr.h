@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *     Daniel Veillard <veillard@redhat.com>
@@ -66,6 +66,8 @@ int virSocketAddrParseIPv4(virSocketAddrPtr addr,
 int virSocketAddrParseIPv6(virSocketAddrPtr addr,
                            const char *val);
 
+void virSocketAddrSetIPv4Addr(const virSocketAddrPtr s, uint32_t addr);
+
 char * virSocketAddrFormat(virSocketAddrPtr addr);
 char * virSocketAddrFormatFull(virSocketAddrPtr addr,
                                bool withService,
@@ -100,5 +102,7 @@ int virSocketAddrGetNumNetmaskBits(const virSocketAddrPtr netmask);
 int virSocketAddrPrefixToNetmask(unsigned int prefix,
                                  virSocketAddrPtr netmask,
                                  int family);
+bool virSocketAddrEqual(const virSocketAddrPtr s1,
+                        const virSocketAddrPtr s2);
 
 #endif /* __VIR_SOCKETADDR_H__ */

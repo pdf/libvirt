@@ -1,7 +1,7 @@
 /*
  * virfile.c: safer file handling
  *
- * Copyright (C) 2010-2011 Red Hat, Inc.
+ * Copyright (C) 2010-2012 Red Hat, Inc.
  * Copyright (C) 2010 IBM Corporation
  * Copyright (C) 2010 Stefan Berger
  * Copyright (C) 2010 Eric Blake
@@ -17,8 +17,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -30,31 +30,52 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
+
+#ifdef __linux__
+# include <linux/loop.h>
+# include <sys/ioctl.h>
+#endif
 
 #include "command.h"
 #include "configmake.h"
 #include "memory.h"
 #include "virterror_internal.h"
+#include "logging.h"
 
 #define VIR_FROM_THIS VIR_FROM_NONE
-#define virFileError(code, ...)                                   \
-    virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,           \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
 
-
-int virFileClose(int *fdptr, bool preserve_errno)
+int virFileClose(int *fdptr, virFileCloseFlags flags)
 {
     int saved_errno = 0;
     int rc = 0;
 
-    if (*fdptr >= 0) {
-        if (preserve_errno)
-            saved_errno = errno;
-        rc = close(*fdptr);
-        *fdptr = -1;
-        if (preserve_errno)
-            errno = saved_errno;
+    if (*fdptr < 0)
+        return 0;
+
+    if (flags & VIR_FILE_CLOSE_PRESERVE_ERRNO)
+        saved_errno = errno;
+
+    rc = close(*fdptr);
+
+    if (!(flags & VIR_FILE_CLOSE_DONT_LOG)) {
+        if (rc < 0) {
+            if (errno == EBADF) {
+                if (!(flags & VIR_FILE_CLOSE_IGNORE_EBADF))
+                    VIR_WARN("Tried to close invalid fd %d", *fdptr);
+            } else {
+                char ebuf[1024] ATTRIBUTE_UNUSED;
+                VIR_DEBUG("Failed to close fd %d: %s",
+                          *fdptr, virStrerror(errno, ebuf, sizeof(ebuf)));
+            }
+        } else {
+            VIR_DEBUG("Closed fd %d", *fdptr);
+        }
     }
+    *fdptr = -1;
+
+    if (flags & VIR_FILE_CLOSE_PRESERVE_ERRNO)
+        errno = saved_errno;
 
     return rc;
 }
@@ -94,12 +115,6 @@ FILE *virFileFdopen(int *fdptr, const char *mode)
 }
 
 
-/* Opaque type for managing a wrapper around an O_DIRECT fd.  For now,
- * read-write is not supported, just a single direction.  */
-struct _virFileDirectFd {
-    virCommandPtr cmd; /* Child iohelper process to do the I/O.  */
-};
-
 /**
  * virFileDirectFdFlag:
  *
@@ -116,38 +131,64 @@ virFileDirectFdFlag(void)
     return O_DIRECT ? O_DIRECT : -1;
 }
 
+/* Opaque type for managing a wrapper around a fd.  For now,
+ * read-write is not supported, just a single direction.  */
+struct _virFileWrapperFd {
+    virCommandPtr cmd; /* Child iohelper process to do the I/O.  */
+};
+
+#ifndef WIN32
 /**
- * virFileDirectFdNew:
+ * virFileWrapperFdNew:
  * @fd: pointer to fd to wrap
  * @name: name of fd, for diagnostics
+ * @flags: bitwise-OR of virFileWrapperFdFlags
  *
- * Update *FD (created with virFileDirectFdFlag() among the flags to
- * open()) to ensure that all I/O to that file will bypass the system
- * cache.  This must be called after open() and optional fchown() or
- * fchmod(), but before any seek or I/O, and only on seekable fd.  The
- * file must be O_RDONLY (to read the entire existing file) or
- * O_WRONLY (to write to an empty file).  In some cases, *FD is
- * changed to a non-seekable pipe; in this case, the caller must not
- * do anything further with the original fd.
+ * Update @fd so that it meets parameters requested by @flags.
+ *
+ * If VIR_FILE_WRAPPER_BYPASS_CACHE bit is set in @flags, @fd will be updated
+ * in a way that all I/O to that file will bypass the system cache.  The
+ * original fd must have been created with virFileDirectFdFlag() among the
+ * flags to open().
+ *
+ * If VIR_FILE_WRAPPER_NON_BLOCKING bit is set in @flags, @fd will be updated
+ * to ensure it properly supports non-blocking I/O, i.e., it will report
+ * EAGAIN.
+ *
+ * This must be called after open() and optional fchown() or fchmod(), but
+ * before any seek or I/O, and only on seekable fd.  The file must be O_RDONLY
+ * (to read the entire existing file) or O_WRONLY (to write to an empty file).
+ * In some cases, @fd is changed to a non-seekable pipe; in this case, the
+ * caller must not do anything further with the original fd.
  *
  * On success, the new wrapper object is returned, which must be later
- * freed with virFileDirectFdFree().  On failure, *FD is unchanged, an
+ * freed with virFileWrapperFdFree().  On failure, @fd is unchanged, an
  * error message is output, and NULL is returned.
  */
-virFileDirectFdPtr
-virFileDirectFdNew(int *fd, const char *name)
+virFileWrapperFdPtr
+virFileWrapperFdNew(int *fd, const char *name, unsigned int flags)
 {
-    virFileDirectFdPtr ret = NULL;
+    virFileWrapperFdPtr ret = NULL;
     bool output = false;
     int pipefd[2] = { -1, -1 };
     int mode = -1;
 
-    /* XXX support posix_fadvise rather than spawning a child, if the
-     * kernel support for that is decent enough.  */
+    if (!flags) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("invalid use with no flags"));
+        return NULL;
+    }
 
-    if (!O_DIRECT) {
-        virFileError(VIR_ERR_INTERNAL_ERROR, "%s",
-                     _("O_DIRECT unsupported on this platform"));
+    /* XXX support posix_fadvise rather than O_DIRECT, if the kernel support
+     * for that is decent enough. In that case, we will also need to
+     * explicitly support VIR_FILE_WRAPPER_NON_BLOCKING since
+     * VIR_FILE_WRAPPER_BYPASS_CACHE alone will no longer require spawning
+     * iohelper.
+     */
+
+    if ((flags & VIR_FILE_WRAPPER_BYPASS_CACHE) && !O_DIRECT) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("O_DIRECT unsupported on this platform"));
         return NULL;
     }
 
@@ -156,28 +197,23 @@ virFileDirectFdNew(int *fd, const char *name)
         return NULL;
     }
 
-#ifdef F_GETFL
-    /* Mingw lacks F_GETFL, but it also lacks O_DIRECT so didn't get
-     * here in the first place.  All other platforms reach this
-     * line.  */
     mode = fcntl(*fd, F_GETFL);
-#endif
 
     if (mode < 0) {
-        virFileError(VIR_ERR_INTERNAL_ERROR, _("invalid fd %d for %s"),
-                     *fd, name);
+        virReportError(VIR_ERR_INTERNAL_ERROR, _("invalid fd %d for %s"),
+                       *fd, name);
         goto error;
     } else if ((mode & O_ACCMODE) == O_WRONLY) {
         output = true;
     } else if ((mode & O_ACCMODE) != O_RDONLY) {
-        virFileError(VIR_ERR_INTERNAL_ERROR, _("unexpected mode %x for %s"),
-                     mode & O_ACCMODE, name);
+        virReportError(VIR_ERR_INTERNAL_ERROR, _("unexpected mode %x for %s"),
+                       mode & O_ACCMODE, name);
         goto error;
     }
 
     if (pipe2(pipefd, O_CLOEXEC) < 0) {
-        virFileError(VIR_ERR_INTERNAL_ERROR,
-                     _("unable to create pipe for %s"), name);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("unable to create pipe for %s"), name);
         goto error;
     }
 
@@ -197,7 +233,7 @@ virFileDirectFdNew(int *fd, const char *name)
         goto error;
 
     if (VIR_CLOSE(pipefd[!output]) < 0) {
-        virFileError(VIR_ERR_INTERNAL_ERROR, "%s", _("unable to close pipe"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _("unable to close pipe"));
         goto error;
     }
 
@@ -208,48 +244,59 @@ virFileDirectFdNew(int *fd, const char *name)
 error:
     VIR_FORCE_CLOSE(pipefd[0]);
     VIR_FORCE_CLOSE(pipefd[1]);
-    virFileDirectFdFree(ret);
+    virFileWrapperFdFree(ret);
     return NULL;
 }
+#else
+virFileWrapperFdPtr
+virFileWrapperFdNew(int *fd ATTRIBUTE_UNUSED,
+                    const char *name ATTRIBUTE_UNUSED,
+                    unsigned int fdflags ATTRIBUTE_UNUSED)
+{
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                 _("virFileWrapperFd unsupported on this platform"));
+    return NULL;
+}
+#endif
 
 /**
- * virFileDirectFdClose:
- * @dfd: direct fd wrapper, or NULL
+ * virFileWrapperFdClose:
+ * @wfd: fd wrapper, or NULL
  *
- * If DFD is valid, then ensure that I/O has completed, which may
+ * If @wfd is valid, then ensure that I/O has completed, which may
  * include reaping a child process.  Return 0 if all data for the
  * wrapped fd is complete, or -1 on failure with an error emitted.
- * This function intentionally returns 0 when DFD is NULL, so that
- * callers can conditionally create a virFileDirectFd wrapper but
+ * This function intentionally returns 0 when @wfd is NULL, so that
+ * callers can conditionally create a virFileWrapperFd wrapper but
  * unconditionally call the cleanup code.  To avoid deadlock, only
- * call this after closing the fd resulting from virFileDirectFdNew().
+ * call this after closing the fd resulting from virFileWrapperFdNew().
  */
 int
-virFileDirectFdClose(virFileDirectFdPtr dfd)
+virFileWrapperFdClose(virFileWrapperFdPtr wfd)
 {
-    if (!dfd)
+    if (!wfd)
         return 0;
 
-    return virCommandWait(dfd->cmd, NULL);
+    return virCommandWait(wfd->cmd, NULL);
 }
 
 /**
- * virFileDirectFdFree:
- * @dfd: direct fd wrapper, or NULL
+ * virFileWrapperFdFree:
+ * @wfd: fd wrapper, or NULL
  *
- * Free all remaining resources associated with DFD.  If
- * virFileDirectFdClose() was not previously called, then this may
+ * Free all remaining resources associated with @wfd.  If
+ * virFileWrapperFdClose() was not previously called, then this may
  * discard some previous I/O.  To avoid deadlock, only call this after
- * closing the fd resulting from virFileDirectFdNew().
+ * closing the fd resulting from virFileWrapperFdNew().
  */
 void
-virFileDirectFdFree(virFileDirectFdPtr dfd)
+virFileWrapperFdFree(virFileWrapperFdPtr wfd)
 {
-    if (!dfd)
+    if (!wfd)
         return;
 
-    virCommandFree(dfd->cmd);
-    VIR_FREE(dfd);
+    virCommandFree(wfd->cmd);
+    VIR_FREE(wfd);
 }
 
 
@@ -390,3 +437,194 @@ cleanup:
     }
     return ret;
 }
+
+
+int virFileTouch(const char *path, mode_t mode)
+{
+    int fd = -1;
+
+    if ((fd = open(path, O_WRONLY | O_CREAT, mode)) < 0) {
+        virReportSystemError(errno, _("cannot create file '%s'"),
+                             path);
+        return -1;
+    }
+
+    if (VIR_CLOSE(fd) < 0) {
+        virReportSystemError(errno, _("cannot save file '%s'"),
+                             path);
+        VIR_FORCE_CLOSE(fd);
+        return -1;
+    }
+
+    return 0;
+}
+
+
+#define MODE_BITS (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO)
+
+int virFileUpdatePerm(const char *path,
+                      mode_t mode_remove,
+                      mode_t mode_add)
+{
+    struct stat sb;
+    mode_t mode;
+
+    if (mode_remove & ~MODE_BITS || mode_add & ~MODE_BITS) {
+        virReportError(VIR_ERR_INVALID_ARG, "%s", _("invalid mode"));
+        return -1;
+    }
+
+    if (stat(path, &sb) < 0) {
+        virReportSystemError(errno, _("cannot stat '%s'"), path);
+        return -1;
+    }
+
+    mode = sb.st_mode & MODE_BITS;
+
+    if ((mode & mode_remove) == 0 && (mode & mode_add) == mode_add)
+        return 0;
+
+    mode &= MODE_BITS ^ mode_remove;
+    mode |= mode_add;
+
+    if (chmod(path, mode) < 0) {
+        virReportSystemError(errno, _("cannot change permission of '%s'"),
+                             path);
+        return -1;
+    }
+
+    return 0;
+}
+
+
+#ifdef __linux__
+static int virFileLoopDeviceOpen(char **dev_name)
+{
+    int fd = -1;
+    DIR *dh = NULL;
+    struct dirent *de;
+    char *looppath;
+    struct loop_info64 lo;
+
+    VIR_DEBUG("Looking for loop devices in /dev");
+
+    if (!(dh = opendir("/dev"))) {
+        virReportSystemError(errno, "%s",
+                             _("Unable to read /dev"));
+        goto cleanup;
+    }
+
+    while ((de = readdir(dh)) != NULL) {
+        if (!STRPREFIX(de->d_name, "loop"))
+            continue;
+
+        if (virAsprintf(&looppath, "/dev/%s", de->d_name) < 0) {
+            virReportOOMError();
+            goto cleanup;
+        }
+
+        VIR_DEBUG("Checking up on device %s", looppath);
+        if ((fd = open(looppath, O_RDWR)) < 0) {
+            virReportSystemError(errno,
+                                 _("Unable to open %s"), looppath);
+            goto cleanup;
+        }
+
+        if (ioctl(fd, LOOP_GET_STATUS64, &lo) < 0) {
+            /* Got a free device, return the fd */
+            if (errno == ENXIO)
+                goto cleanup;
+
+            VIR_FORCE_CLOSE(fd);
+            virReportSystemError(errno,
+                                 _("Unable to get loop status on %s"),
+                                 looppath);
+            goto cleanup;
+        }
+
+        /* Oh well, try the next device */
+        VIR_FORCE_CLOSE(fd);
+        VIR_FREE(looppath);
+    }
+
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("Unable to find a free loop device in /dev"));
+
+cleanup:
+    if (fd != -1) {
+        VIR_DEBUG("Got free loop device %s %d", looppath, fd);
+        *dev_name = looppath;
+    } else {
+        VIR_DEBUG("No free loop devices available");
+        VIR_FREE(looppath);
+    }
+    if (dh)
+        closedir(dh);
+    return fd;
+}
+
+
+int virFileLoopDeviceAssociate(const char *file,
+                               char **dev)
+{
+    int lofd = -1;
+    int fsfd = -1;
+    struct loop_info64 lo;
+    char *loname = NULL;
+    int ret = -1;
+
+    if ((lofd = virFileLoopDeviceOpen(&loname)) < 0)
+        return -1;
+
+    memset(&lo, 0, sizeof(lo));
+    lo.lo_flags = LO_FLAGS_AUTOCLEAR;
+
+    if ((fsfd = open(file, O_RDWR)) < 0) {
+        virReportSystemError(errno,
+                             _("Unable to open %s"), file);
+        goto cleanup;
+    }
+
+    if (ioctl(lofd, LOOP_SET_FD, fsfd) < 0) {
+        virReportSystemError(errno,
+                             _("Unable to attach %s to loop device"),
+                             file);
+        goto cleanup;
+    }
+
+    if (ioctl(lofd, LOOP_SET_STATUS64, &lo) < 0) {
+        virReportSystemError(errno, "%s",
+                             _("Unable to mark loop device as autoclear"));
+
+        if (ioctl(lofd, LOOP_CLR_FD, 0) < 0)
+            VIR_WARN("Unable to detach %s from loop device", file);
+        goto cleanup;
+    }
+
+    VIR_DEBUG("Attached loop device  %s %d to %s", file, lofd, loname);
+    *dev = loname;
+    loname = NULL;
+
+    ret = 0;
+
+cleanup:
+    VIR_FREE(loname);
+    VIR_FORCE_CLOSE(fsfd);
+    if (ret == -1)
+        VIR_FORCE_CLOSE(lofd);
+    return lofd;
+}
+
+#else /* __linux__ */
+
+int virFileLoopDeviceAssociate(const char *file,
+                               char **dev)
+{
+    virReportSystemError(ENOSYS,
+                         _("Unable to associate file %s with loop device"),
+                         file);
+    *dev = NULL;
+    return -1;
+}
+
+#endif /* __linux__ */

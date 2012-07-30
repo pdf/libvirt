@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Ben Guthro
  */
@@ -30,10 +30,6 @@
 #include "virterror_internal.h"
 
 #define VIR_FROM_THIS VIR_FROM_NONE
-
-#define eventReportError(code, ...)                                 \
-    virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,             \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
 
 struct _virDomainMeta {
     int id;
@@ -117,6 +113,14 @@ struct _virDomainEvent {
             char *devAlias;
             int reason;
         } diskChange;
+        struct {
+            char *devAlias;
+            int reason;
+        } trayChange;
+        struct {
+            /* In unit of 1024 bytes */
+            unsigned long long actual;
+        } balloonChange;
     } data;
 };
 
@@ -188,8 +192,8 @@ virDomainEventCallbackListRemove(virConnectPtr conn,
         }
     }
 
-    eventReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                     _("could not find event callback for removal"));
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("could not find event callback for removal"));
     return -1;
 }
 
@@ -238,48 +242,9 @@ virDomainEventCallbackListRemoveID(virConnectPtr conn,
         }
     }
 
-    eventReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                     _("could not find event callback for removal"));
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("could not find event callback for removal"));
     return -1;
-}
-
-
-/**
- * virDomainEventCallbackListRemoveConn:
- * @conn: pointer to the connection
- * @cbList: the list
- *
- * Internal function to remove all of a given connection's callback
- * from a virDomainEventCallbackListPtr
- */
-static int
-virDomainEventCallbackListRemoveConn(virConnectPtr conn,
-                                     virDomainEventCallbackListPtr cbList)
-{
-    int old_count = cbList->count;
-    int i;
-    for (i = 0 ; i < cbList->count ; i++) {
-        if (cbList->callbacks[i]->conn == conn) {
-            virFreeCallback freecb = cbList->callbacks[i]->freecb;
-            if (freecb)
-                (*freecb)(cbList->callbacks[i]->opaque);
-            virUnrefConnect(cbList->callbacks[i]->conn);
-            VIR_FREE(cbList->callbacks[i]);
-
-            if (i < (cbList->count - 1))
-                memmove(cbList->callbacks + i,
-                        cbList->callbacks + i + 1,
-                        sizeof(*(cbList->callbacks)) *
-                                (cbList->count - (i + 1)));
-            cbList->count--;
-            i--;
-        }
-    }
-    if (cbList->count < old_count &&
-        VIR_REALLOC_N(cbList->callbacks, cbList->count) < 0) {
-        ; /* Failure to reduce memory allocation isn't fatal */
-    }
-    return 0;
 }
 
 
@@ -303,8 +268,8 @@ virDomainEventCallbackListMarkDelete(virConnectPtr conn,
         }
     }
 
-    eventReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                     _("could not find event callback for deletion"));
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("could not find event callback for deletion"));
     return -1;
 }
 
@@ -328,8 +293,8 @@ virDomainEventCallbackListMarkDeleteID(virConnectPtr conn,
         }
     }
 
-    eventReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                     _("could not find event callback for deletion"));
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("could not find event callback for deletion"));
     return -1;
 }
 
@@ -398,9 +363,13 @@ virDomainEventCallbackListAddID(virConnectPtr conn,
     for (i = 0 ; i < cbList->count ; i++) {
         if (cbList->callbacks[i]->cb == VIR_DOMAIN_EVENT_CALLBACK(callback) &&
             cbList->callbacks[i]->eventID == eventID &&
-            cbList->callbacks[i]->conn == conn) {
-            eventReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                             _("event callback already tracked"));
+            cbList->callbacks[i]->conn == conn &&
+            ((dom && cbList->callbacks[i]->dom &&
+              memcmp(cbList->callbacks[i]->dom->uuid,
+                     dom->uuid, VIR_UUID_BUFLEN) == 0) ||
+             (!dom && !cbList->callbacks[i]->dom))) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("event callback already tracked"));
             return -1;
         }
     }
@@ -545,6 +514,9 @@ void virDomainEventFree(virDomainEventPtr event)
         VIR_FREE(event->data.diskChange.oldSrcPath);
         VIR_FREE(event->data.diskChange.newSrcPath);
         VIR_FREE(event->data.diskChange.devAlias);
+        break;
+    case VIR_DOMAIN_EVENT_ID_TRAY_CHANGE:
+        VIR_FREE(event->data.trayChange.devAlias);
         break;
     }
 
@@ -1043,6 +1015,124 @@ virDomainEventPtr virDomainEventDiskChangeNewFromDom(virDomainPtr dom,
                                        devAlias, reason);
 }
 
+static virDomainEventPtr
+virDomainEventTrayChangeNew(int id, const char *name,
+                            unsigned char *uuid,
+                            const char *devAlias,
+                            int reason)
+{
+    virDomainEventPtr ev =
+        virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_TRAY_CHANGE,
+                                  id, name, uuid);
+
+    if (ev) {
+        if (!(ev->data.trayChange.devAlias = strdup(devAlias)))
+            goto error;
+
+        ev->data.trayChange.reason = reason;
+    }
+
+    return ev;
+
+error:
+    virReportOOMError();
+    virDomainEventFree(ev);
+    return NULL;
+}
+
+virDomainEventPtr virDomainEventTrayChangeNewFromObj(virDomainObjPtr obj,
+                                                     const char *devAlias,
+                                                     int reason)
+{
+    return virDomainEventTrayChangeNew(obj->def->id,
+                                       obj->def->name,
+                                       obj->def->uuid,
+                                       devAlias,
+                                       reason);
+}
+
+virDomainEventPtr virDomainEventTrayChangeNewFromDom(virDomainPtr dom,
+                                                     const char *devAlias,
+                                                     int reason)
+{
+    return virDomainEventTrayChangeNew(dom->id, dom->name, dom->uuid,
+                                       devAlias, reason);
+}
+
+static virDomainEventPtr
+virDomainEventPMWakeupNew(int id, const char *name,
+                          unsigned char *uuid)
+{
+    virDomainEventPtr ev =
+        virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_PMWAKEUP,
+                                  id, name, uuid);
+
+    return ev;
+}
+
+virDomainEventPtr
+virDomainEventPMWakeupNewFromObj(virDomainObjPtr obj)
+{
+    return virDomainEventPMWakeupNew(obj->def->id,
+                                     obj->def->name,
+                                     obj->def->uuid);
+}
+
+virDomainEventPtr
+virDomainEventPMWakeupNewFromDom(virDomainPtr dom)
+{
+    return virDomainEventPMWakeupNew(dom->id, dom->name, dom->uuid);
+}
+
+static virDomainEventPtr
+virDomainEventPMSuspendNew(int id, const char *name,
+                           unsigned char *uuid)
+{
+    virDomainEventPtr ev =
+        virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_PMSUSPEND,
+                                  id, name, uuid);
+
+    return ev;
+}
+
+virDomainEventPtr
+virDomainEventPMSuspendNewFromObj(virDomainObjPtr obj)
+{
+    return virDomainEventPMSuspendNew(obj->def->id,
+                                      obj->def->name,
+                                      obj->def->uuid);
+}
+
+virDomainEventPtr
+virDomainEventPMSuspendNewFromDom(virDomainPtr dom)
+{
+    return virDomainEventPMSuspendNew(dom->id, dom->name, dom->uuid);
+}
+
+virDomainEventPtr virDomainEventBalloonChangeNewFromDom(virDomainPtr dom,
+                                                        unsigned long long actual)
+{
+    virDomainEventPtr ev =
+        virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_BALLOON_CHANGE,
+                                  dom->id, dom->name, dom->uuid);
+
+    if (ev)
+        ev->data.balloonChange.actual = actual;
+
+    return ev;
+}
+virDomainEventPtr virDomainEventBalloonChangeNewFromObj(virDomainObjPtr obj,
+                                                        unsigned long long actual)
+{
+    virDomainEventPtr ev =
+        virDomainEventNewInternal(VIR_DOMAIN_EVENT_ID_BALLOON_CHANGE,
+                                  obj->def->id, obj->def->name, obj->def->uuid);
+
+    if (ev)
+        ev->data.balloonChange.actual = actual;
+
+    return ev;
+}
 
 /**
  * virDomainEventQueuePush:
@@ -1165,6 +1255,27 @@ virDomainEventDispatchDefaultFunc(virConnectPtr conn,
                                                       event->data.diskChange.devAlias,
                                                       event->data.diskChange.reason,
                                                       cbopaque);
+        break;
+
+    case VIR_DOMAIN_EVENT_ID_TRAY_CHANGE:
+        ((virConnectDomainEventTrayChangeCallback)cb)(conn, dom,
+                                                      event->data.trayChange.devAlias,
+                                                      event->data.trayChange.reason,
+                                                      cbopaque);
+        break;
+
+    case VIR_DOMAIN_EVENT_ID_PMWAKEUP:
+        ((virConnectDomainEventPMWakeupCallback)cb)(conn, dom, 0, cbopaque);
+        break;
+
+    case VIR_DOMAIN_EVENT_ID_PMSUSPEND:
+        ((virConnectDomainEventPMSuspendCallback)cb)(conn, dom, 0, cbopaque);
+        break;
+
+    case VIR_DOMAIN_EVENT_ID_BALLOON_CHANGE:
+        ((virConnectDomainEventBalloonChangeCallback)cb)(conn, dom,
+                                                         event->data.balloonChange.actual,
+                                                         cbopaque);
         break;
 
     default:
@@ -1341,8 +1452,8 @@ virDomainEventStateRegister(virConnectPtr conn,
                                            virDomainEventTimer,
                                            state,
                                            NULL)) < 0) {
-        eventReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                         _("could not initialize domain event timer"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("could not initialize domain event timer"));
         goto cleanup;
     }
 
@@ -1397,8 +1508,8 @@ virDomainEventStateRegisterID(virConnectPtr conn,
                                            virDomainEventTimer,
                                            state,
                                            NULL)) < 0) {
-        eventReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                         _("could not initialize domain event timer"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("could not initialize domain event timer"));
         goto cleanup;
     }
 
@@ -1487,28 +1598,6 @@ virDomainEventStateDeregisterID(virConnectPtr conn,
         state->timer = -1;
     }
 
-    virDomainEventStateUnlock(state);
-    return ret;
-}
-
-
-/**
- * virDomainEventStateDeregisterConn:
- * @conn: connection to associate with callbacks
- * @state: domain event state
- *
- * Remove all callbacks from @state associated with the
- * connection @conn
- *
- * Returns 0 on success, -1 on error
- */
-int
-virDomainEventStateDeregisterConn(virConnectPtr conn,
-                                  virDomainEventStatePtr state)
-{
-    int ret;
-    virDomainEventStateLock(state);
-    ret = virDomainEventCallbackListRemoveConn(conn, state->callbacks);
     virDomainEventStateUnlock(state);
     return ret;
 }

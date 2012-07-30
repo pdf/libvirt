@@ -54,7 +54,10 @@ Use this name for the PID file, overriding the default value.
 
 =item B<-t, --timeout> I<SECONDS>
 
-Exit after timeout period (in seconds) expires.
+Exit after timeout period (in seconds) elapse with no client connections
+or registered resources.  Be aware that resources such as autostart
+networks will result in never reaching the timeout, even when there are
+no client connections.
 
 =item B<-v, --verbose>
 
@@ -85,7 +88,7 @@ command line using the B<-f>|B<--config> option.
 
 The sockets libvirtd will use when B<run as root>.
 
-=item F<$HOME/.libvirt/libvirt-sock>
+=item F<$XDG_RUNTIME_DIR/libvirt/libvirt-sock>
 
 The socket libvirtd will use when run as a B<non-root> user.
 
@@ -150,7 +153,7 @@ Please refer to the AUTHORS file distributed with libvirt.
 
 =head1 COPYRIGHT
 
-Copyright (C) 2006-2010 Red Hat, Inc., and the authors listed in the
+Copyright (C) 2006-2012 Red Hat, Inc., and the authors listed in the
 libvirt AUTHORS file.
 
 =head1 LICENSE

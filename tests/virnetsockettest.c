@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -54,7 +54,7 @@ checkProtocols(bool *hasIPv4, bool *hasIPv6,
     int i;
     int ret = -1;
 
-    memset(&hints, 0, sizeof hints);
+    memset(&hints, 0, sizeof(hints));
 
     *hasIPv4 = *hasIPv6 = false;
     *freePort = 0;
@@ -90,11 +90,13 @@ checkProtocols(bool *hasIPv4, bool *hasIPv6,
         if ((s4 = socket(AF_INET, SOCK_STREAM, 0)) < 0)
             goto cleanup;
 
-        if ((s6 = socket(AF_INET6, SOCK_STREAM, 0)) < 0)
-            goto cleanup;
+        if (*hasIPv6) {
+            if ((s6 = socket(AF_INET6, SOCK_STREAM, 0)) < 0)
+                goto cleanup;
 
-        if (setsockopt(s6, IPPROTO_IPV6, IPV6_V6ONLY, &only, sizeof(only)) < 0)
-            goto cleanup;
+            if (setsockopt(s6, IPPROTO_IPV6, IPV6_V6ONLY, &only, sizeof(only)) < 0)
+                goto cleanup;
+        }
 
         memset(&in4, 0, sizeof(in4));
         memset(&in6, 0, sizeof(in6));
@@ -114,13 +116,16 @@ checkProtocols(bool *hasIPv4, bool *hasIPv6,
             }
             goto cleanup;
         }
-        if (bind(s6, (struct sockaddr *)&in6, sizeof(in6)) < 0) {
-            if (errno == EADDRINUSE) {
-                VIR_FORCE_CLOSE(s4);
-                VIR_FORCE_CLOSE(s6);
-                continue;
+
+        if (*hasIPv6) {
+            if (bind(s6, (struct sockaddr *)&in6, sizeof(in6)) < 0) {
+                if (errno == EADDRINUSE) {
+                    VIR_FORCE_CLOSE(s4);
+                    VIR_FORCE_CLOSE(s6);
+                    continue;
+                }
+                goto cleanup;
             }
-            goto cleanup;
         }
 
         *freePort = BASE_PORT + i;
@@ -460,7 +465,7 @@ mymain(void)
 #ifdef HAVE_IFADDRS_H
     if (checkProtocols(&hasIPv4, &hasIPv6, &freePort) < 0) {
         fprintf(stderr, "Cannot identify IPv4/6 availability\n");
-        return (EXIT_FAILURE);
+        return EXIT_FAILURE;
     }
 
     if (hasIPv4) {
@@ -602,7 +607,7 @@ mymain(void)
 
 #endif
 
-    return (ret==0 ? EXIT_SUCCESS : EXIT_FAILURE);
+    return ret==0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 VIRT_TEST_MAIN(mymain)

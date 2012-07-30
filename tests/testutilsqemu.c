@@ -87,6 +87,34 @@ error:
     return -1;
 }
 
+static int testQemuAddS390Guest(virCapsPtr caps)
+{
+    static const char *s390_machines[] = { "s390-virtio"};
+    virCapsGuestMachinePtr *machines = NULL;
+    virCapsGuestPtr guest;
+
+    machines = virCapabilitiesAllocMachines(s390_machines,
+                                            ARRAY_CARDINALITY(s390_machines));
+    if (!machines)
+        goto error;
+
+    guest = virCapabilitiesAddGuest(caps, "hvm", "s390x", 64,
+                                    "/usr/bin/qemu-system-s390x", NULL,
+                                    ARRAY_CARDINALITY(s390_machines),
+                                    machines);
+    if (!guest)
+        goto error;
+
+    if (!virCapabilitiesAddGuestDomain(guest, "qemu", NULL, NULL, 0, NULL))
+        goto error;
+
+    return 0;
+
+error:
+    virCapabilitiesFreeMachines(machines, ARRAY_CARDINALITY(s390_machines));
+    return -1;
+}
+
 virCapsPtr testQemuCapsInit(void) {
     virCapsPtr caps;
     virCapsGuestPtr guest;
@@ -116,6 +144,7 @@ virCapsPtr testQemuCapsInit(void) {
         0,                      /* match */
         (char *) "x86_64",      /* arch */
         (char *) "core2duo",    /* model */
+        NULL,                   /* vendor_id */
         0,                      /* fallback */
         (char *) "Intel",       /* vendor */
         1,                      /* sockets */
@@ -123,7 +152,11 @@ virCapsPtr testQemuCapsInit(void) {
         1,                      /* threads */
         ARRAY_CARDINALITY(host_cpu_features), /* nfeatures */
         ARRAY_CARDINALITY(host_cpu_features), /* nfeatures_max */
-        host_cpu_features       /* features */
+        host_cpu_features,      /* features */
+        0,                      /* ncells */
+        0,                      /* ncells_max */
+        NULL,                   /* cells */
+        0,                      /* cells_cpus */
     };
 
     if ((caps = virCapabilitiesNew(host_cpu.arch,
@@ -202,6 +235,9 @@ virCapsPtr testQemuCapsInit(void) {
         goto cleanup;
 
     if (testQemuAddPPC64Guest(caps))
+        goto cleanup;
+
+    if (testQemuAddS390Guest(caps))
         goto cleanup;
 
     if (virTestGetDebug()) {

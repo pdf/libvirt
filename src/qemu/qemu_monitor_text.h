@@ -1,7 +1,7 @@
 /*
  * qemu_monitor_text.h: interaction with QEMU monitor console
  *
- * Copyright (C) 2006-2009, 2011 Red Hat, Inc.
+ * Copyright (C) 2006-2009, 2011-2012 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -28,7 +28,6 @@
 # include "internal.h"
 
 # include "qemu_monitor.h"
-# include "hash.h"
 
 int qemuMonitorTextIOProcess(qemuMonitorPtr mon,
                              const char *data,
@@ -55,13 +54,12 @@ int qemuMonitorTextGetCPUInfo(qemuMonitorPtr mon,
 int qemuMonitorTextGetVirtType(qemuMonitorPtr mon,
                                int *virtType);
 int qemuMonitorTextGetBalloonInfo(qemuMonitorPtr mon,
-                                  unsigned long *currmem);
+                                  unsigned long long *currmem);
 int qemuMonitorTextGetMemoryStats(qemuMonitorPtr mon,
                                   virDomainMemoryStatPtr stats,
                                   unsigned int nr_stats);
 int qemuMonitorTextGetBlockInfo(qemuMonitorPtr mon,
-                                const char *devname,
-                                struct qemuDomainDiskInfo *info);
+                                virHashTablePtr table);
 int qemuMonitorTextGetBlockStatsInfo(qemuMonitorPtr mon,
                                      const char *dev_name,
                                      long long *rd_req,
@@ -234,12 +232,6 @@ int qemuMonitorTextSendKey(qemuMonitorPtr mon,
                            unsigned int nkeycodes);
 
 int qemuMonitorTextScreendump(qemuMonitorPtr mon, const char *file);
-
-int qemuMonitorTextBlockJob(qemuMonitorPtr mon,
-                            const char *device,
-                            unsigned long bandwidth,
-                            virDomainBlockJobInfoPtr info,
-                            int mode);
 
 int qemuMonitorTextSetLink(qemuMonitorPtr mon,
                            const char *name,

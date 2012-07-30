@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -29,14 +29,16 @@
 
 int qemuUpdateActivePciHostdevs(struct qemud_driver *driver,
                                 virDomainDefPtr def);
+int qemuUpdateActiveUsbHostdevs(struct qemud_driver *driver,
+                                virDomainDefPtr def);
 int qemuPrepareHostdevPCIDevices(struct qemud_driver *driver,
                                  const char *name,
+                                 const unsigned char *uuid,
                                  virDomainHostdevDefPtr *hostdevs,
                                  int nhostdevs);
 int qemuPrepareHostdevUSBDevices(struct qemud_driver *driver,
                                  const char *name,
-                                 virDomainHostdevDefPtr *hostdevs,
-                                 int nhostdevs);
+                                 usbDeviceList *list);
 int qemuPrepareHostDevices(struct qemud_driver *driver,
                            virDomainDefPtr def);
 void qemuReattachPciDevice(pciDevice *dev, struct qemud_driver *driver);
@@ -46,6 +48,11 @@ void qemuDomainReAttachHostdevDevices(struct qemud_driver *driver,
                                       int nhostdevs);
 void qemuDomainReAttachHostDevices(struct qemud_driver *driver,
                                    virDomainDefPtr def);
-
+int qemuDomainHostdevIsVirtualFunction(virDomainHostdevDefPtr hostdev);
+int qemuDomainHostdevNetConfigReplace(virDomainHostdevDefPtr hostdev,
+                                      const unsigned char *uuid,
+                                      char *stateDir);
+int qemuDomainHostdevNetConfigRestore(virDomainHostdevDefPtr hostdev,
+                                      char *stateDir);
 
 #endif /* __QEMU_HOSTDEV_H__ */

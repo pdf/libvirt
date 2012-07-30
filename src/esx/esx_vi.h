@@ -16,8 +16,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -33,13 +33,6 @@
 # include "datatypes.h"
 # include "esx_vi_types.h"
 # include "esx_util.h"
-
-
-
-# define ESX_VI_ERROR(code, ...)                                              \
-    virReportErrorHelper(VIR_FROM_ESX, code, __FILE__, __FUNCTION__,          \
-                         __LINE__, __VA_ARGS__)
-
 
 
 # define ESX_VI__SOAP__REQUEST_HEADER                                         \
@@ -85,6 +78,7 @@ typedef enum _esxVI_Occurrence esxVI_Occurrence;
 typedef struct _esxVI_ParsedHostCpuIdInfo esxVI_ParsedHostCpuIdInfo;
 typedef struct _esxVI_CURL esxVI_CURL;
 typedef struct _esxVI_SharedCURL esxVI_SharedCURL;
+typedef struct _esxVI_MultiCURL esxVI_MultiCURL;
 typedef struct _esxVI_Context esxVI_Context;
 typedef struct _esxVI_Response esxVI_Response;
 typedef struct _esxVI_Enumeration esxVI_Enumeration;
@@ -160,12 +154,14 @@ struct _esxVI_CURL {
     struct curl_slist *headers;
     char error[CURL_ERROR_SIZE];
     esxVI_SharedCURL *shared;
+    esxVI_MultiCURL *multi;
 };
 
 int esxVI_CURL_Alloc(esxVI_CURL **curl);
 void esxVI_CURL_Free(esxVI_CURL **curl);
 int esxVI_CURL_Connect(esxVI_CURL *curl, esxUtil_ParsedUri *parsedUri);
-int esxVI_CURL_Download(esxVI_CURL *curl, const char *url, char **content);
+int esxVI_CURL_Download(esxVI_CURL *curl, const char *url, char **content,
+                        unsigned long long offset, unsigned long long *length);
 int esxVI_CURL_Upload(esxVI_CURL *curl, const char *url, const char *content);
 
 
@@ -184,6 +180,22 @@ int esxVI_SharedCURL_Alloc(esxVI_SharedCURL **shared);
 void esxVI_SharedCURL_Free(esxVI_SharedCURL **shared);
 int esxVI_SharedCURL_Add(esxVI_SharedCURL *shared, esxVI_CURL *curl);
 int esxVI_SharedCURL_Remove(esxVI_SharedCURL *shared, esxVI_CURL *curl);
+
+
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ * MultiCURL
+ */
+
+struct _esxVI_MultiCURL {
+    CURLM *handle;
+    size_t count;
+};
+
+int esxVI_MultiCURL_Alloc(esxVI_MultiCURL **multi);
+void esxVI_MultiCURL_Free(esxVI_MultiCURL **multi);
+int esxVI_MultiCURL_Add(esxVI_MultiCURL *multi, esxVI_CURL *curl);
+int esxVI_MultiCURL_Remove(esxVI_MultiCURL *multi, esxVI_CURL *curl);
 
 
 

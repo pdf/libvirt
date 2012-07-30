@@ -1,9 +1,21 @@
 /*
  * utils.c: test utils
  *
- * Copyright (C) 2005, 2008-2011 Red Hat, Inc.
+ * Copyright (C) 2005, 2008-2012 Red Hat, Inc.
  *
- * See COPYING.LIB for the License of this software
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Karel Zak <kzak@redhat.com>
  */
@@ -12,6 +24,7 @@
 # define __VIT_TEST_UTILS_H__
 
 # include <stdio.h>
+# include "memory.h"
 
 # define EXIT_AM_SKIP 77 /* tell Automake we're skipping a test */
 # define EXIT_AM_HARDFAIL 99 /* tell Automake that the framework is broken */
@@ -22,7 +35,8 @@ extern char *abs_srcdir;
 double virtTestCountAverage(double *items,
                             int nitems);
 
-void virtTestResult(const char *name, int ret, const char *msg, ...);
+void virtTestResult(const char *name, int ret, const char *msg, ...)
+    ATTRIBUTE_FMT_PRINTF(3,4);
 int virtTestRun(const char *title,
                 int nloops,
                 int (*body)(const void *data),

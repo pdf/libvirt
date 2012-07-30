@@ -1,7 +1,7 @@
 /*
  * datatypes.h: management of structs for public data types
  *
- * Copyright (C) 2006-2011 Red Hat, Inc.
+ * Copyright (C) 2006-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -70,14 +70,14 @@ virGetConnect(void) {
     ret->interfacePrivateData = NULL;
 
     ret->refs = 1;
-    return(ret);
+    return ret;
 
 failed:
     if (ret != NULL) {
         virMutexDestroy(&ret->lock);
         VIR_FREE(ret);
     }
-    return(NULL);
+    return NULL;
 }
 
 /**
@@ -115,9 +115,12 @@ virReleaseConnect(virConnectPtr conn) {
 
     virMutexLock(&conn->lock);
 
+    if (conn->closeFreeCallback)
+        conn->closeFreeCallback(conn->closeOpaque);
+
     virResetError(&conn->err);
 
-    xmlFreeURI(conn->uri);
+    virURIFree(conn->uri);
 
     virMutexUnlock(&conn->lock);
     virMutexDestroy(&conn->lock);
@@ -138,7 +141,7 @@ virUnrefConnect(virConnectPtr conn) {
     int refs;
 
     if ((!VIR_IS_CONNECT(conn))) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("no connection"));
+        virLibConnError(VIR_ERR_INVALID_CONN, "%s", _("no connection"));
         return -1;
     }
     virMutexLock(&conn->lock);
@@ -148,10 +151,10 @@ virUnrefConnect(virConnectPtr conn) {
     if (refs == 0) {
         virReleaseConnect(conn);
         /* Already unlocked mutex */
-        return (0);
+        return 0;
     }
     virMutexUnlock(&conn->lock);
-    return (refs);
+    return refs;
 }
 
 /**
@@ -173,17 +176,12 @@ virGetDomain(virConnectPtr conn, const char *name, const unsigned char *uuid) {
     char uuidstr[VIR_UUID_STRING_BUFLEN];
 
     if (!VIR_IS_CONNECT(conn)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("no connection"));
+        virLibConnError(VIR_ERR_INVALID_CONN, "%s", _("no connection"));
         return NULL;
     }
-    if (name == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing name"));
-        return NULL;
-    }
-    if (uuid == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing uuid"));
-        return NULL;
-    }
+    virCheckNonNullArgReturn(name, NULL);
+    virCheckNonNullArgReturn(uuid, NULL);
+
     virMutexLock(&conn->lock);
 
     virUUIDFormat(uuid, uuidstr);
@@ -207,14 +205,14 @@ virGetDomain(virConnectPtr conn, const char *name, const unsigned char *uuid) {
     conn->refs++;
     ret->refs++;
     virMutexUnlock(&conn->lock);
-    return(ret);
+    return ret;
 
  error:
     if (ret != NULL) {
         VIR_FREE(ret->name);
         VIR_FREE(ret);
     }
-    return(NULL);
+    return NULL;
 }
 
 /**
@@ -269,7 +267,8 @@ virUnrefDomain(virDomainPtr domain) {
     int refs;
 
     if (!VIR_IS_CONNECTED_DOMAIN(domain)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("bad domain or no connection"));
+        virLibConnError(VIR_ERR_INVALID_DOMAIN, "%s",
+                        _("bad domain or no connection"));
         return -1;
     }
     virMutexLock(&domain->conn->lock);
@@ -279,11 +278,11 @@ virUnrefDomain(virDomainPtr domain) {
     if (refs == 0) {
         virReleaseDomain(domain);
         /* Already unlocked mutex */
-        return (0);
+        return 0;
     }
 
     virMutexUnlock(&domain->conn->lock);
-    return (refs);
+    return refs;
 }
 
 /**
@@ -305,17 +304,12 @@ virGetNetwork(virConnectPtr conn, const char *name, const unsigned char *uuid) {
     char uuidstr[VIR_UUID_STRING_BUFLEN];
 
     if (!VIR_IS_CONNECT(conn)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("no connection"));
+        virLibConnError(VIR_ERR_INVALID_CONN, "%s", _("no connection"));
         return NULL;
     }
-    if (name == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing name"));
-        return NULL;
-    }
-    if (uuid == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing uuid"));
-        return NULL;
-    }
+    virCheckNonNullArgReturn(name, NULL);
+    virCheckNonNullArgReturn(uuid, NULL);
+
     virMutexLock(&conn->lock);
 
     virUUIDFormat(uuid, uuidstr);
@@ -338,14 +332,14 @@ virGetNetwork(virConnectPtr conn, const char *name, const unsigned char *uuid) {
     conn->refs++;
     ret->refs++;
     virMutexUnlock(&conn->lock);
-    return(ret);
+    return ret;
 
  error:
     if (ret != NULL) {
         VIR_FREE(ret->name);
         VIR_FREE(ret);
     }
-    return(NULL);
+    return NULL;
 }
 
 /**
@@ -399,7 +393,7 @@ virUnrefNetwork(virNetworkPtr network) {
     int refs;
 
     if (!VIR_IS_CONNECTED_NETWORK(network)) {
-        virLibConnError(VIR_ERR_INVALID_ARG,
+        virLibConnError(VIR_ERR_INVALID_NETWORK, "%s",
                         _("bad network or no connection"));
         return -1;
     }
@@ -410,11 +404,11 @@ virUnrefNetwork(virNetworkPtr network) {
     if (refs == 0) {
         virReleaseNetwork(network);
         /* Already unlocked mutex */
-        return (0);
+        return 0;
     }
 
     virMutexUnlock(&network->conn->lock);
-    return (refs);
+    return refs;
 }
 
 
@@ -437,13 +431,10 @@ virGetInterface(virConnectPtr conn, const char *name, const char *mac) {
     virInterfacePtr ret = NULL;
 
     if (!VIR_IS_CONNECT(conn)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("no connection"));
+        virLibConnError(VIR_ERR_INVALID_CONN, "%s", _("no connection"));
         return NULL;
     }
-    if (name == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing name"));
-        return NULL;
-    }
+    virCheckNonNullArgReturn(name, NULL);
 
     /* a NULL mac from caller is okay. Treat it as blank */
     if (mac == NULL)
@@ -475,7 +466,7 @@ virGetInterface(virConnectPtr conn, const char *name, const char *mac) {
     conn->refs++;
     ret->refs++;
     virMutexUnlock(&conn->lock);
-    return(ret);
+    return ret;
 
  error:
     if (ret != NULL) {
@@ -483,7 +474,7 @@ virGetInterface(virConnectPtr conn, const char *name, const char *mac) {
         VIR_FREE(ret->mac);
         VIR_FREE(ret);
     }
-    return(NULL);
+    return NULL;
 }
 
 /**
@@ -535,7 +526,7 @@ virUnrefInterface(virInterfacePtr iface) {
     int refs;
 
     if (!VIR_IS_CONNECTED_INTERFACE(iface)) {
-        virLibConnError(VIR_ERR_INVALID_ARG,
+        virLibConnError(VIR_ERR_INVALID_INTERFACE, "%s",
                         _("bad interface or no connection"));
         return -1;
     }
@@ -546,11 +537,11 @@ virUnrefInterface(virInterfacePtr iface) {
     if (refs == 0) {
         virReleaseInterface(iface);
         /* Already unlocked mutex */
-        return (0);
+        return 0;
     }
 
     virMutexUnlock(&iface->conn->lock);
-    return (refs);
+    return refs;
 }
 
 
@@ -574,17 +565,12 @@ virGetStoragePool(virConnectPtr conn, const char *name,
     char uuidstr[VIR_UUID_STRING_BUFLEN];
 
     if (!VIR_IS_CONNECT(conn)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("no connection"));
+        virLibConnError(VIR_ERR_INVALID_CONN, "%s", _("no connection"));
         return NULL;
     }
-    if (name == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing name"));
-        return NULL;
-    }
-    if (uuid == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing uuid"));
-        return NULL;
-    }
+    virCheckNonNullArgReturn(name, NULL);
+    virCheckNonNullArgReturn(uuid, NULL);
+
     virMutexLock(&conn->lock);
 
     virUUIDFormat(uuid, uuidstr);
@@ -607,14 +593,14 @@ virGetStoragePool(virConnectPtr conn, const char *name,
     conn->refs++;
     ret->refs++;
     virMutexUnlock(&conn->lock);
-    return(ret);
+    return ret;
 
 error:
     if (ret != NULL) {
         VIR_FREE(ret->name);
         VIR_FREE(ret);
     }
-    return(NULL);
+    return NULL;
 }
 
 
@@ -669,7 +655,7 @@ virUnrefStoragePool(virStoragePoolPtr pool) {
     int refs;
 
     if (!VIR_IS_CONNECTED_STORAGE_POOL(pool)) {
-        virLibConnError(VIR_ERR_INVALID_ARG,
+        virLibConnError(VIR_ERR_INVALID_STORAGE_POOL, "%s",
                         _("bad storage pool or no connection"));
         return -1;
     }
@@ -680,11 +666,11 @@ virUnrefStoragePool(virStoragePoolPtr pool) {
     if (refs == 0) {
         virReleaseStoragePool(pool);
         /* Already unlocked mutex */
-        return (0);
+        return 0;
     }
 
     virMutexUnlock(&pool->conn->lock);
-    return (refs);
+    return refs;
 }
 
 
@@ -708,17 +694,12 @@ virGetStorageVol(virConnectPtr conn, const char *pool, const char *name,
     virStorageVolPtr ret = NULL;
 
     if (!VIR_IS_CONNECT(conn)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("no connection"));
+        virLibConnError(VIR_ERR_INVALID_CONN, "%s", _("no connection"));
         return NULL;
     }
-    if (name == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing name"));
-        return NULL;
-    }
-    if (key == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing key"));
-        return NULL;
-    }
+    virCheckNonNullArgReturn(name, NULL);
+    virCheckNonNullArgReturn(key, NULL);
+
     virMutexLock(&conn->lock);
 
     if (VIR_ALLOC(ret) < 0) {
@@ -750,7 +731,7 @@ virGetStorageVol(virConnectPtr conn, const char *pool, const char *name,
     conn->refs++;
     ret->refs++;
     virMutexUnlock(&conn->lock);
-    return(ret);
+    return ret;
 
 error:
     if (ret != NULL) {
@@ -759,7 +740,7 @@ error:
         VIR_FREE(ret->pool);
         VIR_FREE(ret);
     }
-    return(NULL);
+    return NULL;
 }
 
 
@@ -813,7 +794,7 @@ virUnrefStorageVol(virStorageVolPtr vol) {
     int refs;
 
     if (!VIR_IS_CONNECTED_STORAGE_VOL(vol)) {
-        virLibConnError(VIR_ERR_INVALID_ARG,
+        virLibConnError(VIR_ERR_INVALID_STORAGE_VOL, "%s",
                         _("bad storage volume or no connection"));
         return -1;
     }
@@ -824,11 +805,11 @@ virUnrefStorageVol(virStorageVolPtr vol) {
     if (refs == 0) {
         virReleaseStorageVol(vol);
         /* Already unlocked mutex */
-        return (0);
+        return 0;
     }
 
     virMutexUnlock(&vol->conn->lock);
-    return (refs);
+    return refs;
 }
 
 
@@ -850,13 +831,11 @@ virGetNodeDevice(virConnectPtr conn, const char *name)
     virNodeDevicePtr ret = NULL;
 
     if (!VIR_IS_CONNECT(conn)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("no connection"));
+        virLibConnError(VIR_ERR_INVALID_CONN, "%s", _("no connection"));
         return NULL;
     }
-    if (name == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing name"));
-        return NULL;
-    }
+    virCheckNonNullArgReturn(name, NULL);
+
     virMutexLock(&conn->lock);
 
     if (VIR_ALLOC(ret) < 0) {
@@ -876,14 +855,14 @@ virGetNodeDevice(virConnectPtr conn, const char *name)
     conn->refs++;
     ret->refs++;
     virMutexUnlock(&conn->lock);
-    return(ret);
+    return ret;
 
 error:
     if (ret != NULL) {
         VIR_FREE(ret->name);
         VIR_FREE(ret);
     }
-    return(NULL);
+    return NULL;
 }
 
 
@@ -942,11 +921,11 @@ virUnrefNodeDevice(virNodeDevicePtr dev) {
     if (refs == 0) {
         virReleaseNodeDevice(dev);
         /* Already unlocked mutex */
-        return (0);
+        return 0;
     }
 
     virMutexUnlock(&dev->conn->lock);
-    return (refs);
+    return refs;
 }
 
 
@@ -970,17 +949,12 @@ virGetSecret(virConnectPtr conn, const unsigned char *uuid,
     char uuidstr[VIR_UUID_STRING_BUFLEN];
 
     if (!VIR_IS_CONNECT(conn)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("no connection"));
+        virLibConnError(VIR_ERR_INVALID_CONN, "%s", _("no connection"));
         return NULL;
     }
-    if (uuid == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing uuid"));
-        return NULL;
-    }
-    if (usageID == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing usageID"));
-        return NULL;
-    }
+    virCheckNonNullArgReturn(uuid, NULL);
+    virCheckNonNullArgReturn(usageID, NULL);
+
     virMutexLock(&conn->lock);
 
     virUUIDFormat(uuid, uuidstr);
@@ -1061,7 +1035,8 @@ virUnrefSecret(virSecretPtr secret) {
     int refs;
 
     if (!VIR_IS_CONNECTED_SECRET(secret)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("bad secret or no connection"));
+        virLibConnError(VIR_ERR_INVALID_SECRET, "%s",
+                        _("bad secret or no connection"));
         return -1;
     }
     virMutexLock(&secret->conn->lock);
@@ -1092,12 +1067,12 @@ virStreamPtr virGetStream(virConnectPtr conn) {
     conn->refs++;
     ret->refs++;
     virMutexUnlock(&conn->lock);
-    return(ret);
+    return ret;
 
 error:
     virMutexUnlock(&conn->lock);
     VIR_FREE(ret);
-    return(NULL);
+    return NULL;
 }
 
 static void
@@ -1129,11 +1104,11 @@ int virUnrefStream(virStreamPtr st) {
     if (refs == 0) {
         virReleaseStream(st);
         /* Already unlocked mutex */
-        return (0);
+        return 0;
     }
 
     virMutexUnlock(&st->conn->lock);
-    return (refs);
+    return refs;
 }
 
 
@@ -1156,17 +1131,12 @@ virGetNWFilter(virConnectPtr conn, const char *name, const unsigned char *uuid) 
     char uuidstr[VIR_UUID_STRING_BUFLEN];
 
     if (!VIR_IS_CONNECT(conn)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("no connection"));
+        virLibConnError(VIR_ERR_INVALID_CONN, "%s", _("no connection"));
         return NULL;
     }
-    if (name == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing name"));
-        return NULL;
-    }
-    if (uuid == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing uuid"));
-        return NULL;
-    }
+    virCheckNonNullArgReturn(name, NULL);
+    virCheckNonNullArgReturn(uuid, NULL);
+
     virMutexLock(&conn->lock);
 
     virUUIDFormat(uuid, uuidstr);
@@ -1189,14 +1159,14 @@ virGetNWFilter(virConnectPtr conn, const char *name, const unsigned char *uuid) 
     conn->refs++;
     ret->refs++;
     virMutexUnlock(&conn->lock);
-    return(ret);
+    return ret;
 
 error:
     if (ret != NULL) {
         VIR_FREE(ret->name);
         VIR_FREE(ret);
     }
-    return(NULL);
+    return NULL;
 }
 
 
@@ -1253,7 +1223,7 @@ virUnrefNWFilter(virNWFilterPtr nwfilter)
     int refs;
 
     if (!VIR_IS_CONNECTED_NWFILTER(nwfilter)) {
-        virLibConnError(VIR_ERR_INVALID_ARG,
+        virLibConnError(VIR_ERR_INVALID_NWFILTER, "%s",
                         _("bad nwfilter or no connection"));
         return -1;
     }
@@ -1265,11 +1235,11 @@ virUnrefNWFilter(virNWFilterPtr nwfilter)
     if (refs == 0) {
         virReleaseNWFilter(nwfilter);
         /* Already unlocked mutex */
-        return (0);
+        return 0;
     }
 
     virMutexUnlock(&nwfilter->conn->lock);
-    return (refs);
+    return refs;
 }
 
 
@@ -1279,13 +1249,11 @@ virGetDomainSnapshot(virDomainPtr domain, const char *name)
     virDomainSnapshotPtr ret = NULL;
 
     if (!VIR_IS_DOMAIN(domain)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("bad domain"));
+        virLibConnError(VIR_ERR_INVALID_DOMAIN, "%s", _("bad domain"));
         return NULL;
     }
-    if (name == NULL) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("missing name"));
-        return NULL;
-    }
+    virCheckNonNullArgReturn(name, NULL);
+
     virMutexLock(&domain->conn->lock);
 
     if (VIR_ALLOC(ret) < 0) {
@@ -1305,14 +1273,14 @@ virGetDomainSnapshot(virDomainPtr domain, const char *name)
     domain->refs++;
     ret->refs++;
     virMutexUnlock(&domain->conn->lock);
-    return(ret);
+    return ret;
 
  error:
     if (ret != NULL) {
         VIR_FREE(ret->name);
         VIR_FREE(ret);
     }
-    return(NULL);
+    return NULL;
 }
 
 
@@ -1344,7 +1312,8 @@ virUnrefDomainSnapshot(virDomainSnapshotPtr snapshot)
     int refs;
 
     if (!VIR_IS_DOMAIN_SNAPSHOT(snapshot)) {
-        virLibConnError(VIR_ERR_INVALID_ARG, _("not a snapshot"));
+        virLibConnError(VIR_ERR_INVALID_DOMAIN_SNAPSHOT, "%s",
+                        _("not a snapshot"));
         return -1;
     }
 
@@ -1355,9 +1324,9 @@ virUnrefDomainSnapshot(virDomainSnapshotPtr snapshot)
     if (refs == 0) {
         virReleaseDomainSnapshot(snapshot);
         /* Already unlocked mutex */
-        return (0);
+        return 0;
     }
 
     virMutexUnlock(&snapshot->domain->conn->lock);
-    return (refs);
+    return refs;
 }

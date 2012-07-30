@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -154,6 +154,7 @@ struct _esxVI_AnyType {
 
 int esxVI_AnyType_Alloc(esxVI_AnyType **anyType);
 void esxVI_AnyType_Free(esxVI_AnyType **anyType);
+const char *esxVI_AnyType_TypeToString(esxVI_AnyType *anyType);
 int esxVI_AnyType_ExpectType(esxVI_AnyType *anyType, esxVI_Type type);
 int esxVI_AnyType_DeepCopy(esxVI_AnyType **dest, esxVI_AnyType *src);
 int esxVI_AnyType_Deserialize(xmlNodePtr node, esxVI_AnyType **anyType);
@@ -236,6 +237,7 @@ int esxVI_Long_Alloc(esxVI_Long **number);
 void esxVI_Long_Free(esxVI_Long **numberList);
 int esxVI_Long_Validate(esxVI_Long *number);
 int esxVI_Long_AppendToList(esxVI_Long **numberList, esxVI_Long *number);
+int esxVI_Long_DeepCopy(esxVI_Long **dest, esxVI_Long *src);
 int esxVI_Long_CastFromAnyType(esxVI_AnyType *anyType, esxVI_Long **number);
 int esxVI_Long_Serialize(esxVI_Long *number, const char *element,
                          virBufferPtr output);

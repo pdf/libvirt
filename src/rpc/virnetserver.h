@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -25,9 +25,6 @@
 # define __VIR_NET_SERVER_H__
 
 # include <signal.h>
-# if HAVE_DBUS
-#  include <dbus/dbus.h>
-# endif
 
 # include "virnettlscontext.h"
 # include "virnetserverprogram.h"
@@ -35,7 +32,8 @@
 # include "virnetserverservice.h"
 
 typedef int (*virNetServerClientInitHook)(virNetServerPtr srv,
-                                          virNetServerClientPtr client);
+                                          virNetServerClientPtr client,
+                                          void *opaque);
 
 virNetServerPtr virNetServerNew(size_t min_workers,
                                 size_t max_workers,
@@ -45,18 +43,14 @@ virNetServerPtr virNetServerNew(size_t min_workers,
                                 unsigned int keepaliveCount,
                                 bool keepaliveRequired,
                                 const char *mdnsGroupName,
-                                bool connectDBus,
-                                virNetServerClientInitHook clientInitHook);
+                                virNetServerClientInitHook clientInitHook,
+                                void *opaque);
 
 typedef int (*virNetServerAutoShutdownFunc)(virNetServerPtr srv, void *opaque);
 
 void virNetServerRef(virNetServerPtr srv);
 
 bool virNetServerIsPrivileged(virNetServerPtr srv);
-
-# if HAVE_DBUS
-DBusConnection* virNetServerGetDBusConn(virNetServerPtr srv);
-# endif
 
 void virNetServerAutoShutdown(virNetServerPtr srv,
                               unsigned int timeout,

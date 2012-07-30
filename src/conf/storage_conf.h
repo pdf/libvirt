@@ -1,7 +1,7 @@
 /*
  * storage_conf.h: config handling for storage driver
  *
- * Copyright (C) 2006-2008, 2010-2011 Red Hat, Inc.
+ * Copyright (C) 2006-2008, 2010-2012 Red Hat, Inc.
  * Copyright (C) 2006-2008 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -38,9 +38,9 @@
 typedef struct _virStoragePerms virStoragePerms;
 typedef virStoragePerms *virStoragePermsPtr;
 struct _virStoragePerms {
-    int mode;
-    int uid;
-    int gid;
+    mode_t mode;
+    uid_t uid;
+    gid_t gid;
     char *label;
 };
 
@@ -92,8 +92,8 @@ struct _virStorageVolDef {
 
     unsigned int building;
 
-    unsigned long long allocation;
-    unsigned long long capacity;
+    unsigned long long allocation; /* bytes */
+    unsigned long long capacity; /* bytes */
 
     virStorageVolSource source;
     virStorageVolTarget target;
@@ -120,6 +120,8 @@ enum virStoragePoolType {
     VIR_STORAGE_POOL_ISCSI,    /* iSCSI targets */
     VIR_STORAGE_POOL_SCSI,     /* SCSI HBA */
     VIR_STORAGE_POOL_MPATH,    /* Multipath devices */
+    VIR_STORAGE_POOL_RBD,      /* RADOS Block Device */
+    VIR_STORAGE_POOL_SHEEPDOG, /* Sheepdog device */
     VIR_STORAGE_POOL_ZFS,      /* ZFS volumes */
 
     VIR_STORAGE_POOL_LAST,
@@ -138,6 +140,7 @@ enum virStoragePoolDeviceType {
 enum virStoragePoolAuthType {
     VIR_STORAGE_POOL_AUTH_NONE,
     VIR_STORAGE_POOL_AUTH_CHAP,
+    VIR_STORAGE_POOL_AUTH_CEPHX,
 };
 
 typedef struct _virStoragePoolAuthChap virStoragePoolAuthChap;
@@ -147,6 +150,15 @@ struct _virStoragePoolAuthChap {
     char *passwd;
 };
 
+typedef struct _virStoragePoolAuthCephx virStoragePoolAuthCephx;
+typedef virStoragePoolAuthCephx *virStoragePoolAuthCephxPtr;
+struct _virStoragePoolAuthCephx {
+    char *username;
+    struct {
+            unsigned char uuid[VIR_UUID_BUFLEN];
+            char *usage;
+    } secret;
+};
 
 /*
  * For remote pools, info on how to reach the host
@@ -213,8 +225,9 @@ struct _virStoragePoolSourceDevice {
 typedef struct _virStoragePoolSource virStoragePoolSource;
 typedef virStoragePoolSource *virStoragePoolSourcePtr;
 struct _virStoragePoolSource {
-    /* An optional host */
-    virStoragePoolSourceHost host;
+    /* An optional (maybe multiple) host(s) */
+    size_t nhost;
+    virStoragePoolSourceHostPtr hosts;
 
     /* And either one or more devices ... */
     int ndevice;
@@ -235,6 +248,7 @@ struct _virStoragePoolSource {
     int authType;       /* virStoragePoolAuthType */
     union {
         virStoragePoolAuthChap chap;
+        virStoragePoolAuthCephx cephx;
     } auth;
 
     /* Vendor of the source */
@@ -263,9 +277,9 @@ struct _virStoragePoolDef {
     unsigned char uuid[VIR_UUID_BUFLEN];
     int type; /* virStoragePoolType */
 
-    unsigned long long allocation;
-    unsigned long long capacity;
-    unsigned long long available;
+    unsigned long long allocation; /* bytes */
+    unsigned long long capacity; /* bytes */
+    unsigned long long available; /* bytes */
 
     virStoragePoolSource source;
     virStoragePoolTarget target;
@@ -323,10 +337,6 @@ struct _virStoragePoolSourceList {
 static inline int virStoragePoolObjIsActive(virStoragePoolObjPtr pool) {
     return pool->active;
 }
-
-# define virStorageReportError(code, ...)                                \
-    virReportErrorHelper(VIR_FROM_STORAGE, code, __FILE__,               \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
 
 int virStoragePoolLoadAllConfigs(virStoragePoolObjListPtr pools,
                                  const char *configDir,

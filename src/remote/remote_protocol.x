@@ -3,7 +3,7 @@
  *   remote_internal driver and libvirtd.  This protocol is
  *   internal and may change at any time.
  *
- * Copyright (C) 2006-2011 Red Hat, Inc.
+ * Copyright (C) 2006-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -16,8 +16,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library; if not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Richard Jones <rjones@redhat.com>
  */
@@ -36,6 +36,7 @@
  * 'REMOTE_'.  This makes names quite long.
  */
 
+%#include <libvirt/libvirt.h>
 %#include "internal.h"
 %#include <arpa/inet.h>
 
@@ -64,7 +65,7 @@
  * This is an arbitrary limit designed to stop the decoder from trying
  * to allocate unbounded amounts of memory when fed with a bad message.
  */
-const REMOTE_STRING_MAX = 65536;
+const REMOTE_STRING_MAX = 1048576;
 
 /* A long string, which may NOT be NULL. */
 typedef string remote_nonnull_string<REMOTE_STRING_MAX>;
@@ -78,7 +79,7 @@ typedef remote_nonnull_string *remote_string;
 const REMOTE_DOMAIN_ID_LIST_MAX = 16384;
 
 /* Upper limit on lists of domain names. */
-const REMOTE_DOMAIN_NAME_LIST_MAX = 1024;
+const REMOTE_DOMAIN_NAME_LIST_MAX = 16384;
 
 /* Upper limit on cpumap (bytes) passed to virDomainPinVcpu. */
 const REMOTE_CPUMAP_MAX = 256;
@@ -93,25 +94,25 @@ const REMOTE_CPUMAPS_MAX = 16384;
 const REMOTE_MIGRATE_COOKIE_MAX = 16384;
 
 /* Upper limit on lists of network names. */
-const REMOTE_NETWORK_NAME_LIST_MAX = 256;
+const REMOTE_NETWORK_NAME_LIST_MAX = 16384;
 
 /* Upper limit on lists of interface names. */
-const REMOTE_INTERFACE_NAME_LIST_MAX = 256;
+const REMOTE_INTERFACE_NAME_LIST_MAX = 16384;
 
 /* Upper limit on lists of defined interface names. */
-const REMOTE_DEFINED_INTERFACE_NAME_LIST_MAX = 256;
+const REMOTE_DEFINED_INTERFACE_NAME_LIST_MAX = 16384;
 
 /* Upper limit on lists of storage pool names. */
-const REMOTE_STORAGE_POOL_NAME_LIST_MAX = 256;
+const REMOTE_STORAGE_POOL_NAME_LIST_MAX = 4096;
 
 /* Upper limit on lists of storage vol names. */
-const REMOTE_STORAGE_VOL_NAME_LIST_MAX = 1024;
+const REMOTE_STORAGE_VOL_NAME_LIST_MAX = 16384;
 
 /* Upper limit on lists of node device names. */
 const REMOTE_NODE_DEVICE_NAME_LIST_MAX = 16384;
 
 /* Upper limit on lists of node device capabilities. */
-const REMOTE_NODE_DEVICE_CAPS_LIST_MAX = 16384;
+const REMOTE_NODE_DEVICE_CAPS_LIST_MAX = 65536;
 
 /* Upper limit on lists of network filter names. */
 const REMOTE_NWFILTER_NAME_LIST_MAX = 1024;
@@ -159,13 +160,13 @@ const REMOTE_DOMAIN_SNAPSHOT_LIST_NAMES_MAX = 1024;
  * Note applications need to be aware of this limit and issue multiple
  * requests for large amounts of data.
  */
-const REMOTE_DOMAIN_BLOCK_PEEK_BUFFER_MAX = 65536;
+const REMOTE_DOMAIN_BLOCK_PEEK_BUFFER_MAX = 1048576;
 
 /* Maximum length of a memory peek buffer message.
  * Note applications need to be aware of this limit and issue multiple
  * requests for large amounts of data.
  */
-const REMOTE_DOMAIN_MEMORY_PEEK_BUFFER_MAX = 65536;
+const REMOTE_DOMAIN_MEMORY_PEEK_BUFFER_MAX = 1048576;
 
 /*
  * Maximum length of a security model field.
@@ -206,6 +207,22 @@ const REMOTE_DOMAIN_SEND_KEY_MAX = 16;
  * Upper limit on list of interface parameters
  */
 const REMOTE_DOMAIN_INTERFACE_PARAMETERS_MAX = 16;
+
+/*
+ * Upper limit on cpus involved in per-cpu stats
+ */
+const REMOTE_DOMAIN_GET_CPU_STATS_NCPUS_MAX = 128;
+
+/*
+ * Upper limit on list of per-cpu stats:
+ *  REMOTE_NODE_CPU_STATS_MAX * REMOTE_DOMAIN_GET_CPU_STATS_MAX
+ */
+const REMOTE_DOMAIN_GET_CPU_STATS_MAX = 2048;
+
+/*
+ * Upper limit on number of disks with errors
+ */
+const REMOTE_DOMAIN_DISK_ERRORS_MAX = 256;
 
 /* UUID.  VIR_UUID_BUFLEN definition comes from libvirt.h */
 typedef opaque remote_uuid[VIR_UUID_BUFLEN];
@@ -347,6 +364,10 @@ struct remote_node_get_memory_stats {
     unsigned hyper value;
 };
 
+struct remote_domain_disk_error {
+    remote_nonnull_string disk;
+    int error;
+};
 
 /*----- Calls. -----*/
 
@@ -735,6 +756,18 @@ struct remote_domain_resume_args {
     remote_nonnull_domain dom;
 };
 
+struct remote_domain_pm_suspend_for_duration_args {
+    remote_nonnull_domain dom;
+    unsigned int target;
+    unsigned hyper duration;
+    unsigned int flags;
+};
+
+struct remote_domain_pm_wakeup_args {
+    remote_nonnull_domain dom;
+    unsigned int flags;
+};
+
 struct remote_domain_shutdown_args {
     remote_nonnull_domain dom;
 };
@@ -1095,6 +1128,26 @@ struct remote_domain_set_autostart_args {
     int autostart;
 };
 
+struct remote_domain_set_metadata_args {
+    remote_nonnull_domain dom;
+    int type;
+    remote_string metadata;
+    remote_string key;
+    remote_string uri;
+    unsigned int flags;
+};
+
+struct remote_domain_get_metadata_args {
+    remote_nonnull_domain dom;
+    int type;
+    remote_string uri;
+    unsigned int flags;
+};
+
+struct remote_domain_get_metadata_ret {
+    remote_nonnull_string metadata;
+};
+
 struct remote_domain_block_job_abort_args {
     remote_nonnull_domain dom;
     remote_nonnull_string path;
@@ -1128,6 +1181,13 @@ struct remote_domain_block_pull_args {
     unsigned hyper bandwidth;
     unsigned int flags;
 };
+struct remote_domain_block_rebase_args {
+    remote_nonnull_domain dom;
+    remote_nonnull_string path;
+    remote_string base;
+    unsigned hyper bandwidth;
+    unsigned int flags;
+};
 
 struct remote_domain_set_block_io_tune_args {
     remote_nonnull_domain dom;
@@ -1146,6 +1206,28 @@ struct remote_domain_get_block_io_tune_args {
 struct remote_domain_get_block_io_tune_ret {
     remote_typed_param params<REMOTE_DOMAIN_BLOCK_IO_TUNE_PARAMETERS_MAX>;
     int nparams;
+};
+
+struct remote_domain_get_cpu_stats_args {
+    remote_nonnull_domain dom;
+    unsigned int nparams;
+    int          start_cpu;
+    unsigned int ncpus;
+    unsigned int flags;
+};
+
+struct remote_domain_get_cpu_stats_ret {
+    remote_typed_param params<REMOTE_DOMAIN_GET_CPU_STATS_MAX>;
+    int nparams;
+};
+
+struct remote_domain_get_hostname_args {
+    remote_nonnull_domain dom;
+    unsigned int flags;
+};
+
+struct remote_domain_get_hostname_ret {
+    remote_nonnull_string hostname;
 };
 
 /* Network calls: */
@@ -1642,6 +1724,12 @@ struct remote_storage_vol_wipe_args {
     unsigned int flags;
 };
 
+struct remote_storage_vol_wipe_pattern_args {
+    remote_nonnull_storage_vol vol;
+    unsigned int algorithm;
+    unsigned int flags;
+};
+
 struct remote_storage_vol_get_xml_desc_args {
     remote_nonnull_storage_vol vol;
     unsigned int flags;
@@ -1667,6 +1755,12 @@ struct remote_storage_vol_get_path_args {
 
 struct remote_storage_vol_get_path_ret {
     remote_nonnull_string name;
+};
+
+struct remote_storage_vol_resize_args {
+    remote_nonnull_storage_vol vol;
+    unsigned hyper capacity;
+    unsigned int flags;
 };
 
 /* Node driver calls: */
@@ -2093,6 +2187,25 @@ struct remote_domain_event_disk_change_msg {
     int reason;
 };
 
+struct remote_domain_event_tray_change_msg {
+    remote_nonnull_domain dom;
+    remote_nonnull_string devAlias;
+    int reason;
+};
+
+struct remote_domain_event_pmwakeup_msg {
+    remote_nonnull_domain dom;
+};
+
+struct remote_domain_event_pmsuspend_msg {
+    remote_nonnull_domain dom;
+};
+
+struct remote_domain_event_balloon_change_msg {
+    remote_nonnull_domain dom;
+    unsigned hyper actual;
+};
+
 struct remote_domain_managed_save_args {
     remote_nonnull_domain dom;
     unsigned int flags;
@@ -2150,6 +2263,17 @@ struct remote_domain_snapshot_list_names_ret {
     remote_nonnull_string names<REMOTE_DOMAIN_SNAPSHOT_LIST_NAMES_MAX>; /* insert@1 */
 };
 
+struct remote_domain_list_all_snapshots_args {
+    remote_nonnull_domain dom;
+    int need_results;
+    unsigned int flags;
+};
+
+struct remote_domain_list_all_snapshots_ret {
+    remote_nonnull_domain_snapshot snapshots<>;
+    int ret;
+};
+
 struct remote_domain_snapshot_num_children_args {
     remote_nonnull_domain_snapshot snap;
     unsigned int flags;
@@ -2167,6 +2291,17 @@ struct remote_domain_snapshot_list_children_names_args {
 
 struct remote_domain_snapshot_list_children_names_ret {
     remote_nonnull_string names<REMOTE_DOMAIN_SNAPSHOT_LIST_NAMES_MAX>; /* insert@1 */
+};
+
+struct remote_domain_snapshot_list_all_children_args {
+    remote_nonnull_domain_snapshot snapshot;
+    int need_results;
+    unsigned int flags;
+};
+
+struct remote_domain_snapshot_list_all_children_ret {
+    remote_nonnull_domain_snapshot snapshots<>;
+    int ret;
 };
 
 struct remote_domain_snapshot_lookup_by_name_args {
@@ -2204,6 +2339,24 @@ struct remote_domain_snapshot_current_args {
 
 struct remote_domain_snapshot_current_ret {
     remote_nonnull_domain_snapshot snap;
+};
+
+struct remote_domain_snapshot_is_current_args {
+    remote_nonnull_domain_snapshot snap;
+    unsigned int flags;
+};
+
+struct remote_domain_snapshot_is_current_ret {
+    int current;
+};
+
+struct remote_domain_snapshot_has_metadata_args {
+    remote_nonnull_domain_snapshot snap;
+    unsigned int flags;
+};
+
+struct remote_domain_snapshot_has_metadata_ret {
+    int metadata;
 };
 
 struct remote_domain_revert_to_snapshot_args {
@@ -2346,6 +2499,32 @@ struct remote_node_suspend_for_duration_args {
     unsigned int target;
     unsigned hyper duration;
     unsigned int flags;
+};
+
+struct remote_domain_shutdown_flags_args {
+    remote_nonnull_domain dom;
+    unsigned int flags;
+};
+
+struct remote_domain_get_disk_errors_args {
+    remote_nonnull_domain dom;
+    unsigned int maxerrors;
+    unsigned int flags;
+};
+
+struct remote_domain_get_disk_errors_ret {
+    remote_domain_disk_error errors<REMOTE_DOMAIN_DISK_ERRORS_MAX>;
+    int nerrors;
+};
+
+struct remote_connect_list_all_domains_args {
+    int need_results;
+    unsigned int flags;
+};
+
+struct remote_connect_list_all_domains_ret {
+    remote_nonnull_domain domains<>;
+    unsigned int ret;
 };
 
 
@@ -2653,7 +2832,29 @@ enum remote_procedure {
     REMOTE_PROC_DOMAIN_SET_NUMA_PARAMETERS = 254, /* autogen autogen */
     REMOTE_PROC_DOMAIN_GET_NUMA_PARAMETERS = 255, /* skipgen skipgen */
     REMOTE_PROC_DOMAIN_SET_INTERFACE_PARAMETERS = 256, /* autogen autogen */
-    REMOTE_PROC_DOMAIN_GET_INTERFACE_PARAMETERS = 257 /* skipgen skipgen */
+    REMOTE_PROC_DOMAIN_GET_INTERFACE_PARAMETERS = 257, /* skipgen skipgen */
+    REMOTE_PROC_DOMAIN_SHUTDOWN_FLAGS = 258, /* autogen autogen */
+    REMOTE_PROC_STORAGE_VOL_WIPE_PATTERN = 259, /* autogen autogen */
+    REMOTE_PROC_STORAGE_VOL_RESIZE = 260, /* autogen autogen */
+
+    REMOTE_PROC_DOMAIN_PM_SUSPEND_FOR_DURATION = 261, /* autogen autogen */
+    REMOTE_PROC_DOMAIN_GET_CPU_STATS = 262, /* skipgen skipgen */
+    REMOTE_PROC_DOMAIN_GET_DISK_ERRORS = 263, /* skipgen skipgen */
+    REMOTE_PROC_DOMAIN_SET_METADATA = 264, /* autogen autogen */
+    REMOTE_PROC_DOMAIN_GET_METADATA = 265, /* autogen autogen */
+    REMOTE_PROC_DOMAIN_BLOCK_REBASE = 266, /* autogen autogen */
+    REMOTE_PROC_DOMAIN_PM_WAKEUP = 267, /* autogen autogen */
+    REMOTE_PROC_DOMAIN_EVENT_TRAY_CHANGE = 268, /* autogen autogen */
+    REMOTE_PROC_DOMAIN_EVENT_PMWAKEUP = 269, /* autogen autogen */
+    REMOTE_PROC_DOMAIN_EVENT_PMSUSPEND = 270, /* autogen autogen */
+
+    REMOTE_PROC_DOMAIN_SNAPSHOT_IS_CURRENT = 271, /* autogen autogen */
+    REMOTE_PROC_DOMAIN_SNAPSHOT_HAS_METADATA = 272, /* autogen autogen */
+    REMOTE_PROC_CONNECT_LIST_ALL_DOMAINS = 273, /* skipgen skipgen priority:high */
+    REMOTE_PROC_DOMAIN_LIST_ALL_SNAPSHOTS = 274, /* skipgen skipgen priority:high */
+    REMOTE_PROC_DOMAIN_SNAPSHOT_LIST_ALL_CHILDREN = 275, /* skipgen skipgen priority:high */
+    REMOTE_PROC_DOMAIN_EVENT_BALLOON_CHANGE = 276, /* autogen autogen */
+    REMOTE_PROC_DOMAIN_GET_HOSTNAME = 277 /* autogen autogen */
 
     /*
      * Notice how the entries are grouped in sets of 10 ?

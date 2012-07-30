@@ -1,7 +1,7 @@
 /*
  * json.c: JSON object parsing/formatting
  *
- * Copyright (C) 2009-2010 Red Hat, Inc.
+ * Copyright (C) 2009-2010, 2012 Red Hat, Inc.
  * Copyright (C) 2009 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -43,9 +43,6 @@
 
 /* XXX fixme */
 #define VIR_FROM_THIS VIR_FROM_NONE
-#define virJSONError(code, ...)                                         \
-    virReportErrorHelper(VIR_FROM_NONE, code, __FILE__,                 \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
 
 
 typedef struct _virJSONParserState virJSONParserState;
@@ -67,10 +64,10 @@ struct _virJSONParser {
 void virJSONValueFree(virJSONValuePtr value)
 {
     int i;
-    if (!value)
+    if (!value || value->protect)
         return;
 
-    switch (value->type) {
+    switch ((virJSONType) value->type) {
     case VIR_JSON_TYPE_OBJECT:
         for (i = 0 ; i < value->data.object.npairs; i++) {
             VIR_FREE(value->data.object.pairs[i].key);
@@ -88,6 +85,9 @@ void virJSONValueFree(virJSONValuePtr value)
         break;
     case VIR_JSON_TYPE_NUMBER:
         VIR_FREE(value->data.number);
+        break;
+    case VIR_JSON_TYPE_BOOLEAN:
+    case VIR_JSON_TYPE_NULL:
         break;
     }
 
@@ -426,6 +426,36 @@ virJSONValuePtr virJSONValueObjectGet(virJSONValuePtr object, const char *key)
     }
 
     return NULL;
+}
+
+int virJSONValueObjectKeysNumber(virJSONValuePtr object)
+{
+    if (object->type != VIR_JSON_TYPE_OBJECT)
+        return -1;
+
+    return object->data.object.npairs;
+}
+
+const char *virJSONValueObjectGetKey(virJSONValuePtr object, unsigned int n)
+{
+    if (object->type != VIR_JSON_TYPE_OBJECT)
+        return NULL;
+
+    if (n >= object->data.object.npairs)
+        return NULL;
+
+    return object->data.object.pairs[n].key;
+}
+
+virJSONValuePtr virJSONValueObjectGetValue(virJSONValuePtr object, unsigned int n)
+{
+    if (object->type != VIR_JSON_TYPE_OBJECT)
+        return NULL;
+
+    if (n >= object->data.object.npairs)
+        return NULL;
+
+    return object->data.object.pairs[n].value;
 }
 
 int virJSONValueArraySize(virJSONValuePtr array)
@@ -923,8 +953,8 @@ virJSONValuePtr virJSONValueFromString(const char *jsonstring)
     hand = yajl_alloc(&parserCallbacks, &cfg, NULL, &parser);
 # endif
     if (!hand) {
-        virJSONError(VIR_ERR_INTERNAL_ERROR, "%s",
-                     _("Unable to create JSON parser"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Unable to create JSON parser"));
         goto cleanup;
     }
 
@@ -935,9 +965,9 @@ virJSONValuePtr virJSONValueFromString(const char *jsonstring)
                                                (const unsigned char*)jsonstring,
                                                strlen(jsonstring));
 
-        virJSONError(VIR_ERR_INTERNAL_ERROR,
-                     _("cannot parse json %s: %s"),
-                     jsonstring, (const char*) errstr);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("cannot parse json %s: %s"),
+                       jsonstring, (const char*) errstr);
         VIR_FREE(errstr);
         virJSONValueFree(parser.head);
         goto cleanup;
@@ -1047,8 +1077,8 @@ char *virJSONValueToString(virJSONValuePtr object)
     g = yajl_gen_alloc(&conf, NULL);
 # endif
     if (!g) {
-        virJSONError(VIR_ERR_INTERNAL_ERROR, "%s",
-                     _("Unable to create JSON formatter"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Unable to create JSON formatter"));
         goto cleanup;
     }
 
@@ -1077,14 +1107,14 @@ cleanup:
 #else
 virJSONValuePtr virJSONValueFromString(const char *jsonstring ATTRIBUTE_UNUSED)
 {
-    virJSONError(VIR_ERR_INTERNAL_ERROR, "%s",
-                 _("No JSON parser implementation is available"));
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("No JSON parser implementation is available"));
     return NULL;
 }
 char *virJSONValueToString(virJSONValuePtr object ATTRIBUTE_UNUSED)
 {
-    virJSONError(VIR_ERR_INTERNAL_ERROR, "%s",
-                 _("No JSON parser implementation is available"));
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("No JSON parser implementation is available"));
     return NULL;
 }
 #endif

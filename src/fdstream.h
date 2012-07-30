@@ -1,7 +1,7 @@
 /*
  * fdstream.h: generic streams impl for file descriptors
  *
- * Copyright (C) 2009-2011 Red Hat, Inc.
+ * Copyright (C) 2009-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -25,6 +25,13 @@
 
 # include "internal.h"
 # include "command.h"
+
+/* internal callback, the generic one is used up by daemon stream driver */
+/* the close callback is called with fdstream private data locked */
+typedef void (*virFDStreamInternalCloseCb)(virStreamPtr st, void *opaque);
+
+typedef void (*virFDStreamInternalCloseCbFreeOpaque)(void *opaque);
+
 
 int virFDStreamOpen(virStreamPtr st,
                     int fd);
@@ -45,4 +52,8 @@ int virFDStreamCreateFile(virStreamPtr st,
                           int oflags,
                           mode_t mode);
 
+int virFDStreamSetInternalCloseCb(virStreamPtr st,
+                                  virFDStreamInternalCloseCb cb,
+                                  void *opaque,
+                                  virFDStreamInternalCloseCbFreeOpaque fcb);
 #endif /* __VIR_FDSTREAM_H_ */

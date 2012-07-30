@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -25,9 +25,9 @@
 # define __VIR_CAPABILITIES_H
 
 # include "internal.h"
-# include "util.h"
 # include "buf.h"
 # include "cpu_conf.h"
+# include "virmacaddr.h"
 
 # include <libxml/xpath.h>
 
@@ -172,11 +172,11 @@ virCapabilitiesFreeNUMAInfo(virCapsPtr caps);
 
 extern void
 virCapabilitiesSetMacPrefix(virCapsPtr caps,
-                            unsigned char *prefix);
+                            const unsigned char prefix[VIR_MAC_PREFIX_BUFLEN]);
 
 extern void
 virCapabilitiesGenerateMac(virCapsPtr caps,
-                           unsigned char *mac);
+                           virMacAddrPtr mac);
 
 extern void
 virCapabilitiesSetEmulatorRequired(virCapsPtr caps);
@@ -237,12 +237,15 @@ virCapabilitiesAddGuestFeature(virCapsGuestPtr guest,
                                int toggle);
 
 extern int
+virCapabilitiesSupportsGuestArch(virCapsPtr caps,
+                                 const char *arch);
+extern int
 virCapabilitiesSupportsGuestOSType(virCapsPtr caps,
                                    const char *ostype);
 extern int
-virCapabilitiesSupportsGuestArch(virCapsPtr caps,
-                                 const char *ostype,
-                                 const char *arch);
+virCapabilitiesSupportsGuestOSTypeArch(virCapsPtr caps,
+                                       const char *ostype,
+                                       const char *arch);
 
 
 extern const char *

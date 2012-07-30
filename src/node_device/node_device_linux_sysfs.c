@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -70,14 +70,13 @@ int read_wwn_linux(int host, const char *file, char **wwn)
 {
     char *p = NULL;
     int fd = -1, retval = 0;
-    char buf[64];
+    char buf[65] = "";
 
     if (open_wwn_file(LINUX_SYSFS_FC_HOST_PREFIX, host, file, &fd) < 0) {
         goto out;
     }
 
-    memset(buf, 0, sizeof(buf));
-    if (saferead(fd, buf, sizeof(buf)) < 0) {
+    if (saferead(fd, buf, sizeof(buf) - 1) < 0) {
         retval = -1;
         VIR_DEBUG("Failed to read WWN for host%d '%s'",
                   host, file);

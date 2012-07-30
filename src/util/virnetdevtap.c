@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007-2011 Red Hat, Inc.
+ * Copyright (C) 2007-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *     Mark McLoughlin <markmc@redhat.com>
@@ -22,9 +22,11 @@
 
 #include <config.h>
 
+#include "virmacaddr.h"
 #include "virnetdevtap.h"
 #include "virnetdev.h"
 #include "virnetdevbridge.h"
+#include "virnetdevopenvswitch.h"
 #include "virterror_internal.h"
 #include "virfile.h"
 #include "virterror_internal.h"
@@ -105,22 +107,25 @@ virNetDevProbeVnetHdr(int tapfd)
 
 #ifdef TUNSETIFF
 /**
- * brCreateTap:
+ * virNetDevTapCreate:
  * @ifname: the interface name
- * @vnet_hr: whether to try enabling IFF_VNET_HDR
  * @tapfd: file descriptor return value for the new tap device
+ * @flags: OR of virNetDevTapCreateFlags. Only one flag is recognized:
+ *
+ *   VIR_NETDEV_TAP_CREATE_VNET_HDR
+ *     - Enable IFF_VNET_HDR on the tap device
  *
  * Creates a tap interface.
  * If the @tapfd parameter is supplied, the open tap device file
  * descriptor will be returned, otherwise the TAP device will be made
- * persistent and closed. The caller must use brDeleteTap to remove
- * a persistent TAP devices when it is no longer needed.
+ * persistent and closed. The caller must use virNetDevTapDelete to
+ * remove a persistent TAP devices when it is no longer needed.
  *
- * Returns 0 in case of success or an errno code in case of failure.
+ * Returns 0 in case of success or -1 on failure.
  */
 int virNetDevTapCreate(char **ifname,
-                       int vnet_hdr ATTRIBUTE_UNUSED,
-                       int *tapfd)
+                       int *tapfd,
+                       unsigned int flags ATTRIBUTE_UNUSED)
 {
     int fd;
     struct ifreq ifr;
@@ -137,7 +142,8 @@ int virNetDevTapCreate(char **ifname,
     ifr.ifr_flags = IFF_TAP|IFF_NO_PI;
 
 # ifdef IFF_VNET_HDR
-    if (vnet_hdr && virNetDevProbeVnetHdr(fd))
+    if ((flags &  VIR_NETDEV_TAP_CREATE_VNET_HDR) &&
+        virNetDevProbeVnetHdr(fd))
         ifr.ifr_flags |= IFF_VNET_HDR;
 # endif
 
@@ -226,8 +232,8 @@ cleanup:
 }
 #else /* ! TUNSETIFF */
 int virNetDevTapCreate(char **ifname ATTRIBUTE_UNUSED,
-                       int vnet_hdr ATTRIBUTE_UNUSED,
-                       int *tapfd ATTRIBUTE_UNUSED)
+                       int *tapfd ATTRIBUTE_UNUSED,
+                       unsigned int flags ATTRIBUTE_UNUSED)
 {
     virReportSystemError(ENOSYS, "%s",
                          _("Unable to create TAP devices on this platform"));
@@ -246,28 +252,39 @@ int virNetDevTapDelete(const char *ifname ATTRIBUTE_UNUSED)
  * virNetDevTapCreateInBridgePort:
  * @brname: the bridge name
  * @ifname: the interface name (or name template)
- * @macaddr: desired MAC address (VIR_MAC_BUFLEN long)
- * @vnet_hdr: whether to try enabling IFF_VNET_HDR
+ * @macaddr: desired MAC address
  * @tapfd: file descriptor return value for the new tap device
+ * @virtPortProfile: bridge/port specific configuration
+ * @flags: OR of virNetDevTapCreateFlags:
+
+ *   VIR_NETDEV_TAP_CREATE_IFUP
+ *     - Bring the interface up
+ *   VIR_NETDEV_TAP_CREATE_VNET_HDR
+ *     - Enable IFF_VNET_HDR on the tap device
+ *   VIR_NETDEV_TAP_CREATE_USE_MAC_FOR_BRIDGE
+ *     - Set this interface's MAC as the bridge's MAC address
  *
  * This function creates a new tap device on a bridge. @ifname can be either
  * a fixed name or a name template with '%d' for dynamic name allocation.
  * in either case the final name for the bridge will be stored in @ifname.
  * If the @tapfd parameter is supplied, the open tap device file
  * descriptor will be returned, otherwise the TAP device will be made
- * persistent and closed. The caller must use brDeleteTap to remove
+ * persistent and closed. The caller must use virNetDevTapDelete to remove
  * a persistent TAP devices when it is no longer needed.
  *
  * Returns 0 in case of success or -1 on failure
  */
 int virNetDevTapCreateInBridgePort(const char *brname,
                                    char **ifname,
-                                   const unsigned char *macaddr,
-                                   int vnet_hdr,
-                                   bool up,
-                                   int *tapfd)
+                                   const virMacAddrPtr macaddr,
+                                   const unsigned char *vmuuid,
+                                   int *tapfd,
+                                   virNetDevVPortProfilePtr virtPortProfile,
+                                   unsigned int flags)
 {
-    if (virNetDevTapCreate(ifname, vnet_hdr, tapfd) < 0)
+    virMacAddr tapmac;
+
+    if (virNetDevTapCreate(ifname, tapfd, flags) < 0)
         return -1;
 
     /* We need to set the interface MAC before adding it
@@ -276,7 +293,26 @@ int virNetDevTapCreateInBridgePort(const char *brname,
      * seeing the kernel allocate random MAC for the TAP
      * device before we set our static MAC.
      */
-    if (virNetDevSetMAC(*ifname, macaddr) < 0)
+    virMacAddrSet(&tapmac, macaddr);
+    if (!(flags & VIR_NETDEV_TAP_CREATE_USE_MAC_FOR_BRIDGE)) {
+        if (macaddr->addr[0] == 0xFE) {
+            /* For normal use, the tap device's MAC address cannot
+             * match the MAC address used by the guest. This results
+             * in "received packet on vnetX with own address as source
+             * address" error logs from the kernel.
+             */
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                           _("Unable to use MAC address starting with "
+                             "reserved value 0xFE - '%02X:%02X:%02X:%02X:%02X:%02X' - "),
+                           macaddr->addr[0], macaddr->addr[1],
+                           macaddr->addr[2], macaddr->addr[3],
+                           macaddr->addr[4], macaddr->addr[5]);
+            goto error;
+        }
+        tapmac.addr[0] = 0xFE; /* Discourage bridge from using TAP dev MAC */
+    }
+
+    if (virNetDevSetMAC(*ifname, &tapmac) < 0)
         goto error;
 
     /* We need to set the interface MTU before adding it
@@ -286,16 +322,24 @@ int virNetDevTapCreateInBridgePort(const char *brname,
     if (virNetDevSetMTUFromDevice(*ifname, brname) < 0)
         goto error;
 
-    if (virNetDevBridgeAddPort(brname, *ifname) < 0)
-        goto error;
+    if (virtPortProfile) {
+        if (virNetDevOpenvswitchAddPort(brname, *ifname, macaddr, vmuuid,
+                                        virtPortProfile) < 0) {
+            goto error;
+        }
+    } else {
+        if (virNetDevBridgeAddPort(brname, *ifname) < 0)
+            goto error;
+    }
 
-    if (virNetDevSetOnline(*ifname, up) < 0)
+    if (virNetDevSetOnline(*ifname, !!(flags & VIR_NETDEV_TAP_CREATE_IFUP)) < 0)
         goto error;
 
     return 0;
 
  error:
-    VIR_FORCE_CLOSE(*tapfd);
+    if (tapfd)
+        VIR_FORCE_CLOSE(*tapfd);
 
-    return errno;
+    return -1;
 }

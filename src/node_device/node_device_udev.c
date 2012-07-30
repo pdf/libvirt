@@ -1,7 +1,7 @@
 /*
  * node_device_udev.c: node device enumeration - libudev implementation
  *
- * Copyright (C) 2009-2011 Red Hat, Inc.
+ * Copyright (C) 2009-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Dave Allan <dallan@redhat.com>
  */
@@ -1241,9 +1241,9 @@ static int udevSetParent(struct udev_device *device,
 
         parent_sysfs_path = udev_device_get_syspath(parent_device);
         if (parent_sysfs_path == NULL) {
-            virNodeDeviceReportError(VIR_ERR_INTERNAL_ERROR,
-                                     _("Could not get syspath for parent of '%s'"),
-                                     udev_device_get_syspath(parent_device));
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("Could not get syspath for parent of '%s'"),
+                           udev_device_get_syspath(parent_device));
             goto out;
         }
 
@@ -1604,7 +1604,7 @@ out:
     return ret;
 }
 
-static int udevDeviceMonitorStartup(int privileged)
+static int udevDeviceMonitorStartup(int privileged ATTRIBUTE_UNUSED)
 {
     udevPrivate *priv = NULL;
     struct udev *udev = NULL;
@@ -1623,7 +1623,7 @@ static int udevDeviceMonitorStartup(int privileged)
         if (errno != ENOENT && (privileged  || errno != EACCES)) {
             char ebuf[256];
             VIR_ERROR(_("Failed to initialize libpciaccess: %s"),
-                      virStrerror(pciret, ebuf, sizeof ebuf));
+                      virStrerror(pciret, ebuf, sizeof(ebuf)));
             ret = -1;
             goto out;
         }

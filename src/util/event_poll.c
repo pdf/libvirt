@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -37,17 +37,12 @@
 #include "memory.h"
 #include "util.h"
 #include "virfile.h"
-#include "ignore-value.h"
 #include "virterror_internal.h"
 #include "virtime.h"
 
 #define EVENT_DEBUG(fmt, ...) VIR_DEBUG(fmt, __VA_ARGS__)
 
 #define VIR_FROM_THIS VIR_FROM_EVENT
-
-#define virEventError(code, ...)                                    \
-    virReportErrorHelper(VIR_FROM_EVENT, code, __FILE__,            \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
 
 static int virEventPollInterruptLocked(void);
 
@@ -615,7 +610,7 @@ int virEventPollRunOnce(void) {
 
  retry:
     PROBE(EVENT_POLL_RUN,
-          "nhandles=%d imeout=%d",
+          "nhandles=%d timeout=%d",
           nfds, timeout);
     ret = poll(fds, nfds, timeout);
     if (ret < 0) {
@@ -681,9 +676,9 @@ int virEventPollInit(void)
     if (virEventPollAddHandle(eventLoop.wakeupfd[0],
                               VIR_EVENT_HANDLE_READABLE,
                               virEventPollHandleWakeup, NULL, NULL) < 0) {
-        virEventError(VIR_ERR_INTERNAL_ERROR,
-                      _("Unable to add handle %d to event loop"),
-                      eventLoop.wakeupfd[0]);
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Unable to add handle %d to event loop"),
+                       eventLoop.wakeupfd[0]);
         VIR_FORCE_CLOSE(eventLoop.wakeupfd[0]);
         VIR_FORCE_CLOSE(eventLoop.wakeupfd[1]);
         return -1;

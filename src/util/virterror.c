@@ -1,9 +1,21 @@
 /*
  * virterror.c: implements error handling and reporting code for libvirt
  *
- * Copy:  Copyright (C) 2006, 2008-2011 Red Hat, Inc.
+ * Copyright (C) 2006, 2008-2012 Red Hat, Inc.
  *
- * See COPYING.LIB for the License of this software
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel Veillard <veillard@redhat.com>
  */
@@ -31,156 +43,76 @@ virErrorLogPriorityFunc virErrorLogPriorityFilter = NULL;
 static virLogPriority virErrorLevelPriority(virErrorLevel level) {
     switch (level) {
         case VIR_ERR_NONE:
-            return(VIR_LOG_INFO);
+            return VIR_LOG_INFO;
         case VIR_ERR_WARNING:
-            return(VIR_LOG_WARN);
+            return VIR_LOG_WARN;
         case VIR_ERR_ERROR:
-            return(VIR_LOG_ERROR);
+            return VIR_LOG_ERROR;
     }
-    return(VIR_LOG_ERROR);
+    return VIR_LOG_ERROR;
 }
 
-static const char *virErrorDomainName(virErrorDomain domain) {
-    const char *dom = "unknown";
-    switch (domain) {
-        case VIR_FROM_NONE:
-            dom = "";
-            break;
-        case VIR_FROM_XEN:
-            dom = "Xen ";
-            break;
-        case VIR_FROM_XENAPI:
-            dom = "XenAPI ";
-            break;
-        case VIR_FROM_LIBXL:
-            dom = "xenlight ";
-            break;
-        case VIR_FROM_XML:
-            dom = "XML ";
-            break;
-        case VIR_FROM_XEND:
-            dom = "Xen Daemon ";
-            break;
-        case VIR_FROM_XENSTORE:
-            dom = "Xen Store ";
-            break;
-        case VIR_FROM_XEN_INOTIFY:
-            dom = "Xen Inotify ";
-            break;
-        case VIR_FROM_DOM:
-            dom = "Domain ";
-            break;
-        case VIR_FROM_RPC:
-            dom = "RPC ";
-            break;
-        case VIR_FROM_QEMU:
-            dom = "QEMU ";
-            break;
-        case VIR_FROM_NET:
-            dom = "Network ";
-            break;
-        case VIR_FROM_TEST:
-            dom = "Test ";
-            break;
-        case VIR_FROM_REMOTE:
-            dom = "Remote ";
-            break;
-        case VIR_FROM_SEXPR:
-            dom = "S-Expr ";
-            break;
-        case VIR_FROM_PROXY:
-            dom = "PROXY ";
-            break;
-        case VIR_FROM_CONF:
-            dom = "Config ";
-            break;
-        case VIR_FROM_PHYP:
-            dom = "IBM power hypervisor ";
-            break;
-        case VIR_FROM_OPENVZ:
-            dom = "OpenVZ ";
-            break;
-        case VIR_FROM_VMWARE:
-            dom = "VMware ";
-            break;
-        case VIR_FROM_XENXM:
-            dom = "Xen XM ";
-            break;
-        case VIR_FROM_STATS_LINUX:
-            dom = "Linux Stats ";
-            break;
-        case VIR_FROM_LXC:
-            dom = "Linux Container ";
-            break;
-        case VIR_FROM_STORAGE:
-            dom = "Storage ";
-            break;
-        case VIR_FROM_NETWORK:
-            dom = "Network Config ";
-            break;
-        case VIR_FROM_DOMAIN:
-            dom = "Domain Config ";
-            break;
-        case VIR_FROM_NODEDEV:
-            dom = "Node Device ";
-            break;
-        case VIR_FROM_UML:
-            dom = "UML ";
-            break;
-        case VIR_FROM_SECURITY:
-            dom = "Security Labeling ";
-            break;
-        case VIR_FROM_VBOX:
-            dom = "VBOX ";
-            break;
-        case VIR_FROM_INTERFACE:
-            dom = "Interface ";
-            break;
-        case VIR_FROM_ONE:
-            dom = "ONE ";
-            break;
-        case VIR_FROM_ESX:
-            dom = "ESX ";
-            break;
-        case VIR_FROM_SECRET:
-            dom = "Secret Storage ";
-            break;
-        case VIR_FROM_CPU:
-            dom = "CPU ";
-            break;
-        case VIR_FROM_NWFILTER:
-            dom = "Network Filter ";
-            break;
-        case VIR_FROM_HOOK:
-            dom = "Sync Hook ";
-            break;
-        case VIR_FROM_DOMAIN_SNAPSHOT:
-            dom = "Domain Snapshot ";
-            break;
-        case VIR_FROM_AUDIT:
-            dom = "Audit ";
-            break;
-        case VIR_FROM_SYSINFO:
-            dom = "Sysinfo ";
-            break;
-        case VIR_FROM_STREAMS:
-            dom = "Streams ";
-            break;
-        case VIR_FROM_EVENT:
-            dom = "Events ";
-            break;
-        case VIR_FROM_LOCKING:
-            dom = "Locking ";
-            break;
-        case VIR_FROM_HYPERV:
-            dom = "Hyper-V ";
-            break;
-        case VIR_FROM_CAPABILITIES:
-            dom = "Capabilities ";
-            break;
-    }
-    return(dom);
-}
+
+VIR_ENUM_DECL(virErrorDomain)
+VIR_ENUM_IMPL(virErrorDomain, VIR_ERR_DOMAIN_LAST,
+              "", /* 0 */
+              "Xen Driver",
+              "Xen Daemon",
+              "Xen Store",
+              "S-Expression",
+
+              "XML Util", /* 5 */
+              "Domain",
+              "XML-RPC",
+              "Proxy Daemon",
+              "Config File",
+
+              "QEMU Driver", /* 10 */
+              "Network",
+              "Test Driver",
+              "Remote Driver",
+              "OpenVZ Driver",
+
+              "Xen XM Driver", /* 15 */
+              "Linux Statistics",
+              "LXC Driver",
+              "Storage Driver",
+              "Network Driver",
+
+              "Domain Config", /* 20 */
+              "User Mode Linux Driver",
+              "Node Device Driver",
+              "Xen Inotify Driver",
+              "Security Driver",
+
+              "VirtualBox Driver", /* 25 */
+              "Network Interface Driver",
+              "Open Nebula Driver",
+              "ESX Driver",
+              "Power Hypervisor Driver",
+
+              "Secrets Driver", /* 30 */
+              "CPU Driver",
+              "XenAPI Driver",
+              "Network Filter Driver",
+              "Lifecycle Hook",
+
+              "Domain Snapshot", /* 35 */
+              "Audit Utils",
+              "Sysinfo Utils",
+              "I/O Stream Utils",
+              "VMWare Driver",
+
+              "Event Loop", /* 40 */
+              "Xen Light Driver",
+              "Lock Driver",
+              "Hyper-V Driver",
+              "Capabilities Utils",
+
+              "URI Utils", /* 45 */
+              "Authentication Utils",
+              "DBus Utils"
+    )
 
 
 /*
@@ -228,7 +160,7 @@ virErrorGenericFailure(virErrorPtr err)
 
 
 /*
- * Internal helper to perform a deep copy of the an error
+ * Internal helper to perform a deep copy of an error
  */
 static int
 virCopyError(virErrorPtr from,
@@ -267,7 +199,8 @@ virLastErrorObject(void)
     if (!err) {
         if (VIR_ALLOC(err) < 0)
             return NULL;
-        virThreadLocalSet(&virLastErr, err);
+        if (virThreadLocalSet(&virLastErr, err) < 0)
+            VIR_FREE(err);
     }
     return err;
 }
@@ -438,7 +371,7 @@ virResetLastError(void)
  * Since 0.6.0, all errors reported in the per-connection object
  * are also duplicated in the global error object. As such an
  * application can always use virGetLastError(). This method
- * remains for backwards compatability.
+ * remains for backwards compatibility.
  *
  * Returns a pointer to the last error or NULL if none occurred.
  */
@@ -469,7 +402,7 @@ virConnGetLastError(virConnectPtr conn)
  * Since 0.6.0, all errors reported in the per-connection object
  * are also duplicated in the global error object. As such an
  * application can always use virGetLastError(). This method
- * remains for backwards compatability.
+ * remains for backwards compatibility.
  *
  * One will need to free the result with virResetError()
  *
@@ -575,7 +508,9 @@ virDefaultErrorFunc(virErrorPtr err)
             lvl = _("error");
             break;
     }
-    dom = virErrorDomainName(err->domain);
+    dom = virErrorDomainTypeToString(err->domain);
+    if (!dom)
+        dom = "Unknown";
     if ((err->dom != NULL) && (err->code != VIR_ERR_INVALID_DOMAIN)) {
         domain = err->dom->name;
     } else if ((err->net != NULL) && (err->code != VIR_ERR_INVALID_NETWORK)) {
@@ -584,13 +519,13 @@ virDefaultErrorFunc(virErrorPtr err)
     len = strlen(err->message);
     if ((err->domain == VIR_FROM_XML) && (err->code == VIR_ERR_XML_DETAIL) &&
         (err->int1 != 0))
-        fprintf(stderr, "libvir: %s%s %s%s: line %d: %s",
+        fprintf(stderr, "libvir: %s %s %s%s: line %d: %s",
                 dom, lvl, domain, network, err->int1, err->message);
     else if ((len == 0) || (err->message[len - 1] != '\n'))
-        fprintf(stderr, "libvir: %s%s %s%s: %s\n",
+        fprintf(stderr, "libvir: %s %s %s%s: %s\n",
                 dom, lvl, domain, network, err->message);
     else
-        fprintf(stderr, "libvir: %s%s %s%s: %s",
+        fprintf(stderr, "libvir: %s %s %s%s: %s",
                 dom, lvl, domain, network, err->message);
 }
 
@@ -612,7 +547,7 @@ virDispatchError(virConnectPtr conn)
     virErrorFunc handler = virErrorHandler;
     void *userData = virUserData;
 
-    /* Should never happen, but doesn't hurt to check */
+    /* Can only happen on OOM.  */
     if (!err)
         return;
 
@@ -682,7 +617,7 @@ virRaiseErrorFull(const char *filename ATTRIBUTE_UNUSED,
 
     /*
      * All errors are recorded in thread local storage
-     * For compatability, public API calls will copy them
+     * For compatibility, public API calls will copy them
      * to the per-connection error object when necessary
      */
     to = virLastErrorObject();
@@ -755,14 +690,14 @@ virRaiseErrorFull(const char *filename ATTRIBUTE_UNUSED,
  *
  * Returns the constant string associated to @error
  */
-const char *
+static const char *
 virErrorMsg(virErrorNumber error, const char *info)
 {
     const char *errmsg = NULL;
 
     switch (error) {
         case VIR_ERR_OK:
-            return (NULL);
+            return NULL;
         case VIR_ERR_INTERNAL_ERROR:
             if (info != NULL)
               errmsg = _("internal error %s");
@@ -879,9 +814,9 @@ virErrorMsg(virErrorNumber error, const char *info)
             break;
         case VIR_ERR_NO_NAME:
             if (info == NULL)
-                errmsg = _("missing domain name information");
+                errmsg = _("missing name information");
             else
-                errmsg = _("missing domain name information in %s");
+                errmsg = _("missing name information in %s");
             break;
         case VIR_ERR_NO_OS:
             if (info == NULL)
@@ -1020,6 +955,12 @@ virErrorMsg(virErrorNumber error, const char *info)
                 errmsg = _("authentication failed");
             else
                 errmsg = _("authentication failed: %s");
+            break;
+        case VIR_ERR_AUTH_CANCELLED:
+            if (info == NULL)
+                errmsg = _("authentication cancelled");
+            else
+                errmsg = _("authentication cancelled: %s");
             break;
         case VIR_ERR_NO_STORAGE_POOL:
             if (info == NULL)
@@ -1219,15 +1160,39 @@ virErrorMsg(virErrorNumber error, const char *info)
             else
                 errmsg = _("operation aborted: %s");
             break;
+        case VIR_ERR_NO_DOMAIN_METADATA:
+            if (info == NULL)
+                errmsg = _("metadata not found");
+            else
+                errmsg = _("metadata not found: %s");
+            break;
+        case VIR_ERR_MIGRATE_UNSAFE:
+            if (!info)
+                errmsg = _("Unsafe migration");
+            else
+                errmsg = _("Unsafe migration: %s");
+            break;
+        case VIR_ERR_OVERFLOW:
+            if (!info)
+                errmsg = _("numerical overflow");
+            else
+                errmsg = _("numerical overflow: %s");
+            break;
+        case VIR_ERR_BLOCK_COPY_ACTIVE:
+            if (!info)
+                errmsg = _("block copy still active");
+            else
+                errmsg = _("block copy still active: %s");
+            break;
     }
-    return (errmsg);
+    return errmsg;
 }
 
 /**
  * virReportErrorHelper:
  *
  * @domcode: the virErrorDomain indicating where it's coming from
- * @errcode: the virErrorNumber code for the error
+ * @errorcode: the virErrorNumber code for the error
  * @filename: Source file error is dispatched from
  * @funcname: Function error is dispatched from
  * @linenr: Line number error is dispatched from
@@ -1238,7 +1203,7 @@ virErrorMsg(virErrorNumber error, const char *info)
  * ReportError
  */
 void virReportErrorHelper(int domcode,
-                          int errcode,
+                          int errorcode,
                           const char *filename,
                           const char *funcname,
                           size_t linenr,
@@ -1257,9 +1222,9 @@ void virReportErrorHelper(int domcode,
         errorMessage[0] = '\0';
     }
 
-    virerr = virErrorMsg(errcode, (errorMessage[0] ? errorMessage : NULL));
+    virerr = virErrorMsg(errorcode, (errorMessage[0] ? errorMessage : NULL));
     virRaiseErrorFull(filename, funcname, linenr,
-                      domcode, errcode, VIR_ERR_ERROR,
+                      domcode, errorcode, VIR_ERR_ERROR,
                       virerr, errorMessage, NULL,
                       -1, -1, virerr, errorMessage);
     errno = save_errno;
@@ -1324,7 +1289,7 @@ void virReportSystemErrorFull(int domcode,
         va_end(args);
 
         size_t len = strlen(errnoDetail);
-        if (0 <= n && n + 2 + len < sizeof (msgDetailBuf)) {
+        if (0 <= n && n + 2 + len < sizeof(msgDetailBuf)) {
           char *p = msgDetailBuf + n;
           stpcpy (stpcpy (p, ": "), errnoDetail);
           msgDetail = msgDetailBuf;
@@ -1336,7 +1301,7 @@ void virReportSystemErrorFull(int domcode,
 
     virRaiseErrorFull(filename, funcname, linenr,
                       domcode, VIR_ERR_SYSTEM_ERROR, VIR_ERR_ERROR,
-                      msg, msgDetail, NULL, -1, -1, msg, msgDetail);
+                      msg, msgDetail, NULL, theerrno, -1, msg, msgDetail);
     errno = save_errno;
 }
 

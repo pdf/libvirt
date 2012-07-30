@@ -8,7 +8,7 @@
 # actually fixes for 64 bit, so this file is necessary.  Arguably
 # so is the type-punning fix.
 #
-# Copyright (C) 2007, 2011 Red Hat, Inc.
+# Copyright (C) 2007, 2011-2012 Red Hat, Inc.
 #
 # See COPYING for the license of this software.
 #
@@ -41,17 +41,20 @@ while (<RPCGEN>) {
     # We only want to fixup the GLibc rpcgen output
     # So just print data unchanged, if non-Linux
     unless ($fixup) {
-	print TARGET;
-	next;
+        print TARGET;
+        next;
     }
 
     if (m/^{/) {
-	$in_function = 1;
-	print TARGET;
-	next;
+        $in_function = 1;
+        print TARGET;
+        next;
     }
 
     s/\t/        /g;
+
+    # Fix VPATH builds
+    s,#include ".*/([^/]+)protocol\.h",#include "${1}protocol.h",;
 
     # Portability for Solaris RPC
     s/u_quad_t/uint64_t/g;
@@ -59,61 +62,60 @@ while (<RPCGEN>) {
     s/xdr_u_quad_t/xdr_uint64_t/g;
     s/xdr_quad_t/xdr_int64_t/g;
     s/(?<!IXDR_GET_INT32 )IXDR_GET_LONG/IXDR_GET_INT32/g;
-    s,#include ".*remote/remote_protocol\.h",#include "remote_protocol.h",;
 
     if (m/^}/) {
-	$in_function = 0;
+        $in_function = 0;
 
-	# Note: The body of the function is in @function.
+        # Note: The body of the function is in @function.
 
-	# Remove decl of buf, if buf isn't used in the function.
-	my @uses = grep /[^.>]\bbuf\b/, @function;
-	@function = grep !/[^.>]\bbuf\b/, @function if @uses == 1;
+        # Remove decl of buf, if buf isn't used in the function.
+        my @uses = grep /[^.>]\bbuf\b/, @function;
+        @function = grep !/[^.>]\bbuf\b/, @function if @uses == 1;
 
-	# Remove decl of i, if i isn't used in the function.
-	@uses = grep /[^.>]\bi\b/, @function;
-	@function = grep !/[^.>]\bi\b/, @function if @uses == 1;
+        # Remove decl of i, if i isn't used in the function.
+        @uses = grep /[^.>]\bi\b/, @function;
+        @function = grep !/[^.>]\bi\b/, @function if @uses == 1;
 
-	# (char **)&objp->... gives:
-	# warning: dereferencing type-punned pointer will break
-	#   strict-aliasing rules
-	# so rewrite it.
-	my %uses = ();
-	my $i = 0;
-	foreach (@function) {
-	    $uses{$1} = $i++ if m/\(char \*\*\)\&(objp->[a-z_.]+_val)/i;
-	}
-	if (keys %uses >= 1) {
-	    my $i = 1;
+        # (char **)&objp->... gives:
+        # warning: dereferencing type-punned pointer will break
+        #   strict-aliasing rules
+        # so rewrite it.
+        my %uses = ();
+        my $i = 0;
+        foreach (@function) {
+            $uses{$1} = $i++ if m/\(char \*\*\)\&(objp->[a-z_.]+_val)/i;
+        }
+        if (keys %uses >= 1) {
+            my $i = 1;
 
-	    foreach (keys %uses) {
-		$i = $uses{$_};
-		unshift @function,
-		("        char **objp_cpp$i = (char **) (void *) &$_;\n");
-		$i++;
-	    }
-	    @function =
-		map { s{\(char \*\*\)\&(objp->[a-z_.]+_val)}
-		       {objp_cpp$uses{$1}}gi; $_ } @function;
-	}
+            foreach (keys %uses) {
+                $i = $uses{$_};
+                unshift @function,
+                ("        char **objp_cpp$i = (char **) (void *) &$_;\n");
+                $i++;
+            }
+            @function =
+                map { s{\(char \*\*\)\&(objp->[a-z_.]+_val)}
+                       {objp_cpp$uses{$1}}gi; $_ } @function;
+        }
 
-	# The code uses 'IXDR_PUT_{U_,}LONG' but it's wrong in two
-	# ways: Firstly these functions are deprecated and don't
-	# work on 64 bit platforms.  Secondly the return value should
-	# be ignored.  Correct both these mistakes.
-	@function =
-	    map { s/\bIXDR_PUT_((U_)?)LONG\b/(void)IXDR_PUT_$1INT32/; $_ }
-	    map { s/\bXDR_INLINE\b/(int32_t*)XDR_INLINE/; $_ }
-	    @function;
+        # The code uses 'IXDR_PUT_{U_,}LONG' but it's wrong in two
+        # ways: Firstly these functions are deprecated and don't
+        # work on 64 bit platforms.  Secondly the return value should
+        # be ignored.  Correct both these mistakes.
+        @function =
+            map { s/\bIXDR_PUT_((U_)?)LONG\b/(void)IXDR_PUT_$1INT32/; $_ }
+            map { s/\bXDR_INLINE\b/(int32_t*)XDR_INLINE/; $_ }
+            @function;
 
-	print TARGET (join ("", @function));
-	@function = ();
+        print TARGET (join ("", @function));
+        @function = ();
     }
 
     unless ($in_function) {
-	print TARGET;
+        print TARGET;
     } else {
-	push @function, $_;
+        push @function, $_;
     }
 }
 

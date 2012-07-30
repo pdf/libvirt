@@ -12,8 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *     Mark McLoughlin <markmc@redhat.com>
@@ -111,6 +111,9 @@ int pciGetVirtualFunctionIndex(const char *pf_sysfs_device_link,
                                const char *vf_sysfs_device_link,
                                int *vf_index);
 
+int pciConfigAddressToSysfsFile(struct pci_config_address *dev,
+                                char **pci_sysfs_device_link);
+
 int pciDeviceNetName(char *device_link_sysfs_path, char **netname);
 
 int pciSysfsFile(char *pciDeviceName, char **pci_sysfs_device_link)
@@ -122,4 +125,8 @@ int pciGetDeviceAddrString(unsigned domain,
                            unsigned function,
                            char **pciConfigAddr)
     ATTRIBUTE_NONNULL(5) ATTRIBUTE_RETURN_CHECK;
+
+int pciDeviceGetVirtualFunctionInfo(const char *vf_sysfs_device_path,
+                                    char **pfname, int *vf_index);
+
 #endif /* __VIR_PCI_H__ */

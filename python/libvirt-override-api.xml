@@ -19,17 +19,23 @@
     <function name='virConnectListDefinedDomains' file='python'>
       <info>list the defined domains, stores the pointers to the names in @names</info>
       <arg name='conn' type='virConnectPtr' info='pointer to the hypervisor connection'/>
-      <return type='str *' info='the list of Names of None in case of error'/>
+      <return type='str *' info='the list of Names or None in case of error'/>
+    </function>
+    <function name='virConnectListAllDomains' file='python'>
+      <info>returns list of all defined domains</info>
+      <arg name='conn' type='virConnectPtr' info='pointer to the hypervisor connection'/>
+      <arg name='flags' type='unsigned int' info='optional flags'/>
+      <return type='domain *' info='the list of domains or None in case of error'/>
     </function>
     <function name='virConnectListNetworks' file='python'>
       <info>list the networks, stores the pointers to the names in @names</info>
       <arg name='conn' type='virConnectPtr' info='pointer to the hypervisor connection'/>
-      <return type='str *' info='the list of Names of None in case of error'/>
+      <return type='str *' info='the list of Names or None in case of error'/>
     </function>
     <function name='virConnectListDefinedNetworks' file='python'>
       <info>list the defined networks, stores the pointers to the names in @names</info>
       <arg name='conn' type='virConnectPtr' info='pointer to the hypervisor connection'/>
-      <return type='str *' info='the list of Names of None in case of error'/>
+      <return type='str *' info='the list of Names or None in case of error'/>
     </function>
     <function name='virDomainLookupByUUID' file='python'>
       <info>Try to lookup a domain on the given hypervisor based on its UUID.</info>
@@ -144,10 +150,23 @@
     </function>
     <function name='virDomainBlockStatsFlags' file='python'>
       <info>Extracts block device statistics parameters of a running domain</info>
-      <return type='virTypedParameterPtr' info='None in case of error, returns a dictionary of params'/>
+      <return type='str *' info='None in case of error, returns a dictionary of params'/>
       <arg name='domain' type='virDomainPtr' info='pointer to domain object'/>
       <arg name='path' type='char *' info='the path for the block device'/>
       <arg name='flags' type='int' info='flags (unused; pass 0)'/>
+    </function>
+    <function name='virDomainGetCPUStats' file='python'>
+      <info>Extracts CPU statistics for a running domain. On success it will
+   return a list of data of dictionary type. If boolean total is False or 0, the
+   first element of the list refers to CPU0 on the host, second element is
+   CPU1, and so on. The format of data struct is as follows:
+   [{cpu_time:xxx}, {cpu_time:xxx}, ...]
+   If it is True or 1, it returns total domain CPU statistics in the format of
+   [{cpu_time:xxx, user_time:xxx, system_time:xxx}]</info>
+     <return type='str *' info='returns a list of dictionary in case of success, None in case of error'/>
+     <arg name='domain' type='virDomainPtr' info='pointer to domain object'/>
+     <arg name='total' type='bool' info='on true, return total domain CPU statistics, false return per-cpu info'/>
+     <arg name='flags' type='int' info='flags (unused; pass 0)'/>
     </function>
     <function name='virDomainInterfaceStats' file='python'>
       <info>Extracts interface device statistics for a domain</info>
@@ -169,12 +188,12 @@
     </function>
     <function name='virDomainGetSchedulerParameters' file='python'>
       <info>Get the scheduler parameters, the @params array will be filled with the values.</info>
-      <return type='int' info='-1 in case of error, 0 in case of success.'/>
+      <return type='str *' info='None in case of error, returns a dictionary of params.'/>
       <arg name='domain' type='virDomainPtr' info='pointer to domain object'/>
     </function>
     <function name='virDomainGetSchedulerParametersFlags' file='python'>
       <info>Get the scheduler parameters</info>
-     <return type='virSchedParameterPtr' info='None in case of error, returns a dictionary of params'/>
+     <return type='str *' info='None in case of error, returns a dictionary of params'/>
      <arg name='domain' type='virDomainPtr' info='pointer to domain object'/>
      <arg name='flags' type='int' info='an OR&apos;ed set of virDomainModificationImpact'/>
     </function>
@@ -231,7 +250,7 @@
     </function>
     <function name='virDomainGetBlkioParameters' file='python'>
       <info>Get the blkio parameters</info>
-      <return type='virSchedParameterPtr' info='None in case of error, returns a dictionary of params'/>
+      <return type='str *' info='None in case of error, returns a dictionary of params'/>
       <arg name='domain' type='virDomainPtr' info='pointer to domain object'/>
       <arg name='flags' type='int' info='an OR&apos;ed set of virDomainModificationImpact'/>
     </function>
@@ -244,10 +263,39 @@
     </function>
     <function name='virDomainGetMemoryParameters' file='python'>
       <info>Get the memory parameters</info>
-      <return type='virSchedParameterPtr' info='None in case of error, returns a dictionary of params'/>
+      <return type='str *' info='None in case of error, returns a dictionary of params'/>
       <arg name='domain' type='virDomainPtr' info='pointer to domain object'/>
       <arg name='flags' type='int' info='an OR&apos;ed set of virDomainModificationImpact'/>
     </function>
+    <function name='virDomainSetNumaParameters' file='python'>
+      <info>Change the NUMA tunables</info>
+      <return type='int' info='-1 in case of error, 0 in case of success.'/>
+      <arg name='domain' type='virDomainPtr' info='pointer to domain object'/>
+      <arg name='params' type='virTypedParameterPtr' info='pointer to numa tunable objects'/>
+      <arg name='flags'  type='int' info='an OR&apos;ed set of virDomainModificationImpact'/>
+    </function>
+    <function name='virDomainGetNumaParameters' file='python'>
+      <info>Get the NUMA parameters</info>
+      <return type='str *' info='returns a dictionary of params in case of success, None in case of error'/>
+      <arg name='domain' type='virDomainPtr' info='pointer to domain object'/>
+      <arg name='flags' type='int' info='an OR&apos;ed set of virDomainModificationImpact'/>
+    </function>
+    <function name='virDomainSetInterfaceParameters' file='python'>
+      <info>Change the bandwidth tunables for a interface device</info>
+      <arg name='dom' type='virDomainPtr' info='pointer to the domain'/>
+      <arg name='device' type='const char *' info='interface name'/>
+      <arg name='params' type='virTypedParameterPtr' info='Pointer to bandwidth tuning params object'/>
+      <arg name='flags' type='unsigned int' info='an OR&apos;ed set of virDomainModificationImpact'/>
+      <return type='int' info='0 in case of success, -1 in case of failure'/>
+    </function>
+    <function name='virDomainGetInterfaceParameters' file='python'>
+      <info>Get the bandwidth tunables for a interface device</info>
+      <arg name='dom' type='virDomainPtr' info='pointer to the domain'/>
+      <arg name='device' type='const char *' info='interface name'/>
+      <arg name='flags' type='unsigned int' info='an OR&apos;ed set of virDomainModificationImpact'/>
+      <return type='str *' info='the bandwidth tunables value or None in case of error'/>
+    </function>
+
     <function name='virConnectListStoragePools' file='python'>
       <info>list the storage pools, stores the pointers to the names in @names</info>
       <arg name='conn' type='virConnectPtr' info='pointer to the hypervisor connection'/>
@@ -358,16 +406,28 @@
       <arg name='flags' type='unsigned int' info='fine-tuning flags, currently unused, pass 0.'/>
     </function>
     <function name='virDomainSnapshotListNames' file='python'>
-      <info>collect the list of snapshots for the given domain</info>
+      <info>collect the list of snapshot names for the given domain</info>
       <arg name='dom' type='virDomainPtr' info='pointer to the domain'/>
       <arg name='flags' type='unsigned int' info='flags'/>
       <return type='str *' info='the list of Names or None in case of error'/>
     </function>
+    <function name='virDomainListAllSnapshots' file='python'>
+      <info>returns the list of snapshots for the given domain</info>
+      <arg name='dom' type='virDomainPtr' info='pointer to the domain'/>
+      <arg name='flags' type='unsigned int' info='flags'/>
+      <return type='snapshot *' info='the list of snapshots or None in case of error'/>
+    </function>
     <function name='virDomainSnapshotListChildrenNames' file='python'>
-      <info>collect the list of child snapshots for the given snapshot</info>
+      <info>collect the list of child snapshot names for the given snapshot</info>
       <arg name='snapshot' type='virDomainSnapshotPtr' info='pointer to the snapshot'/>
       <arg name='flags' type='unsigned int' info='flags'/>
       <return type='str *' info='the list of Names or None in case of error'/>
+    </function>
+    <function name='virDomainSnapshotListAllChildren' file='python'>
+      <info>returns the list of child snapshots for the given snapshot</info>
+      <arg name='snapshot' type='virDomainSnapshotPtr' info='pointer to the snapshot'/>
+      <arg name='flags' type='unsigned int' info='flags'/>
+      <return type='snapshot *' info='the list of snapshots or None in case of error'/>
     </function>
     <function name='virDomainRevertToSnapshot' file='python'>
       <info>revert the domain to the given snapshot</info>
@@ -402,7 +462,7 @@
       <arg name='dom' type='virDomainPtr' info='pointer to the domain'/>
       <arg name='disk' type='const char *' info='disk name'/>
       <arg name='flags' type='unsigned int' info='an OR&apos;ed set of virDomainModificationImpact'/>
-      <return type='virTypedParameterPtr' info='the I/O tunables value or None in case of error'/>
+      <return type='str *' info='the I/O tunables value or None in case of error'/>
     </function>
     <function name='virDomainBlockPeek' file='python'>
       <info>Read the contents of domain's disk device</info>
@@ -420,6 +480,12 @@
       <arg name='size' type='size_t' info='size of memory to peek'/>
       <arg name='flags' type='unsigned int' info='an OR&apos;ed set of virDomainMemoryFlags'/>
       <return type='char *' info='the returned buffer or None in case of error'/>
+    </function>
+    <function name='virDomainGetDiskErrors' file='python'>
+      <info>Extract errors on disk devices.</info>
+      <return type='virDomainDiskErrorPtr' info='dictionary of disks and their errors or None in case of error'/>
+      <arg name='domain' type='virDomainPtr' info='a domain object'/>
+      <arg name='flags' type='unsigned int' info='unused, always pass 0'/>
     </function>
   </symbols>
 </api>

@@ -1,7 +1,7 @@
 /*
  * virnetsocket.c: generic network socket handling
  *
- * Copyright (C) 2006-2011 Red Hat, Inc.
+ * Copyright (C) 2006-2012 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -35,6 +35,7 @@
 # include <netinet/tcp.h>
 #endif
 
+#include "c-ctype.h"
 #include "virnetsocket.h"
 #include "util.h"
 #include "memory.h"
@@ -47,10 +48,6 @@
 #include "passfd.h"
 
 #define VIR_FROM_THIS VIR_FROM_RPC
-
-#define virNetError(code, ...)                                    \
-    virReportErrorHelper(VIR_FROM_THIS, code, __FILE__,           \
-                         __FUNCTION__, __LINE__, __VA_ARGS__)
 
 
 struct _virNetSocket {
@@ -97,6 +94,9 @@ static int virNetSocketForkDaemon(const char *binary)
                                              NULL);
 
     virCommandAddEnvPassCommon(cmd);
+    virCommandAddEnvPass(cmd, "XDG_CACHE_HOME");
+    virCommandAddEnvPass(cmd, "XDG_CONFIG_HOME");
+    virCommandAddEnvPass(cmd, "XDG_RUNTIME_DIR");
     virCommandClearCaps(cmd);
     virCommandDaemonize(cmd);
     ret = virCommandRun(cmd, NULL);
@@ -114,9 +114,9 @@ static virNetSocketPtr virNetSocketNew(virSocketAddrPtr localAddr,
     virNetSocketPtr sock;
     int no_slow_start = 1;
 
-    VIR_DEBUG("localAddr=%p remoteAddr=%p fd=%d errfd=%d pid=%d",
+    VIR_DEBUG("localAddr=%p remoteAddr=%p fd=%d errfd=%d pid=%lld",
               localAddr, remoteAddr,
-              fd, errfd, pid);
+              fd, errfd, (long long) pid);
 
     if (virSetCloseExec(fd) < 0) {
         virReportSystemError(errno, "%s",
@@ -174,9 +174,9 @@ static virNetSocketPtr virNetSocketNew(virSocketAddrPtr localAddr,
     sock->client = isClient;
 
     PROBE(RPC_SOCKET_NEW,
-          "sock=%p refs=%d fd=%d errfd=%d pid=%d localAddr=%s, remoteAddr=%s",
-          sock, sock->refs, fd, errfd,
-          pid, NULLSTR(sock->localAddrStr), NULLSTR(sock->remoteAddrStr));
+          "sock=%p refs=%d fd=%d errfd=%d pid=%lld localAddr=%s, remoteAddr=%s",
+          sock, sock->refs, fd, errfd, (long long) pid,
+          NULLSTR(sock->localAddrStr), NULLSTR(sock->remoteAddrStr));
 
     return sock;
 
@@ -203,15 +203,15 @@ int virNetSocketNewListenTCP(const char *nodename,
     *retsocks = NULL;
     *nretsocks = 0;
 
-    memset(&hints, 0, sizeof hints);
+    memset(&hints, 0, sizeof(hints));
     hints.ai_flags = AI_PASSIVE | AI_ADDRCONFIG;
     hints.ai_socktype = SOCK_STREAM;
 
     int e = getaddrinfo(nodename, service, &hints, &ai);
     if (e != 0) {
-        virNetError(VIR_ERR_SYSTEM_ERROR,
-                    _("Unable to resolve address '%s' service '%s': %s"),
-                    nodename, service, gai_strerror(e));
+        virReportError(VIR_ERR_SYSTEM_ERROR,
+                       _("Unable to resolve address '%s' service '%s': %s"),
+                       nodename, service, gai_strerror(e));
         return -1;
     }
 
@@ -228,7 +228,7 @@ int virNetSocketNewListenTCP(const char *nodename,
         }
 
         int opt = 1;
-        if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof opt) < 0) {
+        if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
             virReportSystemError(errno, "%s", _("Unable to enable port reuse"));
             goto error;
         }
@@ -244,7 +244,7 @@ int virNetSocketNewListenTCP(const char *nodename,
              * we force it to only listen on IPv6
              */
             if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY,
-                           (void*)&on, sizeof on) < 0) {
+                           (void*)&on, sizeof(on)) < 0) {
                 virReportSystemError(errno, "%s",
                                      _("Unable to force bind to IPv6 only"));
                 goto error;
@@ -400,15 +400,15 @@ int virNetSocketNewConnectTCP(const char *nodename,
     memset(&localAddr, 0, sizeof(localAddr));
     memset(&remoteAddr, 0, sizeof(remoteAddr));
 
-    memset(&hints, 0, sizeof hints);
+    memset(&hints, 0, sizeof(hints));
     hints.ai_flags = AI_PASSIVE | AI_ADDRCONFIG;
     hints.ai_socktype = SOCK_STREAM;
 
     int e = getaddrinfo(nodename, service, &hints, &ai);
     if (e != 0) {
-        virNetError(VIR_ERR_SYSTEM_ERROR,
-                    _("Unable to resolve address '%s' service '%s': %s"),
-                    nodename, service, gai_strerror (e));
+        virReportError(VIR_ERR_SYSTEM_ERROR,
+                       _("Unable to resolve address '%s' service '%s': %s"),
+                       nodename, service, gai_strerror (e));
         return -1;
     }
 
@@ -422,7 +422,7 @@ int virNetSocketNewConnectTCP(const char *nodename,
             goto error;
         }
 
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof opt);
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
         if (connect(fd, runp->ai_addr, runp->ai_addrlen) >= 0)
             break;
@@ -482,8 +482,8 @@ int virNetSocketNewConnectUNIX(const char *path,
     remoteAddr.len = sizeof(remoteAddr.data.un);
 
     if (spawnDaemon && !binary) {
-        virNetError(VIR_ERR_INTERNAL_ERROR,
-                    _("Auto-spawn of daemon requested, but no binary specified"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Auto-spawn of daemon requested, but no binary specified"));
         return -1;
     }
 
@@ -502,7 +502,11 @@ int virNetSocketNewConnectUNIX(const char *path,
 
 retry:
     if (connect(fd, &remoteAddr.data.sa, remoteAddr.len) < 0) {
-        if (errno == ECONNREFUSED && spawnDaemon && retries < 20) {
+        if ((errno == ECONNREFUSED ||
+             errno == ENOENT) &&
+            spawnDaemon && retries < 20) {
+            VIR_DEBUG("Connection refused for %s, trying to spawn %s",
+                      path, binary);
             if (retries == 0 &&
                 virNetSocketForkDaemon(binary) < 0)
                 goto error;
@@ -824,12 +828,13 @@ int virNetSocketGetPort(virNetSocketPtr sock)
 
 
 #ifdef SO_PEERCRED
-int virNetSocketGetLocalIdentity(virNetSocketPtr sock,
-                                 uid_t *uid,
-                                 pid_t *pid)
+int virNetSocketGetUNIXIdentity(virNetSocketPtr sock,
+                                uid_t *uid,
+                                gid_t *gid,
+                                pid_t *pid)
 {
     struct ucred cr;
-    socklen_t cr_len = sizeof (cr);
+    socklen_t cr_len = sizeof(cr);
     virMutexLock(&sock->lock);
 
     if (getsockopt(sock->fd, SOL_SOCKET, SO_PEERCRED, &cr, &cr_len) < 0) {
@@ -841,14 +846,16 @@ int virNetSocketGetLocalIdentity(virNetSocketPtr sock,
 
     *pid = cr.pid;
     *uid = cr.uid;
+    *gid = cr.gid;
 
     virMutexUnlock(&sock->lock);
     return 0;
 }
 #else
-int virNetSocketGetLocalIdentity(virNetSocketPtr sock ATTRIBUTE_UNUSED,
-                                 uid_t *uid ATTRIBUTE_UNUSED,
-                                 pid_t *pid ATTRIBUTE_UNUSED)
+int virNetSocketGetUNIXIdentity(virNetSocketPtr sock ATTRIBUTE_UNUSED,
+                                uid_t *uid ATTRIBUTE_UNUSED,
+                                gid_t *gid ATTRIBUTE_UNUSED,
+                                pid_t *pid ATTRIBUTE_UNUSED)
 {
     /* XXX Many more OS support UNIX socket credentials we could port to. See dbus ....*/
     virReportSystemError(ENOSYS, "%s",
@@ -975,8 +982,9 @@ reread:
         virFileReadLimFD(sock->errfd, 1024, &errout) >= 0 &&
         errout != NULL) {
         size_t elen = strlen(errout);
-        if (elen && errout[elen-1] == '\n')
-            errout[elen-1] = '\0';
+        /* remove trailing whitespace */
+        while (elen && c_isspace(errout[elen - 1]))
+            errout[--elen] = '\0';
     }
 
     if (ret < 0) {
@@ -1170,8 +1178,8 @@ int virNetSocketSendFD(virNetSocketPtr sock, int fd)
 {
     int ret = -1;
     if (!virNetSocketHasPassFD(sock)) {
-        virNetError(VIR_ERR_INTERNAL_ERROR,
-                    _("Sending file descriptors is not supported on this socket"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Sending file descriptors is not supported on this socket"));
         return -1;
     }
     virMutexLock(&sock->lock);
@@ -1204,8 +1212,8 @@ int virNetSocketRecvFD(virNetSocketPtr sock, int *fd)
     *fd = -1;
 
     if (!virNetSocketHasPassFD(sock)) {
-        virNetError(VIR_ERR_INTERNAL_ERROR,
-                    _("Receiving file descriptors is not supported on this socket"));
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Receiving file descriptors is not supported on this socket"));
         return -1;
     }
     virMutexLock(&sock->lock);

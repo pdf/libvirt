@@ -1,9 +1,21 @@
 /*
  * xs_internal.c: access to Xen Store
  *
- * Copyright (C) 2006, 2009-2011 Red Hat, Inc.
+ * Copyright (C) 2006, 2009-2012 Red Hat, Inc.
  *
- * See COPYING.LIB for the License of this software
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Daniel Veillard <veillard@redhat.com>
  */
@@ -51,10 +63,6 @@ struct xenUnifiedDriver xenStoreDriver = {
     .xenDomainGetInfo = xenStoreGetDomainInfo,
 };
 
-#define virXenStoreError(code, ...)                                  \
-        virReportErrorHelper(VIR_FROM_XENSTORE, code, __FILE__,      \
-                             __FUNCTION__, __LINE__, __VA_ARGS__)
-
 /************************************************************************
  *									*
  *		Helper internal APIs					*
@@ -81,7 +89,7 @@ virConnectDoStoreList(virConnectPtr conn, const char *path,
 
     priv = (xenUnifiedPrivatePtr) conn->privateData;
     if (priv->xshandle == NULL || path == NULL || nb == NULL)
-        return (NULL);
+        return NULL;
 
     return xs_directory (priv->xshandle, 0, path, nb);
 }
@@ -108,7 +116,7 @@ virDomainDoStoreQuery(virConnectPtr conn, int domid, const char *path)
 
     priv = (xenUnifiedPrivatePtr) conn->privateData;
     if (priv->xshandle == NULL)
-        return (NULL);
+        return NULL;
 
     snprintf(s, 255, "/local/domain/%d/%s", domid, path);
     s[255] = 0;
@@ -135,13 +143,13 @@ virDomainDoStoreWrite(virDomainPtr domain, const char *path,
     int ret = -1;
 
     if (!VIR_IS_CONNECTED_DOMAIN(domain))
-        return (-1);
+        return -1;
 
     priv = (xenUnifiedPrivatePtr) domain->conn->privateData;
     if (priv->xshandle == NULL)
-        return (-1);
+        return -1;
     if (domain->conn->flags & VIR_CONNECT_RO)
-        return (-1);
+        return -1;
 
     snprintf(s, 255, "/local/domain/%d/%s", domain->id, path);
     s[255] = 0;
@@ -149,7 +157,7 @@ virDomainDoStoreWrite(virDomainPtr domain, const char *path,
     if (xs_write(priv->xshandle, 0, &s[0], value, strlen(value)))
         ret = 0;
 
-    return (ret);
+    return ret;
 }
 
 /**
@@ -169,18 +177,18 @@ virDomainGetVM(virDomainPtr domain)
     xenUnifiedPrivatePtr priv;
 
     if (!VIR_IS_CONNECTED_DOMAIN(domain))
-        return (NULL);
+        return NULL;
 
     priv = (xenUnifiedPrivatePtr) domain->conn->privateData;
     if (priv->xshandle == NULL)
-        return (NULL);
+        return NULL;
 
     snprintf(query, 199, "/local/domain/%d/vm", virDomainGetID(domain));
     query[199] = 0;
 
     vm = xs_read(priv->xshandle, 0, &query[0], &len);
 
-    return (vm);
+    return vm;
 }
 
 /**
@@ -203,18 +211,18 @@ virDomainGetVMInfo(virDomainPtr domain, const char *vm, const char *name)
     xenUnifiedPrivatePtr priv;
 
     if (!VIR_IS_CONNECTED_DOMAIN(domain))
-        return (NULL);
+        return NULL;
 
     priv = (xenUnifiedPrivatePtr) domain->conn->privateData;
     if (priv->xshandle == NULL)
-        return (NULL);
+        return NULL;
 
     snprintf(s, 255, "%s/%s", vm, name);
     s[255] = 0;
 
     ret = xs_read(priv->xshandle, 0, &s[0], &len);
 
-    return (ret);
+    return ret;
 }
 
 
@@ -254,10 +262,10 @@ xenStoreOpen(virConnectPtr conn,
          * remote) mechanism.
          */
         if (xenHavePrivilege()) {
-            virXenStoreError(VIR_ERR_NO_XEN,
-                             "%s", _("failed to connect to Xen Store"));
+            virReportError(VIR_ERR_NO_XEN,
+                           "%s", _("failed to connect to Xen Store"));
         }
-        return (-1);
+        return -1;
     }
 
     /* Init activeDomainList */
@@ -278,8 +286,8 @@ xenStoreOpen(virConnectPtr conn,
     if ( xenStoreAddWatch(conn, "@releaseDomain",
                      "releaseDomain", xenStoreDomainReleased, priv) < 0 )
     {
-        virXenStoreError(VIR_ERR_INTERNAL_ERROR,
-                         "%s", _("adding watch @releaseDomain"));
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       "%s", _("adding watch @releaseDomain"));
         return -1;
     }
 
@@ -287,8 +295,8 @@ xenStoreOpen(virConnectPtr conn,
     if( xenStoreAddWatch(conn, "@introduceDomain",
                      "introduceDomain", xenStoreDomainIntroduced, priv) < 0 )
     {
-        virXenStoreError(VIR_ERR_INTERNAL_ERROR,
-                         "%s", _("adding watch @introduceDomain"));
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       "%s", _("adding watch @introduceDomain"));
         return -1;
     }
 
@@ -317,8 +325,8 @@ xenStoreClose(virConnectPtr conn)
     xenUnifiedPrivatePtr priv;
 
     if (conn == NULL) {
-        virXenStoreError(VIR_ERR_INVALID_ARG, __FUNCTION__);
-        return(-1);
+        virReportError(VIR_ERR_INVALID_ARG, __FUNCTION__);
+        return -1;
     }
 
     priv = (xenUnifiedPrivatePtr) conn->privateData;
@@ -339,7 +347,7 @@ xenStoreClose(virConnectPtr conn)
     priv->activeDomainList = NULL;
 
     if (priv->xshandle == NULL)
-        return(-1);
+        return -1;
 
     if (priv->xsWatch != -1)
         virEventRemoveHandle(priv->xsWatch);
@@ -347,7 +355,7 @@ xenStoreClose(virConnectPtr conn)
     xs_daemon_close(priv->xshandle);
     priv->xshandle = NULL;
 
-    return (0);
+    return 0;
 }
 
 /**
@@ -368,19 +376,19 @@ xenStoreGetDomainInfo(virDomainPtr domain, virDomainInfoPtr info)
     xenUnifiedPrivatePtr priv;
 
     if (!VIR_IS_CONNECTED_DOMAIN(domain))
-        return (-1);
+        return -1;
 
     if ((domain == NULL) || (domain->conn == NULL) || (info == NULL)) {
-        virXenStoreError(VIR_ERR_INVALID_ARG, __FUNCTION__);
-        return(-1);
+        virReportError(VIR_ERR_INVALID_ARG, __FUNCTION__);
+        return -1;
     }
 
     priv = (xenUnifiedPrivatePtr) domain->conn->privateData;
     if (priv->xshandle == NULL)
-        return(-1);
+        return -1;
 
     if (domain->id == -1)
-        return(-1);
+        return -1;
 
     tmp = virDomainDoStoreQuery(domain->conn, domain->id, "running");
     if (tmp != NULL) {
@@ -416,7 +424,7 @@ xenStoreGetDomainInfo(virDomainPtr domain, virDomainInfoPtr info)
         info->nrVirtCpu = nb_vcpus;
         VIR_FREE(tmp2);
     }
-    return (0);
+    return 0;
 }
 
 /**
@@ -472,19 +480,19 @@ xenStoreDomainSetMemory(virDomainPtr domain, unsigned long memory)
 
     if ((domain == NULL) || (domain->conn == NULL) ||
         (memory < 1024 * MIN_XEN_GUEST_SIZE)) {
-        virXenStoreError(VIR_ERR_INVALID_ARG, __FUNCTION__);
-        return(-1);
+        virReportError(VIR_ERR_INVALID_ARG, __FUNCTION__);
+        return -1;
     }
     if (domain->id == -1)
-        return(-1);
+        return -1;
     if ((domain->id == 0) && (memory < (2 * MIN_XEN_GUEST_SIZE * 1024)))
-        return(-1);
+        return -1;
     snprintf(value, 19, "%lu", memory);
     value[19] = 0;
     ret = virDomainDoStoreWrite(domain, "memory/target", &value[0]);
     if (ret < 0)
-        return (-1);
-    return (0);
+        return -1;
+    return 0;
 }
 
 /**
@@ -495,27 +503,27 @@ xenStoreDomainSetMemory(virDomainPtr domain, unsigned long memory)
  *
  * Returns the memory size in kilobytes or 0 in case of error.
  */
-unsigned long
+unsigned long long
 xenStoreDomainGetMaxMemory(virDomainPtr domain)
 {
     char *tmp;
-    unsigned long ret = 0;
+    unsigned long long ret = 0;
     xenUnifiedPrivatePtr priv;
 
     if (!VIR_IS_CONNECTED_DOMAIN(domain))
-        return (ret);
+        return ret;
     if (domain->id == -1)
-        return(-1);
+        return 0;
 
     priv = domain->conn->privateData;
     xenUnifiedLock(priv);
     tmp = virDomainDoStoreQuery(domain->conn, domain->id, "memory/target");
     if (tmp != NULL) {
-        ret = (unsigned long) atol(tmp);
+        ret = atol(tmp);
         VIR_FREE(tmp);
     }
     xenUnifiedUnlock(priv);
-    return(ret);
+    return ret;
 }
 
 /**
@@ -536,14 +544,14 @@ xenStoreNumOfDomains(virConnectPtr conn)
     xenUnifiedPrivatePtr priv;
 
     if (conn == NULL) {
-        virXenStoreError(VIR_ERR_INVALID_ARG, __FUNCTION__);
+        virReportError(VIR_ERR_INVALID_ARG, __FUNCTION__);
         return -1;
     }
 
     priv = (xenUnifiedPrivatePtr) conn->privateData;
     if (priv->xshandle == NULL) {
-        virXenStoreError(VIR_ERR_INVALID_ARG, __FUNCTION__);
-        return(-1);
+        virReportError(VIR_ERR_INVALID_ARG, __FUNCTION__);
+        return -1;
     }
 
     idlist = xs_directory(priv->xshandle, 0, "/local/domain", &num);
@@ -562,7 +570,7 @@ out:
         VIR_FREE (idlist);
         ret = realnum;
     }
-    return(ret);
+    return ret;
 }
 
 /**
@@ -624,8 +632,8 @@ xenStoreListDomains(virConnectPtr conn, int *ids, int maxids)
     int ret;
 
     if ((conn == NULL) || (ids == NULL)) {
-        virXenStoreError(VIR_ERR_INVALID_ARG, __FUNCTION__);
-        return(-1);
+        virReportError(VIR_ERR_INVALID_ARG, __FUNCTION__);
+        return -1;
     }
 
     priv = (xenUnifiedPrivatePtr) conn->privateData;
@@ -634,7 +642,7 @@ xenStoreListDomains(virConnectPtr conn, int *ids, int maxids)
     ret = xenStoreDoListDomains(conn, priv, ids, maxids);
     xenUnifiedUnlock(priv);
 
-    return(ret);
+    return ret;
 }
 
 /**
@@ -659,13 +667,13 @@ xenStoreLookupByName(virConnectPtr conn, const char *name)
     xenUnifiedPrivatePtr priv;
 
     if ((conn == NULL) || (name == NULL)) {
-        virXenStoreError(VIR_ERR_INVALID_ARG, __FUNCTION__);
-        return(NULL);
+        virReportError(VIR_ERR_INVALID_ARG, __FUNCTION__);
+        return NULL;
     }
 
     priv = (xenUnifiedPrivatePtr) conn->privateData;
     if (priv->xshandle == NULL)
-        return(NULL);
+        return NULL;
 
     idlist = xs_directory(priv->xshandle, 0, "/local/domain", &num);
     if (idlist == NULL)
@@ -703,7 +711,7 @@ done:
     VIR_FREE(xenddomain);
     VIR_FREE(idlist);
 
-    return(ret);
+    return ret;
 }
 
 /**
@@ -723,11 +731,11 @@ xenStoreDomainShutdown(virDomainPtr domain)
     xenUnifiedPrivatePtr priv;
 
     if ((domain == NULL) || (domain->conn == NULL)) {
-        virXenStoreError(VIR_ERR_INVALID_ARG, __FUNCTION__);
-        return(-1);
+        virReportError(VIR_ERR_INVALID_ARG, __FUNCTION__);
+        return -1;
     }
     if (domain->id == -1 || domain->id == 0)
-        return(-1);
+        return -1;
     /*
      * this is very hackish, the domU kernel probes for a special
      * node in the xenstore and launch the shutdown command if found.
@@ -759,11 +767,11 @@ xenStoreDomainReboot(virDomainPtr domain, unsigned int flags)
     virCheckFlags(0, -1);
 
     if ((domain == NULL) || (domain->conn == NULL)) {
-        virXenStoreError(VIR_ERR_INVALID_ARG, __FUNCTION__);
-        return(-1);
+        virReportError(VIR_ERR_INVALID_ARG, __FUNCTION__);
+        return -1;
     }
     if (domain->id == -1 || domain->id == 0)
-        return(-1);
+        return -1;
     /*
      * this is very hackish, the domU kernel probes for a special
      * node in the xenstore and launch the shutdown command if found.
@@ -789,8 +797,8 @@ xenStoreDomainGetOSType(virDomainPtr domain) {
     char *vm, *str = NULL;
 
     if ((domain == NULL) || (domain->conn == NULL)) {
-        virXenStoreError(VIR_ERR_INVALID_ARG, __FUNCTION__);
-        return(NULL);
+        virReportError(VIR_ERR_INVALID_ARG, __FUNCTION__);
+        return NULL;
     }
 
     vm = virDomainGetVM(domain);
@@ -802,7 +810,7 @@ xenStoreDomainGetOSType(virDomainPtr domain) {
         VIR_FREE(vm);
     }
 
-    return (str);
+    return str;
 }
 
 /**
@@ -830,7 +838,7 @@ int             xenStoreDomainGetVNCPort(virConnectPtr conn, int domid) {
             ret = -1;
         VIR_FREE(tmp);
     }
-    return(ret);
+    return ret;
 }
 
 /**
@@ -895,18 +903,18 @@ xenStoreDomainGetNetworkID(virConnectPtr conn, int id, const char *mac) {
     xenUnifiedPrivatePtr priv;
 
     if (id < 0)
-        return(NULL);
+        return NULL;
 
     priv = (xenUnifiedPrivatePtr) conn->privateData;
     if (priv->xshandle == NULL)
-        return (NULL);
+        return NULL;
     if (mac == NULL)
-        return (NULL);
+        return NULL;
 
     snprintf(dir, sizeof(dir), "/local/domain/0/backend/vif/%d", id);
     list = xs_directory(priv->xshandle, 0, dir, &num);
     if (list == NULL)
-        return(NULL);
+        return NULL;
     for (i = 0; i < num; i++) {
         snprintf(path, sizeof(path), "%s/%s/%s", dir, list[i], "mac");
         if ((val = xs_read(priv->xshandle, 0, path, &len)) == NULL)
@@ -927,7 +935,7 @@ xenStoreDomainGetNetworkID(virConnectPtr conn, int id, const char *mac) {
     }
 
     VIR_FREE(list);
-    return(ret);
+    return ret;
 }
 
 /*
@@ -953,16 +961,16 @@ xenStoreDomainGetDiskID(virConnectPtr conn, int id, const char *dev) {
     xenUnifiedPrivatePtr priv;
 
     if (id < 0)
-        return(NULL);
+        return NULL;
 
     priv = (xenUnifiedPrivatePtr) conn->privateData;
     if (priv->xshandle == NULL)
-        return (NULL);
+        return NULL;
     if (dev == NULL)
-        return (NULL);
+        return NULL;
     devlen = strlen(dev);
     if (devlen <= 0)
-        return (NULL);
+        return NULL;
 
     snprintf(dir, sizeof(dir), "/local/domain/0/backend/vbd/%d", id);
     list = xs_directory(priv->xshandle, 0, dir, &num);
@@ -982,7 +990,7 @@ xenStoreDomainGetDiskID(virConnectPtr conn, int id, const char *dev) {
 
                 VIR_FREE (val);
                 VIR_FREE (list);
-                return (ret);
+                return ret;
             }
         }
         VIR_FREE (list);
@@ -1005,12 +1013,12 @@ xenStoreDomainGetDiskID(virConnectPtr conn, int id, const char *dev) {
 
                 VIR_FREE (val);
                 VIR_FREE (list);
-                return (ret);
+                return ret;
             }
         }
         VIR_FREE (list);
     }
-    return (NULL);
+    return NULL;
 }
 
 /*
@@ -1037,18 +1045,18 @@ xenStoreDomainGetPCIID(virConnectPtr conn, int id, const char *bdf)
     xenUnifiedPrivatePtr priv;
 
     if (id < 0)
-        return(NULL);
+        return NULL;
 
     priv = (xenUnifiedPrivatePtr) conn->privateData;
     if (priv->xshandle == NULL)
-        return (NULL);
+        return NULL;
     if (bdf == NULL)
-        return (NULL);
+        return NULL;
 
     snprintf(dir, sizeof(dir), "/local/domain/0/backend/pci/%d", id);
     list = xs_directory(priv->xshandle, 0, dir, &num);
     if (list == NULL)
-        return(NULL);
+        return NULL;
     for (i = 0; i < num; i++) {
         snprintf(path, sizeof(path), "%s/%s/%s", dir, list[i], "dev-0");
         if ((val = xs_read(priv->xshandle, 0, path, &len)) == NULL)
@@ -1065,7 +1073,7 @@ xenStoreDomainGetPCIID(virConnectPtr conn, int id, const char *bdf)
     }
 
     VIR_FREE(list);
-    return(ret);
+    return ret;
 }
 
 /*
@@ -1080,7 +1088,7 @@ char *xenStoreDomainGetName(virConnectPtr conn,
 
     priv = (xenUnifiedPrivatePtr) conn->privateData;
     if (priv->xshandle == NULL)
-        return(NULL);
+        return NULL;
 
     snprintf(prop, 199, "/local/domain/%d/name", id);
     prop[199] = 0;
@@ -1156,8 +1164,8 @@ int xenStoreAddWatch(virConnectPtr conn,
     for (n=0; n < list->count; n++) {
         if( STREQ(list->watches[n]->path, path) &&
             STREQ(list->watches[n]->token, token)) {
-            virXenStoreError(VIR_ERR_INTERNAL_ERROR,
-                             "%s", _("watch already tracked"));
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           "%s", _("watch already tracked"));
             return -1;
         }
     }

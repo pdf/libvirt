@@ -1,5 +1,5 @@
 # Customize Makefile.maint.                           -*- makefile -*-
-# Copyright (C) 2008-2011 Red Hat, Inc.
+# Copyright (C) 2008-2012 Red Hat, Inc.
 # Copyright (C) 2003-2008 Free Software Foundation, Inc.
 
 # This program is free software: you can redistribute it and/or modify
@@ -13,7 +13,8 @@
 # GNU General Public License for more details.
 
 # You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# along with this program.  If not, see
+# <http://www.gnu.org/licenses/>.
 
 # Use alpha.gnu.org for alpha and beta releases.
 # Use ftp.gnu.org for major releases.
@@ -75,6 +76,17 @@ local-checks-to-skip =			\
   sc_require_test_exit_idiom		\
   sc_makefile_check			\
   sc_useless_cpp_parens
+
+# Most developers don't run 'make distcheck'.  We want the official
+# dist to be secure, but don't want to penalize other developers
+# using a distro that has not yet picked up the automake fix.
+# FIXME remove this ifeq (making the syntax check unconditional)
+# once fixed automake (1.11.6 or 1.12.2+) is more common.
+ifeq ($(filter dist%, $(MAKECMDGOALS)), )
+local-checks-to-skip +=	sc_vulnerable_makefile_CVE-2012-3386
+else
+distdir: sc_vulnerable_makefile_CVE-2012-3386
+endif
 
 # Files that should never cause syntax check failures.
 VC_LIST_ALWAYS_EXCLUDE_REGEX = \
@@ -171,6 +183,7 @@ useless_free_options =				\
   --name=xmlBufferFree				\
   --name=xmlFree				\
   --name=xmlFreeDoc				\
+  --name=xmlFreeNode				\
   --name=xmlXPathFreeContext			\
   --name=xmlXPathFreeObject
 
@@ -315,6 +328,12 @@ sc_prohibit_internal_functions:
 	halt='use VIR_ macros instead of internal functions'		\
 	  $(_sc_search_regexp)
 
+# Avoid raw malloc and free, except in documentation comments.
+sc_prohibit_raw_allocation:
+	@prohibit='^.[^*].*\<((m|c|re)alloc|free) *\([^)]'		\
+	halt='use VIR_ macros from memory.h instead of malloc/free'	\
+	  $(_sc_search_regexp)
+
 # Avoid functions that can lead to double-close bugs.
 sc_prohibit_close:
 	@prohibit='([^>.]|^)\<[fp]?close *\('				\
@@ -339,12 +358,23 @@ sc_prohibit_access_xok:
 
 # Similar to the gnulib maint.mk rule for sc_prohibit_strcmp
 # Use STREQLEN or STRPREFIX rather than comparing strncmp == 0, or != 0.
+snp_ = strncmp *\(.+\)
 sc_prohibit_strncmp:
-	@grep -nE '! *str''ncmp *\(|\<str''ncmp *\(.+\) *[!=]='		\
-	    $$($(VC_LIST_EXCEPT))					\
-	  | grep -vE ':# *define STR(N?EQLEN|PREFIX)\(' &&		\
-	  { echo '$(ME): use STREQLEN or STRPREFIX instead of str''ncmp' \
-		1>&2; exit 1; } || :
+	@prohibit='! *strncmp *\(|\<$(snp_) *[!=]=|[!=]= *$(snp_)'	\
+	exclude=':# *define STR(N?EQLEN|PREFIX)\('			\
+	halt='$(ME): use STREQLEN or STRPREFIX instead of str''ncmp'	\
+	  $(_sc_search_regexp)
+
+# strtol and friends are too easy to misuse
+sc_prohibit_strtol:
+	@prohibit='\bstrto(u?ll?|[ui]max) *\('				\
+	exclude='exempt from syntax-check'				\
+	halt='$(ME): use virStrToLong_*, not strtol variants'		\
+	  $(_sc_search_regexp)
+	@prohibit='\bstrto[df] *\('					\
+	exclude='exempt from syntax-check'				\
+	halt='$(ME): use virStrToDouble, not strtod variants'		\
+	  $(_sc_search_regexp)
 
 # Use virAsprintf rather than as'printf since *strp is undefined on error.
 sc_prohibit_asprintf:
@@ -363,11 +393,6 @@ sc_prohibit_setuid:
 sc_prohibit_sprintf:
 	@prohibit='\<[s]printf\>'					\
 	halt='use snprintf, not s'printf				\
-	  $(_sc_search_regexp)
-
-sc_prohibit_strncpy:
-	@prohibit='strncpy *\('						\
-	halt='use virStrncpy, not strncpy'				\
 	  $(_sc_search_regexp)
 
 sc_prohibit_readlink:
@@ -390,6 +415,11 @@ sc_prohibit_VIR_ERR_NO_MEMORY:
 	halt='use virReportOOMError, not V'IR_ERR_NO_MEMORY		\
 	  $(_sc_search_regexp)
 
+sc_prohibit_PATH_MAX:
+	@prohibit='\<P''ATH_MAX\>'				\
+	halt='dynamically allocate paths, do not use P'ATH_MAX	\
+	  $(_sc_search_regexp)
+
 # Use a subshell for each function, to give the optimal warning message.
 include $(srcdir)/Makefile.nonreentrant
 sc_prohibit_nonreentrant:
@@ -409,14 +439,26 @@ sc_prohibit_ctype_h:
 	halt="don't use ctype.h; instead, use c-ctype.h"		\
 	  $(_sc_search_regexp)
 
+# Insist on correct types for [pug]id.
+sc_correct_id_types:
+	@prohibit='\<(int|long) *[pug]id\>'				\
+	halt="use pid_t for pid, uid_t for uid, gid_t for gid"		\
+	  $(_sc_search_regexp)
+
+# Forbid sizeof foo or sizeof (foo), require sizeof(foo)
+sc_size_of_brackets:
+	@prohibit='sizeof\s'						\
+	halt='use sizeof(foo), not sizeof (foo) or sizeof foo'		\
+	  $(_sc_search_regexp)
+
 # Ensure that no C source file, docs, or rng schema uses TABs for
 # indentation.  Also match *.h.in files, to get libvirt.h.in.  Exclude
 # files in gnulib, since they're imported.
-space_indent_files=(\.(rng|s?[ch](\.in)?|html.in|py)|(daemon|tools)/.*\.in)
+space_indent_files=(\.(rng|s?[ch](\.in)?|html.in|py|pl|syms)|(daemon|tools)/.*\.in)
 sc_TAB_in_indentation:
 	@prohibit='^ *	'						\
 	in_vc_files='$(space_indent_files)$$'				\
-	halt='indent with space, not TAB, in C, sh, html, py, and RNG schemas' \
+	halt='indent with space, not TAB, in C, sh, html, py, syms and RNG schemas' \
 	  $(_sc_search_regexp)
 
 ctype_re = isalnum|isalpha|isascii|isblank|iscntrl|isdigit|isgraph|islower\
@@ -450,6 +492,18 @@ sc_prohibit_xmlGetProp:
 	halt='use virXMLPropString, not xmlGetProp'			\
 	  $(_sc_search_regexp)
 
+# xml(ParseURI|SaveUri) doesn't handle IPv6 URIs well
+sc_prohibit_xmlURI:
+	@prohibit='\<xml(ParseURI|SaveUri) *\('				\
+	halt='use virURI(Parse|Format), not xml(ParseURI|SaveUri)'	\
+	  $(_sc_search_regexp)
+
+# we don't want old old-style return with parentheses around argument
+sc_prohibit_return_as_function:
+	@prohibit='\<return *\(([^()]*(\([^()]*\)[^()]*)*)\) *;'    \
+	halt='avoid extra () with return statements'                \
+	  $(_sc_search_regexp)
+
 # ATTRIBUTE_UNUSED should only be applied in implementations, not
 # header declarations
 sc_avoid_attribute_unused_in_header:
@@ -464,46 +518,12 @@ sc_avoid_attribute_unused_in_header:
 # |grep -vE '^(qsort|if|close|assert|fputc|free|N_|vir.*GetName|.*Unlock|virNodeListDevices|virHashRemoveEntry|freeaddrinfo|.*[fF]ree|xdrmem_create|xmlXPathFreeObject|virUUIDFormat|openvzSetProgramSentinal|polkit_action_unref)$'
 
 msg_gen_function =
-msg_gen_function += ESX_ERROR
-msg_gen_function += ESX_VI_ERROR
-msg_gen_function += HYPERV_ERROR
-msg_gen_function += PHYP_ERROR
 msg_gen_function += VIR_ERROR
-msg_gen_function += VMX_ERROR
-msg_gen_function += XENXS_ERROR
-msg_gen_function += eventReportError
-msg_gen_function += ifaceError
-msg_gen_function += interfaceReportError
-msg_gen_function += iptablesError
 msg_gen_function += lxcError
-msg_gen_function += libxlError
-msg_gen_function += macvtapError
-msg_gen_function += networkReportError
-msg_gen_function += nodeReportError
-msg_gen_function += openvzError
-msg_gen_function += pciReportError
-msg_gen_function += qemuReportError
-msg_gen_function += qemudDispatchClientFailure
 msg_gen_function += regerror
-msg_gen_function += remoteError
-msg_gen_function += remoteDispatchFormatError
-msg_gen_function += statsError
-msg_gen_function += streamsReportError
-msg_gen_function += usbReportError
-msg_gen_function += umlReportError
 msg_gen_function += vah_error
 msg_gen_function += vah_warning
-msg_gen_function += vboxError
-msg_gen_function += virCommandError
-msg_gen_function += virConfError
-msg_gen_function += virCPUReportError
-msg_gen_function += virEventError
-msg_gen_function += virDomainReportError
 msg_gen_function += virGenericReportError
-msg_gen_function += virHashError
-msg_gen_function += virHookReportError
-msg_gen_function += virInterfaceReportError
-msg_gen_function += virJSONError
 msg_gen_function += virLibConnError
 msg_gen_function += virLibDomainError
 msg_gen_function += virLibDomainSnapshotError
@@ -514,39 +534,21 @@ msg_gen_function += virLibNWFilterError
 msg_gen_function += virLibSecretError
 msg_gen_function += virLibStoragePoolError
 msg_gen_function += virLibStorageVolError
-msg_gen_function += virNetworkReportError
-msg_gen_function += virNodeDeviceReportError
-msg_gen_function += virNWFilterReportError
 msg_gen_function += virRaiseError
+msg_gen_function += virReportError
 msg_gen_function += virReportErrorHelper
 msg_gen_function += virReportSystemError
-msg_gen_function += virSecretReportError
-msg_gen_function += virSecurityReportError
-msg_gen_function += virSexprError
-msg_gen_function += virSmbiosReportError
-msg_gen_function += virSocketError
-msg_gen_function += virStatsError
-msg_gen_function += virStorageReportError
-msg_gen_function += virUtilError
-msg_gen_function += virXMLError
-msg_gen_function += virXenInotifyError
-msg_gen_function += virXenStoreError
-msg_gen_function += virXendError
-msg_gen_function += vmwareError
 msg_gen_function += xenapiSessionErrorHandler
-msg_gen_function += xenUnifiedError
-msg_gen_function += xenXMError
 
 # Uncomment the following and run "make syntax-check" to see diagnostics
 # that are not yet marked for translation, but that need to be rewritten
 # so that they are translatable.
 # msg_gen_function += fprintf
 # msg_gen_function += testError
-# msg_gen_function += virXenError
 # msg_gen_function += vshPrint
 # msg_gen_function += vshError
 
-func_or := $(shell printf '$(msg_gen_function)'|tr -s '[[:space:]]' '|')
+func_or := $(shell echo $(msg_gen_function)|tr -s ' ' '|')
 func_re := ($(func_or))
 
 # Look for diagnostics that aren't marked for translation.
@@ -555,14 +557,13 @@ func_re := ($(func_or))
 #    _("...: "
 #    "%s", _("no storage vol w..."
 sc_libvirt_unmarked_diagnostics:
-	@grep -nE							\
-	    '\<$(func_re) *\([^"]*"[^"]*[a-z]{3}' $$($(VC_LIST_EXCEPT))	\
-	  | grep -v '_''(' &&						\
-	  { echo '$(ME): found unmarked diagnostic(s)' 1>&2;		\
-	    exit 1; } || :
+	@prohibit='\<$(func_re) *\([^"]*"[^"]*[a-z]{3}'			\
+	exclude='_\('							\
+	halt='$(ME): found unmarked diagnostic(s)'			\
+	  $(_sc_search_regexp)
 	@{ grep     -nE '\<$(func_re) *\(.*;$$' $$($(VC_LIST_EXCEPT));   \
 	   grep -A1 -nE '\<$(func_re) *\(.*,$$' $$($(VC_LIST_EXCEPT)); } \
-	   | sed 's/_("[^"][^"]*"//;s/[	 ]"%s"//'			\
+	   | sed 's/_("\([^\"]\|\\.\)\+"//;s/[	 ]"%s"//'		\
 	   | grep '[	 ]"' &&						\
 	  { echo '$(ME): found unmarked diagnostic(s)' 1>&2;		\
 	    exit 1; } || :
@@ -580,6 +581,25 @@ sc_prohibit_newline_at_end_of_diagnostic:
 	    | grep '\\n"'						\
 	  && { echo '$(ME): newline at end of message(s)' 1>&2;		\
 	    exit 1; } || :
+
+# Look for diagnostics that lack a % in the format string, except that we
+# allow VIR_ERROR to do this, and ignore functions that take a single
+# string rather than a format argument.
+sc_prohibit_diagnostic_without_format:
+	@{ grep     -nE '\<$(func_re) *\(.*;$$' $$($(VC_LIST_EXCEPT));   \
+	   grep -A2 -nE '\<$(func_re) *\(.*,$$' $$($(VC_LIST_EXCEPT)); } \
+	   | sed -rn -e ':l; /[,"]$$/ {N;b l;}'				 \
+		-e '/(xenapiSessionErrorHandler|vah_(error|warning))/d'	 \
+		-e '/\<$(func_re) *\([^"]*"([^%"]|"\n[^"]*")*"[,)]/p'	 \
+           | grep -vE 'VIR_ERROR' &&					 \
+	  { echo '$(ME): found diagnostic without %' 1>&2;		 \
+	    exit 1; } || :
+
+# The strings "" and "%s" should never be marked for translation.
+sc_prohibit_useless_translation:
+	@prohibit='_\("(%s)?"\)'					\
+	halt='$(ME): found useless translation'				\
+	  $(_sc_search_regexp)
 
 # Enforce recommended preprocessor indentation style.
 sc_preprocessor_indentation:
@@ -603,12 +623,50 @@ sc_copyright_format:
 	halt='spell Red Hat as two words'				\
 	  $(_sc_search_regexp)
 
+# Prefer the new URL listing over the old street address listing when
+# calling out where to get a copy of the [L]GPL.
+sc_copyright_address:
+	@prohibit=Boston,' MA'						\
+	halt='Point to <http://www.gnu.org/licenses/>, not an address'	\
+	  $(_sc_search_regexp)
+
 # Some functions/macros produce messages intended solely for developers
 # and maintainers.  Do not mark them for translation.
 sc_prohibit_gettext_markup:
 	@prohibit='\<VIR_(WARN|INFO|DEBUG) *\(_\('			\
 	halt='do not mark these strings for translation'		\
 	  $(_sc_search_regexp)
+
+# Our code is divided into modular subdirectories for a reason, and
+# lower-level code must not include higher-level headers.
+cross_dirs=$(patsubst $(srcdir)/src/%.,%,$(wildcard $(srcdir)/src/*/.))
+cross_dirs_re=($(subst / ,/|,$(cross_dirs)))
+sc_prohibit_cross_inclusion:
+	@for dir in $(cross_dirs); do					\
+	  case $$dir in							\
+	    util/) safe="util";;					\
+	    cpu/ | locking/ | network/ | rpc/ | security/)		\
+	      safe="($$dir|util|conf)";;				\
+	    xenapi/ | xenxs/ ) safe="($$dir|util|conf|xen)";;		\
+	    *) safe="($$dir|util|conf|cpu|network|locking|rpc|security)";; \
+	  esac;								\
+	  in_vc_files="^src/$$dir"					\
+	  prohibit='^# *include .$(cross_dirs_re)'			\
+	  exclude="# *include .$$safe"					\
+	  halt='unsafe cross-directory include'				\
+	    $(_sc_search_regexp)					\
+	done
+
+# When converting an enum to a string, make sure that we track any new
+# elements added to the enum by using a _LAST marker.
+sc_require_enum_last_marker:
+	@grep -A1 -nE '^[^#]*VIR_ENUM_IMPL *\(' $$($(VC_LIST_EXCEPT))	\
+	   | sed -ne '/VIR_ENUM_IMPL[^,]*,$$/N'				\
+	     -e '/VIR_ENUM_IMPL[^,]*,[^,]*[^_,][^L,][^A,][^S,][^T,],/p'	\
+	     -e '/VIR_ENUM_IMPL[^,]*,[^,]\{0,4\},/p'			\
+	   | grep . &&							\
+	  { echo '$(ME): enum impl needs to use _LAST marker' 1>&2;	\
+	    exit 1; } || :
 
 # We don't use this feature of maint.mk.
 prev_version_file = /dev/null
@@ -678,7 +736,7 @@ $(srcdir)/src/remote/remote_client_bodies.h: $(srcdir)/src/remote/remote_protoco
 	$(MAKE) -C src remote/remote_client_bodies.h
 
 # List all syntax-check exemptions:
-exclude_file_name_regexp--sc_avoid_strcase = ^tools/virsh\.c$$
+exclude_file_name_regexp--sc_avoid_strcase = ^tools/virsh(-domain-monitor|-snapshot)?\.c$$
 
 _src1=libvirt|fdstream|qemu/qemu_monitor|util/(command|util)|xen/xend_internal|rpc/virnetsocket|lxc/lxc_controller
 exclude_file_name_regexp--sc_avoid_write = \
@@ -686,7 +744,10 @@ exclude_file_name_regexp--sc_avoid_write = \
 
 exclude_file_name_regexp--sc_bindtextdomain = ^(tests|examples)/
 
-exclude_file_name_regexp--sc_flags_usage = ^docs/
+exclude_file_name_regexp--sc_copyright_address = \
+  ^COPYING\.LIB$$
+
+exclude_file_name_regexp--sc_flags_usage = ^(docs/|src/util/virnetdevtap\.c$$)
 
 exclude_file_name_regexp--sc_libvirt_unmarked_diagnostics = \
   ^src/rpc/gendispatch\.pl$$
@@ -708,7 +769,7 @@ exclude_file_name_regexp--sc_prohibit_close = \
   (\.p[yl]$$|^docs/|^(src/util/virfile\.c|src/libvirt\.c)$$)
 
 exclude_file_name_regexp--sc_prohibit_empty_lines_at_EOF = \
-  (^tests/qemuhelpdata/|\.(gif|ico|png)$$)
+  (^tests/(qemuhelp|nodeinfo)data/|\.(gif|ico|png|diff)$$)
 
 _src2=src/(util/command|libvirt|lxc/lxc_controller)
 exclude_file_name_regexp--sc_prohibit_fork_wrappers = \
@@ -725,23 +786,37 @@ exclude_file_name_regexp--sc_prohibit_newline_at_end_of_diagnostic = \
 exclude_file_name_regexp--sc_prohibit_nonreentrant = \
   ^((po|tests)/|docs/.*py$$|tools/(virsh|console)\.c$$)
 
-exclude_file_name_regexp--sc_prohibit_readlink = ^src/util/util\.c$$
+exclude_file_name_regexp--sc_prohibit_raw_allocation = \
+  ^(src/util/memory\.[ch]|examples/.*)$$
+
+exclude_file_name_regexp--sc_prohibit_readlink = \
+  ^src/(util/util|lxc/lxc_container)\.c$$
 
 exclude_file_name_regexp--sc_prohibit_setuid = ^src/util/util\.c$$
 
 exclude_file_name_regexp--sc_prohibit_sprintf = \
   ^(docs/hacking\.html\.in)|(examples/systemtap/.*stp)|(src/dtrace2systemtap\.pl)|(src/rpc/gensystemtap\.pl)$$
 
-exclude_file_name_regexp--sc_prohibit_strncpy = \
-  ^(src/util/util|tools/virsh)\.c$$
+exclude_file_name_regexp--sc_prohibit_strncpy = ^src/util/util\.c$$
+
+exclude_file_name_regexp--sc_prohibit_strtol = \
+  ^src/(util/sexpr|(vbox|xen|xenxs)/.*)\.c$$
 
 exclude_file_name_regexp--sc_prohibit_xmlGetProp = ^src/util/xml\.c$$
 
-exclude_file_name_regexp--sc_require_config_h = ^examples/
+exclude_file_name_regexp--sc_prohibit_xmlURI = ^src/util/viruri\.c$$
 
-exclude_file_name_regexp--sc_require_config_h_first = ^examples/
+exclude_file_name_regexp--sc_prohibit_return_as_function = \.py$$
 
-exclude_file_name_regexp--sc_trailing_blank = \.(fig|gif|ico|png)$$
+_virsh_includes=(edit|domain-monitor|domain|volume|pool|network|interface|nwfilter|secret|snapshot|host|nodedev)
+exclude_file_name_regexp--sc_require_config_h = ^(examples/|tools/virsh-$(_virsh_includes)\.c$$)
+
+exclude_file_name_regexp--sc_require_config_h_first = ^(examples/|tools/virsh-$(_virsh_includes)\.c$$)
+
+exclude_file_name_regexp--sc_trailing_blank = \
+  (/qemuhelpdata/|\.(fig|gif|ico|png)$$)
 
 exclude_file_name_regexp--sc_unmarked_diagnostics = \
   ^(docs/apibuild.py|tests/virt-aa-helper-test)$$
+
+exclude_file_name_regexp--sc_size_of_brackets = cfg.mk

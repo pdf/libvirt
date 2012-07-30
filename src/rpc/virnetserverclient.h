@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -70,8 +70,8 @@ int virNetServerClientSetIdentity(virNetServerClientPtr client,
                                   const char *identity);
 const char *virNetServerClientGetIdentity(virNetServerClientPtr client);
 
-int virNetServerClientGetLocalIdentity(virNetServerClientPtr client,
-                                       uid_t *uid, pid_t *pid);
+int virNetServerClientGetUNIXIdentity(virNetServerClientPtr client,
+                                      uid_t *uid, gid_t *gid, pid_t *pid);
 
 void virNetServerClientRef(virNetServerClientPtr client);
 

@@ -32,7 +32,12 @@
 &lt;domain type='xen' id='3'&gt;
   &lt;name&gt;fv0&lt;/name&gt;
   &lt;uuid&gt;4dea22b31d52d8f32516782e98ab3fa0&lt;/uuid&gt;
+  &lt;title&gt;A short description - title - of the domain&lt;/title&gt;
   &lt;description&gt;Some human readable description&lt;/description&gt;
+  &lt;metadata&gt;
+    &lt;app1:foo xmlns:app1="http://app1.org/app1/"&gt;..&lt;/app1:foo&gt;
+    &lt;app2:bar xmlns:app2="http://app1.org/app2/"&gt;..&lt;/app2:bar&gt;
+  &lt;/metadata&gt;
   ...</pre>
 
     <dl>
@@ -54,12 +59,26 @@
         specification. <span class="since">Since 0.0.1, sysinfo
         since 0.8.7</span></dd>
 
+      <dt><code>title</code></dt>
+      <dd>The optional element <code>title</code> provides space for a
+        short description of the domain. The title should not contain
+        any newlines. <span class="since">Since 0.9.10</span>.</dd>
+
       <dt><code>description</code></dt>
       <dd>The content of the <code>description</code> element provides a
-      human readable description of the virtual machine. This data is not
-      used by libvirt in any way, it can contain any information the user
-      wants. <span class="since">Since 0.7.2</span></dd>
-    </dl>
+        human readable description of the virtual machine. This data is not
+        used by libvirt in any way, it can contain any information the user
+        wants. <span class="since">Since 0.7.2</span></dd>
+
+      <dt><code>metadata</code></dt>
+      <dd>The <code>metadata</code> node can be used by applications
+        to store custom metadata in the form of XML
+        nodes/trees. Applications must use custom namespaces on their
+        XML nodes/trees, with only one top-level element per namespace
+        (if the application needs structure, they should have
+        sub-elements to their namespace
+        element). <span class="since">Since 0.9.10</span></dd>
+   </dl>
 
     <h3><a name="elementsOS">Operating system booting</a></h3>
 
@@ -112,12 +131,24 @@
       <dd>The <code>dev</code> attribute takes one of the values "fd", "hd",
         "cdrom" or "network" and is used to specify the next boot device
         to consider. The <code>boot</code> element can be repeated multiple
-        times to setup a priority list of boot devices to try in turn. The
-        <code>boot</code> element cannot be used if per-device boot elements
-        are used (see <a href="#elementsDisks">disks</a>,
+        times to setup a priority list of boot devices to try in turn.
+        Multiple devices of the same type are sorted according to their
+        targets while preserving the order of buses. After defining the
+        domain, its XML configuration returned by libvirt (through
+        virDomainGetXMLDesc) lists devices in the sorted order. Once sorted,
+        the first device is marked as bootable. Thus, e.g., a domain
+        configured to boot from "hd" with vdb, hda, vda, and hdc disks
+        assigned to it will boot from vda (the sorted list is vda, vdb, hda,
+        hdc). Similar domain with hdc, vda, vdb, and hda disks will boot from
+        hda (sorted disks are: hda, hdc, vda, vdb). It can be tricky to
+        configure in the desired way, which is why per-device boot elements
+        (see <a href="#elementsDisks">disks</a>,
         <a href="#elementsNICS">network interfaces</a>, and
-        <a href="#elementsUSB">USB and PCI devices</a> sections below).
-        <span class="since">Since 0.1.3, per-device boot since 0.8.8</span>
+        <a href="#elementsUSB">USB and PCI devices</a> sections below) were
+        introduced and they are the preferred way providing full control over
+        booting order. The <code>boot</code> element and per-device boot
+        elements are mutually exclusive. <span class="since">Since 0.1.3,
+        per-device boot since 0.8.8</span>
       </dd>
       <dt><code>bootmenu</code></dt>
       <dd> Whether or not to enable an interactive boot menu prompt on guest
@@ -219,6 +250,28 @@
         installation media source / kickstart file</dd>
     </dl>
 
+    <h4><a name="eleemntsOSContainer">Container boot</a></h4>
+
+    <p>
+      When booting a domain using container based virtualization, instead
+      of a kernel / boot image, a path to the init binary is required, using
+      the <code>init</code> element. By default this will be launched with
+      no arguments. To specify the initial argv, use the <code>initarg</code>
+      element, repeated as many time as is required. The <code>cmdline</code>
+      element, if set will be used to provide an equivalent to <code>/proc/cmdline</code>
+      but will not effect init argv.
+    </p>
+
+    <pre>
+  &lt;os&gt;
+    &lt;type arch='x86_64'&gt;exe&lt;/type&gt;
+    &lt;init&gt;/bin/systemd&lt;/init&gt;
+    &lt;initarg&gt;--unit&lt;/initarg&gt;
+    &lt;initarg&gt;emergency.service&lt;/initarg&gt;
+  &lt;/os&gt;
+    </pre>
+
+
     <h3><a name="elementsSysinfo">SMBIOS System Information</a></h3>
 
     <p>
@@ -287,7 +340,7 @@
 <pre>
 &lt;domain&gt;
   ...
-  &lt;vcpu cpuset="1-4,^3,6" current="1"&gt;2&lt;/vcpu&gt;
+  &lt;vcpu placement='static' cpuset="1-4,^3,6" current="1"&gt;2&lt;/vcpu&gt;
   ...
 &lt;/domain&gt;
 </pre>
@@ -305,7 +358,18 @@
         be excluded from a previous range.  <span class="since">Since
         0.8.5</span>, the optional attribute <code>current</code> can
         be used to specify whether fewer than the maximum number of
-        virtual CPUs should be enabled.
+        virtual CPUs should be enabled.  <span class="since">Since
+        0.9.11 (QEMU and KVM only)</span>, the optional attribute
+        <code>placement</code> can be used to indicate the CPU placement
+        mode for domain process, its value can be either "static" or
+        "auto", defaults to <code>placement</code> of <code>numatune</code>,
+         or "static" if <code>cpuset</code> is specified. "auto" indicates
+        the domain process will be pinned to the advisory nodeset from querying
+        numad, and the value of attribute <code>cpuset</code> will be ignored
+        if it's specified. If both <code>cpuset</code> and <code>placement</code>
+        are not specified, or if <code>placement</code> is "static", but no
+        <code>cpuset</code> is specified, the domain process will be pinned to
+        all the available physical CPUs.
       </dd>
     </dl>
 
@@ -338,8 +402,8 @@
       <dt><code>vcpupin</code></dt>
       <dd>
         The optional <code>vcpupin</code> element specifies which of host
-        physical CPUS the domain VCPU will be pinned to. If this is ommited,
-        each VCPU pinned to all the physical CPUS by default. It contains two
+        physical CPUS the domain VCPU will be pinned to. If this is omitted,
+        each VCPU is pinned to all the physical CPUS by default. It contains two
         required attributes, the attribute <code>vcpu</code> specifies vcpu id,
         and the attribute <code>cpuset</code> is same as
         attribute <code>cpuset</code>
@@ -349,7 +413,7 @@
       <dt><code>shares</code></dt>
       <dd>
         The optional <code>shares</code> element specifies the proportional
-        weighted share for the domain. If this is ommited, it defaults to
+        weighted share for the domain. If this is omitted, it defaults to
         the OS provided defaults. NB, There is no unit for the value,
         it's a relative measure based on the setting of other VM,
         e.g. A VM configured with value
@@ -384,8 +448,8 @@
 <pre>
 &lt;domain&gt;
   ...
-  &lt;memory&gt;524288&lt;/memory&gt;
-  &lt;currentMemory&gt;524288&lt;/currentMemory&gt;
+  &lt;memory unit='KiB'&gt;524288&lt;/memory&gt;
+  &lt;currentMemory unit='KiB'&gt;524288&lt;/currentMemory&gt;
   ...
 &lt;/domain&gt;
 </pre>
@@ -393,12 +457,31 @@
     <dl>
       <dt><code>memory</code></dt>
       <dd>The maximum allocation of memory for the guest at boot time.
-        The units for this value are kilobytes (i.e. blocks of 1024 bytes)</dd>
+        The units for this value are determined by the optional
+        atttribute <code>unit</code>, which defaults to "KiB"
+        (kibibytes, 2<sup>10</sup> or blocks of 1024 bytes).  Valid
+        units are "b" or "bytes" for bytes, "KB" for kilobytes
+        (10<sup>3</sup> or 1,000 bytes), "k" or "KiB" for kibibytes
+        (1024 bytes), "MB" for megabytes (10<sup>6</sup> or 1,000,000
+        bytes), "M" or "MiB" for mebibytes (2<sup>20</sup> or
+        1,048,576 bytes), "GB" for gigabytes (10<sup>9</sup> or
+        1,000,000,000 bytes), "G" or "GiB" for gibibytes
+        (2<sup>30</sup> or 1,073,741,824 bytes), "TB" for terabytes
+        (10<sup>12</sup> or 1,000,000,000,000 bytes), or "T" or "TiB"
+        for tebibytes (2<sup>40</sup> or 1,099,511,627,776 bytes).
+        However, the value will be rounded up to the nearest kibibyte
+        by libvirt, and may be further rounded to the granularity
+        supported by the hypervisor.  Some hypervisors also enforce a
+        minimum, such as
+        4000KiB. <span class='since'><code>unit</code> since
+        0.9.11</span></dd>
       <dt><code>currentMemory</code></dt>
       <dd>The actual allocation of memory for the guest. This value can
         be less than the maximum allocation, to allow for ballooning
         up the guests memory on the fly. If this is omitted, it defaults
-        to the same value as the <code>memory</code> element</dd>
+        to the same value as the <code>memory</code> element.
+        The <code>unit</code> attribute behaves the same as
+        for <code>memory</code>.</dd>
     </dl>
 
 
@@ -429,10 +512,10 @@
 &lt;domain&gt;
   ...
   &lt;memtune&gt;
-    &lt;hard_limit&gt;1048576&lt;/hard_limit&gt;
-    &lt;soft_limit&gt;131072&lt;/soft_limit&gt;
-    &lt;swap_hard_limit&gt;2097152&lt;/swap_hard_limit&gt;
-    &lt;min_guarantee&gt;65536&lt;/min_guarantee&gt;
+    &lt;hard_limit unit='G'&gt;1&lt;/hard_limit&gt;
+    &lt;soft_limit unit='M'&gt;128&lt;/soft_limit&gt;
+    &lt;swap_hard_limit unit='G'&gt;2&lt;/swap_hard_limit&gt;
+    &lt;min_guarantee unit='bytes'&gt;67108864&lt;/min_guarantee&gt;
   &lt;/memtune&gt;
   ...
 &lt;/domain&gt;
@@ -446,24 +529,30 @@
         parameters are applied to the QEMU process as a whole. Thus, when
         counting them, one needs to add up guest RAM, guest video RAM, and
         some memory overhead of QEMU itself. The last piece is hard to
-        determine so one needs guess and try.</dd>
+        determine so one needs guess and try.  For each tunable, it
+        is possible to designate which unit the number is in on
+        input, using the same values as
+        for <code>&lt;memory&gt;</code>.  For backwards
+        compatibility, output is always in
+        KiB.  <span class='since'><code>unit</code>
+        since 0.9.11</span></dd>
       <dt><code>hard_limit</code></dt>
       <dd> The optional <code>hard_limit</code> element is the maximum memory
-        the guest can use. The units for this value are kilobytes (i.e. blocks
+        the guest can use. The units for this value are kibibytes (i.e. blocks
         of 1024 bytes)</dd>
       <dt><code>soft_limit</code></dt>
       <dd> The optional <code>soft_limit</code> element is the memory limit to
         enforce during memory contention. The units for this value are
-        kilobytes (i.e. blocks of 1024 bytes)</dd>
+        kibibytes (i.e. blocks of 1024 bytes)</dd>
       <dt><code>swap_hard_limit</code></dt>
       <dd> The optional <code>swap_hard_limit</code> element is the maximum
         memory plus swap the guest can use. The units for this value are
-        kilobytes (i.e. blocks of 1024 bytes). This has to be more than
+        kibibytes (i.e. blocks of 1024 bytes). This has to be more than
         hard_limit value provided</dd>
       <dt><code>min_guarantee</code></dt>
       <dd> The optional <code>min_guarantee</code> element is the guaranteed
         minimum memory allocation for the guest. The units for this value are
-        kilobytes (i.e. blocks of 1024 bytes)</dd>
+        kibibytes (i.e. blocks of 1024 bytes)</dd>
     </dl>
 
 
@@ -488,12 +577,25 @@
         <span class='since'>Since 0.9.3</span>
       <dt><code>memory</code></dt>
       <dd>
-        The optional <code>memory</code> element specify how to allocate memory
-        for the domain process on a NUMA host. It contains two attributes,
-        attribute <code>mode</code> is either 'interleave', 'strict',
-        or 'preferred',
-        attribute <code>nodeset</code> specifies the NUMA nodes, it leads same
-        syntax with attribute <code>cpuset</code> of element <code>vcpu</code>.
+        The optional <code>memory</code> element specifies how to allocate memory
+        for the domain process on a NUMA host. It contains several optional
+        attributes. Attribute <code>mode</code> is either 'interleave',
+        'strict', or 'preferred', defaults to 'strict'. Attribute
+        <code>nodeset</code> specifies the NUMA nodes, using the same syntax as
+        attribute <code>cpuset</code> of element <code>vcpu</code>. Attribute
+        <code>placement</code> (<span class='since'>since 0.9.12</span>) can be
+        used to indicate the memory placement mode for domain process, its value
+        can be either "static" or "auto", defaults to <code>placement</code> of
+        <code>vcpu</code>, or "static" if <code>nodeset</code> is specified.
+        "auto" indicates the domain process will only allocate memory from the
+        advisory nodeset returned from querying numad, and the value of attribute
+        <code>nodeset</code> will be ignored if it's specified.
+
+        If <code>placement</code> of <code>vcpu</code> is 'auto', and
+        <code>numatune</code> is not specified, a default <code>numatune</code>
+        with <code>placement</code> 'auto' and <code>mode</code> 'strict' will
+        be added implicitly.
+
         <span class='since'>Since 0.9.3</span>
       </dd>
     </dl>
@@ -677,7 +779,11 @@
         in which case an attempt to start a domain requesting an unsupported
         CPU model will fail. Supported values for <code>fallback</code>
         attribute are: <code>allow</code> (this is the default), and
-        <code>forbid</code>.</dd>
+        <code>forbid</code>. The optional <code>vendor_id</code> attribute
+        (<span class="since">Since 0.9.14</span>)  can be used to set the
+        vendor id seen by the guest. It must be exactly 12 characters long.
+        If not set the vendor id of the host is used. Typical possible
+        values are "AuthenticAMD" and "GenuineIntel".</dd>
 
       <dt><code>vendor</code></dt>
       <dd><span class="since">Since 0.8.3</span> the content of the
@@ -743,7 +849,7 @@
     <p>
       Each <code>cell</code> element specifies a NUMA cell or a NUMA node.
       <code>cpus</code> specifies the CPU or range of CPUs that are part of
-      the node. <code>memory</code> specifies the node memory in kilobytes
+      the node. <code>memory</code> specifies the node memory in kibibytes
       (i.e. blocks of 1024 bytes). Each cell or node is assigned cellid
       or nodeid in the increasing order starting from 0.
     </p>
@@ -830,6 +936,7 @@
     &lt;acpi/&gt;
     &lt;apic/&gt;
     &lt;hap/&gt;
+    &lt;privnet/&gt;
   &lt;/features&gt;
   ...</pre>
 
@@ -853,6 +960,16 @@
       <dd>Enable use of Hardware Assisted Paging if available in
         the hardware.
       </dd>
+      <dt><code>viridian</code></dt>
+      <dd>Enable Viridian hypervisor extensions for paravirtualizing
+        guest operating systems
+      </dd>
+      <dt><code>privnet</code></dt>
+      <dd>Always create a private network namespace. This is
+        automatically set if any interface devices are defined.
+        This feature is only relevant for container based
+        virtualization drivers, such as LXC.
+      </dd>
     </dl>
 
     <h3><a name="elementsTime">Time keeping</a></h3>
@@ -866,11 +983,11 @@
 
 <pre>
   ...
-  &lt;clock offset="localtime"&gt;
-    &lt;timer name="rtc" tickpolicy="catchup" track="guest"&gt;
-      &lt;catchup threshold=123 slew=120 limit=10000/&gt;
+  &lt;clock offset='localtime'&gt;
+    &lt;timer name='rtc' tickpolicy='catchup' track='guest'&gt;
+      &lt;catchup threshold='123' slew='120' limit='10000'/&gt;
     &lt;/timer&gt;
-    &lt;timer name="pit" tickpolicy="delay"/&gt;
+    &lt;timer name='pit' tickpolicy='delay'/&gt;
   &lt;/clock&gt;
   ...</pre>
 
@@ -885,11 +1002,23 @@
           <dt><code>utc</code></dt>
           <dd>
             The guest clock will always be synchronized to UTC when
-            booted</dd>
+            booted.
+            <span class="since">Since 0.9.11</span> 'utc' mode can be converted
+            to 'variable' mode, which can be controlled by using the
+            <code>adjustment</code> attribute. If the value is 'reset', the
+            conversion is never done (not all hypervisors can
+            synchronize to UTC on each boot; use of 'reset' will cause
+            an error on those hypervisors). A numeric value
+            forces the conversion to 'variable' mode using the value as the
+            initial adjustment. The default <code>adjustment</code> is
+            hypervisor specific.
+          </dd>
           <dt><code>localtime</code></dt>
           <dd>
             The guest clock will be synchronized to the host's configured
             timezone when booted, if any.
+            <span class="since">Since 0.9.11,</span> the <code>adjustment</code>
+            attribute behaves the same as in 'utc' mode.
           </dd>
           <dt><code>timezone</code></dt>
           <dd>
@@ -900,12 +1029,16 @@
           <dt><code>variable</code></dt>
           <dd>
             The guest clock will have an arbitrary offset applied
-            relative to UTC. The delta relative to UTC is specified
+            relative to UTC or localtime, depending on the <code>basis</code>
+            attribute. The delta relative to UTC (or localtime) is specified
             in seconds, using the <code>adjustment</code> attribute.
             The guest is free to adjust the RTC over time and expect
-            that it will be honoured at next reboot. This is in
-            contrast to 'utc' mode, where the RTC adjustments are
+            that it will be honored at next reboot. This is in
+            contrast to 'utc' and 'localtime' mode (with the optional
+            attribute adjustment='reset'), where the RTC adjustments are
             lost at each reboot. <span class="since">Since 0.7.7</span>
+            <span class="since">Since 0.9.11</span> the <code>basis</code>
+            attribute can be either 'utc' (default) or 'localtime'.
           </dd>
         </dl>
         <p>
@@ -926,8 +1059,8 @@
           <dt><code>name</code></dt>
           <dd>
             The <code>name</code> attribute selects which timer is
-            being modified, and can be one of "platform", "pit",
-            "rtc", "hpet", or "tsc".
+            being modified, and can be one of "platform", "hpet",
+            "kvmclock", "pit", "rtc", or "tsc".
           </dd>
           <dt><code>track</code></dt>
           <dd>
@@ -938,11 +1071,32 @@
           </dd>
           <dt><code>tickpolicy</code></dt>
           <dd>
-            The <code>tickpolicy</code> attribute determines how
-            missed ticks in the guest are handled, and can be "delay",
-            "catchup", "merge", or "discard".  If the policy is
-            "catchup", there can be further details in
-            the <code>catchup</code> sub-element.
+            <p>
+            The <code>tickpolicy</code> attribute determines what
+            happens whens QEMU misses a deadline for injecting a
+            tick to the guest:
+            </p>
+            <dl>
+              <dt><code>delay</code></dt>
+              <dd>Continue to deliver ticks at the normal rate.
+                The guest time will be delayed due to the late
+                tick</dd>
+              <dt><code>catchup</code></dt>
+              <dd>Deliver ticks at a higher rate to catch up
+                with the missed tick. The guest time should
+                not be delayed once catchup is complete.</dd>
+              <dt><code>merge</code></dt>
+              <dd>Merge the missed tick(s) into one tick and
+                inject. The guest time may be delayed, depending
+                on how the OS reacts to the merging of ticks</dd>
+              <dt><code>discard</code></dt>
+              <dd>Throw away the missed tick(s) and continue
+                with future injection normally. The guest time
+                may be delayed, unless the OS has explicit
+                handling of lost ticks</dd>
+            </dl>
+            <p>If the policy is "catchup", there can be further details in
+            the <code>catchup</code> sub-element.</p>
             <dl>
               <dt><code>catchup</code></dt>
               <dd>
@@ -952,6 +1106,9 @@
                 and <code>limit</code>.
               </dd>
             </dl>
+            <p>
+              Note that hypervisors are not required to support all policies across all time sources
+            </p>
           </dd>
           <dt><code>frequency</code></dt>
           <dd>
@@ -1056,8 +1213,14 @@
     &lt;/disk&gt;
     &lt;disk type='block' device='cdrom'&gt;
       &lt;driver name='qemu' type='raw'/&gt;
-      &lt;target dev='hdc' bus='ide'/&gt;
+      &lt;target dev='hdc' bus='ide' tray='open'/&gt;
       &lt;readonly/&gt;
+    &lt;/disk&gt;
+    &lt;disk type='block' device='lun'&gt;
+      &lt;driver name='qemu' type='raw'/&gt;
+      &lt;source dev='/dev/sda'/&gt;
+      &lt;target dev='sda' bus='scsi'/&gt;
+      &lt;address type='drive' controller='0' bus='0' target='3' unit='0'/&gt;
     &lt;/disk&gt;
   &lt;/devices&gt;
   ...</pre>
@@ -1079,8 +1242,16 @@
         - also note that device='lun' will only be recognized for
         actual raw devices, never for individual partitions or LVM
         partitions (in those cases, the kernel will reject the generic
-        SCSI commands, making it identical to device='disk').  The
-        optional <code>snapshot</code> attribute indicates the default
+        SCSI commands, making it identical to device='disk').
+        The optional <code>rawio</code> attribute
+        (<span class="since">since 0.9.10</span>) indicates whether
+        the disk is needs rawio capability; valid settings are "yes"
+        or "no" (default is "no"). If any one disk in a domain has
+        rawio='yes', rawio capability will be enabled for all disks in
+        the domain (because, in the case of QEMU, this capability can
+        only be set on a per-process basis). This attribute is only
+        valid when device is "lun".
+        The optional <code>snapshot</code> attribute indicates the default
         behavior of the disk during disk snapshots: "internal"
         requires a file format such as qcow2 that can store both the
         snapshot and the data changes since the snapshot;
@@ -1142,6 +1313,19 @@
         </table>
         <span class="since">Since 0.9.7</span>
         </dd>
+      <dt><code>mirror</code></dt>
+      <dd>
+        This element is present if the hypervisor has started a block
+        copy operation (via the <code>virDomainBlockCopy</code> API),
+        where the mirror location in attribute <code>file</code> will
+        eventually have the same contents as the source, and with the
+        file format in attribute <code>format</code> (which might
+        differ from the format of the source).  If
+        attribute <code>ready</code> is present, then it is known the
+        disk is ready to pivot; otherwise, the disk is probably still
+        copying.  For now, this element only valid in output; it is
+        ignored on input.  <span class="since">Since 0.9.12</span>
+      </dd>
       <dt><code>target</code></dt>
       <dd>The <code>target</code> element controls the bus / device
         under which the disk is exposed to the guest
@@ -1153,10 +1337,15 @@
         possible values are driver specific, with typical values being
         "ide", "scsi", "virtio", "xen", "usb" or "sata". If omitted, the bus
         type is inferred from the style of the device name. eg, a device named
-        'sda' will typically be exported using a SCSI bus.
+        'sda' will typically be exported using a SCSI bus. The optional
+        attribute <code>tray</code> indicates the tray status of the
+        removable disks (i.e. CDROM or Floppy disk), the value can be either
+        "open" or "closed", defaults to "closed". NB, the value of
+        <code>tray</code> could be updated while the domain is running.
         <span class="since">Since 0.0.3; <code>bus</code> attribute since 0.4.3;
-        "usb" attribute value since after 0.4.4; "sata" attribute value since
-        0.9.7</span></dd>
+        <code>tray</code> attribute since 0.9.11; "usb" attribute value since
+        after 0.4.4; "sata" attribute value since 0.9.7</span>
+      </dd>
       <dt><code>iotune</code></dt>
       <dd>The optional <code>iotune</code> element provides the
         ability to provide additional per-device I/O tuning, with
@@ -1358,8 +1547,9 @@
         Multifunction defaults to 'off'; any other value requires
         QEMU 0.1.3 and <span class="since">libvirt 0.9.7</span>.  For a
         "drive" controller, additional attributes
-        <code>controller</code>, <code>bus</code>,
-        and <code>unit</code> are available, each defaulting to 0.
+        <code>controller</code>, <code>bus</code>, <code>target</code>
+        (<span class="since">libvirt 0.9.11</span>), and <code>unit</code>
+        are available, each defaulting to 0.
       </dd>
       <dt><code>auth</code></dt>
       <dd>If present, the <code>auth</code> element provides the
@@ -1436,7 +1626,9 @@
         </dd>
         <dt><code>type='file'</code></dt>
         <dd>
-        Currently unused.
+        A host file will be treated as an image and mounted in
+        the guest. The filesystem format will be autodetected.
+        Only used by LXC driver.
         </dd>
         <dt><code>type='block'</code></dt>
         <dd>
@@ -1444,6 +1636,18 @@
         format will be autodetected. Only used by LXC driver
         <span class="since">(since 0.9.5)</span>.
         </dd>
+        <dt><code>type='ram'</code></dt>
+        <dd>
+          An in-memory filesystem, using memory from the host OS.
+          The source element has a single attribute <code>usage</code>
+          which gives the memory usage limit in kibibytes. Only used
+          by LXC driver.
+          <span class="since"> (since 0.9.13)</span></dd>
+        <dt><code>type='bind'></code></dt>
+        <dd>
+          A directory inside the guest will be bound to another
+          directory inside the guest. Only used by LXC driver
+          <span class="since"> (since 0.9.13)</span></dd>
         </dl>
 
       The filesystem block has an optional attribute <code>accessmode</code>
@@ -1483,7 +1687,8 @@
         The resource on the host that is being accessed in the guest. The
         <code>name</code> attribute must be used with
         <code>type='template'</code>, and the <code>dir</code> attribute must
-        be used with <code>type='mount'</code>
+        be used with <code>type='mount'</code>. The <code>usage</code> attribute
+        is used with <code>type='ram'</code> to set the memory limit in KB.
       </dd>
 
       <dt><code>target</code></dt>
@@ -1499,6 +1704,20 @@
         Enables exporting filesytem as a readonly mount for guest, by
         default read-write access is given (currently only works for
         QEMU/KVM driver).
+      </dd>
+
+      <dt><code>space_hard_limit</code></dt>
+      <dd>
+        Maximum space available to this guest's filesystem.
+        <span class="since">Since 0.9.13</span>
+      </dd>
+
+      <dt><code>space_soft_limit</code></dt>
+      <dd>
+        Maximum space available to this guest's filesystem. The container is
+        permitted to exceed its soft limits for a grace period of time. Afterwards the
+        hard limit is enforced.
+        <span class="since">Since 0.9.13</span>
       </dd>
     </dl>
 
@@ -1549,6 +1768,7 @@
       <dd>Drive addresses have the following additional
         attributes: <code>controller</code> (a 2-digit controller
         number), <code>bus</code> (a 2-digit bus number),
+        <code>target</code> (a 2-digit bus number),
         and <code>unit</code> (a 2-digit unit number on the bus).
       </dd>
       <dt><code>type='virtio-serial'</code></dt>
@@ -1619,8 +1839,8 @@
       A "usb" controller has an optional attribute <code>model</code>,
       which is one of "piix3-uhci", "piix4-uhci", "ehci",
       "ich9-ehci1", "ich9-uhci1", "ich9-uhci2", "ich9-uhci3",
-      "vt82c686b-uhci" or "pci-ohci".  The PowerPC64 "spapr-vio"
-      addresses do not have an associated controller.
+      "vt82c686b-uhci", "pci-ohci" or "nec-xhci".  The PowerPC64
+      "spapr-vio" addresses do not have an associated controller.
     </p>
 
     <p>
@@ -1724,7 +1944,7 @@
         &lt;address bus='0x06' slot='0x02' function='0x0'/&gt;
       &lt;/source&gt;
       &lt;boot order='1'/&gt;
-      &lt;rom bar='off'/&gt;
+      &lt;rom bar='on' file='/etc/fake/boot.bin'/&gt;
     &lt;/hostdev&gt;
   &lt;/devices&gt;
   ...</pre>
@@ -1766,7 +1986,7 @@
       <span class="since">Since 0.8.8</span></dd>
       <dt><code>rom</code></dt>
       <dd>The <code>rom</code> element is used to change how a PCI
-        device's ROM is presented to the guest. The <code>bar</code>
+        device's ROM is presented to the guest. The optional <code>bar</code>
         attribute can be set to "on" or "off", and determines whether
         or not the device's ROM will be visible in the guest's memory
         map. (In PCI documentation, the "rombar" setting controls the
@@ -1774,7 +1994,13 @@
         bar is specified, the qemu default will be used (older
         versions of qemu used a default of "off", while newer qemus
         have a default of "on"). <span class="since">Since
-        0.9.7</span>
+        0.9.7 (QEMU and KVM only)</span>. The optional
+        <code>file</code> attribute is used to point to a binary file
+        to be presented to the guest as the device's ROM BIOS. This
+        can be useful, for example, to provide a PXE boot ROM for a
+        virtual function of an sr-iov capable ethernet device (which
+        has no boot ROMs for the VFs).
+        <span class="since">Since 0.9.10 (QEMU and KVM only)</span>.
       </dd>
       <dt><code>address</code></dt>
       <dd>The <code>address</code> element for USB devices has a
@@ -1938,6 +2164,7 @@
       &lt;mac address='00:16:3e:5d:c7:9e'/&gt;
       &lt;script path='vif-bridge'/&gt;
       &lt;boot order='1'/&gt;
+      &lt;rom bar='off'/&gt;
     &lt;/interface&gt;
   &lt;/devices&gt;
   ...</pre>
@@ -2156,7 +2383,6 @@
 <pre>
   ...
   &lt;devices&gt;
-    &lt;interface type='direct'/&gt;
     ...
     &lt;interface type='direct'&gt;
       &lt;source dev='eth0' mode='vepa'/&gt;
@@ -2205,7 +2431,6 @@
 <pre>
   ...
   &lt;devices&gt;
-    &lt;interface type='direct'/&gt;
     ...
     &lt;interface type='direct'&gt;
       &lt;source dev='eth0.2' mode='vepa'/&gt;
@@ -2233,7 +2458,6 @@
   <pre>
   ...
   &lt;devices&gt;
-    &lt;interface type='direct'/&gt;
     ...
     &lt;interface type='direct'&gt;
       &lt;source dev='eth0' mode='private'/&gt;
@@ -2244,6 +2468,55 @@
   &lt;/devices&gt;
   ...
   </pre>
+
+
+    <h5><a name="elementsNICSHostdev">PCI Passthrough</a></h5>
+
+    <p>
+      A PCI network device (specified by the &lt;source&gt; element)
+      is directly assigned to the guest using generic device
+      passthrough, after first optionally setting the device's MAC
+      address to the configured value, and associating the device with
+      an 802.1Qbh capable switch using an optionally specified
+      &lt;virtualport&gt; element (see the examples of virtualport
+      given above for type='direct' network devices). Note that - due
+      to limitations in standard single-port PCI ethernet card driver
+      design - only SR-IOV (Single Root I/O Virtualization) virtual
+      function (VF) devices can be assigned in this manner; to assign
+      a standard single-port PCI or PCIe ethernet card to a guest, use
+      the traditional &lt;hostdev&gt; device definition and
+      <span class="since">Since 0.9.11</span>
+    </p>
+
+    <p>
+      Note that this "intelligent passthrough" of network devices is
+      very similar to the functionality of a standard &lt;hostdev&gt;
+      device, the difference being that this method allows specifying
+      a MAC address and &lt;virtualport&gt; for the passed-through
+      device. If these capabilities are not required, if you have a
+      standard single-port PCI, PCIe, or USB network card that doesn't
+      support SR-IOV (and hence would anyway lose the configured MAC
+      address during reset after being assigned to the guest domain),
+      or if you are using a version of libvirt older than 0.9.11, you
+      should use standard &lt;hostdev&gt; to assign the device to the
+      guest instead of &lt;interface type='hostdev'/&gt;.
+    </p>
+
+<pre>
+  ...
+  &lt;devices&gt;
+    &lt;interface type='hostdev'&gt;
+      &lt;source&gt;
+        &lt;address type='pci' domain='0x0000' bus='0x00' slot='0x07' function='0x0'/&gt;
+      &lt;/source&gt;
+      &lt;mac address='52:54:00:6d:90:02'&gt;
+      &lt;virtualport type='802.1Qbh'&gt;
+        &lt;parameters profileid='finance'/&gt;
+      &lt;/virtualport&gt;
+    &lt;/interface&gt;
+  &lt;/devices&gt;
+  ...</pre>
+
 
     <h5><a name="elementsNICSMulticast">Multicast tunnel</a></h5>
 
@@ -2262,8 +2535,8 @@
 <pre>
   ...
   &lt;devices&gt;
-    &lt;mac address='52:54:00:6d:90:01'&gt;
     &lt;interface type='mcast'&gt;
+      &lt;mac address='52:54:00:6d:90:01'&gt;
       &lt;source address='230.0.0.1' port='5558'/&gt;
     &lt;/interface&gt;
   &lt;/devices&gt;
@@ -2284,13 +2557,13 @@
   ...
   &lt;devices&gt;
     &lt;interface type='server'&gt;
-    &lt;mac address='52:54:00:22:c9:42'&gt;
+      &lt;mac address='52:54:00:22:c9:42'&gt;
       &lt;source address='192.168.0.1' port='5558'/&gt;
     &lt;/interface&gt;
     ...
     &lt;interface type='client'&gt;
-    &lt;mac address='52:54:00:8b:c9:51'&gt;
-    &lt;source address='192.168.0.1' port='5558'/&gt;
+      &lt;mac address='52:54:00:8b:c9:51'&gt;
+      &lt;source address='192.168.0.1' port='5558'/&gt;
     &lt;/interface&gt;
   &lt;/devices&gt;
   ...</pre>
@@ -2457,13 +2730,43 @@ qemu-kvm -net nic,model=? /dev/null
   ...</pre>
 
     <p>
-      For hypervisors which support this, you can set exact NIC which should
+      For hypervisors which support this, you can set a specific NIC to
       be used for network boot. The <code>order</code> attribute determines
       the order in which devices will be tried during boot sequence. The
       per-device <code>boot</code> elements cannot be used together with
       general boot elements in
       <a href="#elementsOSBIOS">BIOS bootloader</a> section.
       <span class="since">Since 0.8.8</span>
+    </p>
+
+    <h5><a name="elementsNICSROM">Interface ROM BIOS configuration</a></h5>
+
+<pre>
+  ...
+  &lt;devices&gt;
+    &lt;interface type='network'&gt;
+      &lt;source network='default'/&gt;
+      &lt;target dev='vnet1'/&gt;
+      <b>&lt;rom bar='on' file='/etc/fake/boot.bin'/&gt;</b>
+    &lt;/interface&gt;
+  &lt;/devices&gt;
+  ...</pre>
+
+    <p>
+      For hypervisors which support this, you can change how a PCI Network
+      device's ROM is presented to the guest. The <code>bar</code>
+      attribute can be set to "on" or "off", and determines whether
+      or not the device's ROM will be visible in the guest's memory
+      map. (In PCI documentation, the "rombar" setting controls the
+      presence of the Base Address Register for the ROM). If no rom
+      bar is specified, the qemu default will be used (older
+      versions of qemu used a default of "off", while newer qemus
+      have a default of "on").
+      The optional <code>file</code> attribute is used to point to a
+      binary file to be presented to the guest as the device's ROM
+      BIOS. This can be useful to provide an alternative boot ROM for a
+      network device.
+      <span class="since">Since 0.9.10 (QEMU and KVM only)</span>.
     </p>
 
     <h5><a name="elementQoS">Quality of service</a></h5>
@@ -2500,7 +2803,7 @@ qemu-kvm -net nic,model=? /dev/null
       <span class="since">Since 0.9.4</span>
     </p>
 
-    <h5><a name="elementLink">Modyfing virtual link state</a></h5>
+    <h5><a name="elementLink">Modifying virtual link state</a></h5>
 <pre>
   ...
   &lt;devices&gt;
@@ -2669,6 +2972,13 @@ qemu-kvm -net nic,model=? /dev/null
               <span class="since">Since 0.9.3</span>
               NB, this may not be supported by all hypervisors.
               <span class="since">"spice" since 0.8.6</span>.
+              The <code>defaultMode</code> attribute sets the default channel
+              security policy, valid values are <code>secure</code>,
+              <code>insecure</code> and the default <code>any</code>
+              (which is secure if possible, but falls back to insecure
+              rather than erroring out if no secure path is
+              available). <span class="since">"defaultMode" since
+              0.9.12</span>.
             </p>
             <p>
               When SPICE has both a normal and TLS secured TCP port
@@ -2678,9 +2988,11 @@ qemu-kvm -net nic,model=? /dev/null
               main &lt;graphics&gt; element. Valid channel names
               include <code>main</code>, <code>display</code>,
               <code>inputs</code>, <code>cursor</code>,
-              <code>playback</code>, <code>record</code>;
-              and <span class="since">since
-              0.8.8</span>: <code>smartcard</code>.
+              <code>playback</code>, <code>record</code>
+              (all <span class="since"> since 0.8.6</span>);
+              <code>smartcard</code> (<span class="since">since
+              0.8.8</span>); and <code>usbredir</code>
+              (<span class="since">since 0.9.12</span>).
             </p>
             <pre>
   &lt;graphics type='spice' port='-1' tlsPort='-1' autoport='yes'&gt;
@@ -2689,6 +3001,7 @@ qemu-kvm -net nic,model=? /dev/null
     &lt;image compression='auto_glz'/&gt;
     &lt;streaming mode='filter'/&gt;
     &lt;clipboard copypaste='no'/&gt;
+    &lt;mouse mode='client'/&gt;
   &lt;/graphics&gt;</pre>
             <p>
               Spice supports variable compression settings for audio,
@@ -2709,7 +3022,7 @@ qemu-kvm -net nic,model=? /dev/null
             </p>
             <p>
               Streaming mode is set by the <code>streaming</code>
-              element, settings it's <code>mode</code> attribute to one
+              element, settings its <code>mode</code> attribute to one
               of <code>filter</code>, <code>all</code>
               or <code>off</code>, <span class="since">since 0.9.2</span>.
             </p>
@@ -2720,6 +3033,13 @@ qemu-kvm -net nic,model=? /dev/null
               the <code>copypaste</code> property
               to <code>no</code>, <span class="since">since
               0.9.3</span>.
+            </p>
+            <p>
+              Mouse mode is set by the <code>mouse</code> element,
+              setting its <code>mode</code> attribute to one of
+              <code>server</code> or <code>client</code> ,
+              <span class="since">since 0.9.11</span>. If no mode is
+              specified, the qemu default will be used (client mode).
             </p>
           </dd>
           <dt><code>"rdp"</code></dt>
@@ -2808,7 +3128,7 @@ qemu-kvm -net nic,model=? /dev/null
   &lt;devices&gt;
     &lt;video&gt;
       &lt;model type='vga' vram='8192' heads='1'&gt;
-        &lt;acceleration accel3d='yes' accel3d='yes'/&gt;
+        &lt;acceleration accel3d='yes' accel2d='yes'/&gt;
       &lt;/model&gt;
     &lt;/video&gt;
   &lt;/devices&gt;
@@ -2817,8 +3137,8 @@ qemu-kvm -net nic,model=? /dev/null
     <dl>
       <dt><code>video</code></dt>
       <dd>
-        The <code>video</code> element is the a container for describing
-        video devices. For backwards compatability, if no <code>video</code>
+        The <code>video</code> element is the container for describing
+        video devices. For backwards compatibility, if no <code>video</code>
         is set but there is a <code>graphics</code> in domain xml, then libvirt
         will add a default <code>video</code> according to the guest type.
         For a guest of type "kvm", the default <code>video</code> for it is:
@@ -2832,7 +3152,8 @@ qemu-kvm -net nic,model=? /dev/null
         attribute which takes the value "vga", "cirrus", "vmvga", "xen",
         "vbox", or "qxl" (<span class="since">since 0.8.6</span>)
         depending on the hypervisor features available.
-        You can also provide the amount of video memory in kilobytes using
+        You can also provide the amount of video memory in kibibytes
+        (blocks of 1024 bytes) using
         <code>vram</code> and the number of screen with <code>heads</code>.
       </dd>
 
@@ -3017,6 +3338,10 @@ qemu-kvm -net nic,model=? /dev/null
     &lt;channel type='pty'&gt;
       &lt;target type='virtio' name='arbitrary.virtio.serial.port.name'/&gt;
     &lt;/channel&gt;
+    &lt;channel type='unix'&gt;
+      &lt;source mode='bind' path='/var/lib/libvirt/qemu/f16x86_64.agent'/&gt;
+      &lt;target type='virtio' name='org.qemu.guest_agent.0'/&gt;
+    &lt;/channel&gt;
     &lt;channel type='spicevmc'&gt;
       &lt;target type='virtio' name='com.redhat.spice.0'/&gt;
     &lt;/channel&gt;
@@ -3045,7 +3370,11 @@ qemu-kvm -net nic,model=? /dev/null
         optional element <code>address</code> can tie the channel to a
         particular <code>type='virtio-serial'</code>
         controller, <a href="#elementsAddress">documented above</a>.
-        <span class="since">Since 0.7.7</span></dd>
+        With qemu, if <code>name</code> is "org.qemu.guest_agent.0",
+        then libvirt can interact with a guest agent installed in the
+        guest, for actions such as guest shutdown or file system quiescing.
+        <span class="since">Since 0.7.7, guest agent interaction
+        since 0.9.10</span></dd>
 
       <dt><code>spicevmc</code></dt>
       <dd>Paravirtualized SPICE channel. The domain must also have a
@@ -3318,6 +3647,25 @@ qemu-kvm -net nic,model=? /dev/null
     </dl>
 
     <p>
+      <span class="since">Since 0.9.13</span>, a sound element
+      with <code>ich6</code> model can have optional
+      sub-elements <code>&lt;codec&gt;</code> to attach various audio
+      codecs to the audio device. If not specified, a default codec
+      will be attached to allow playback and recording. Valid values
+      are 'duplex' (advertise a line-in and a line-out) and 'micro'
+      (advertise a speaker and a microphone).
+    </p>
+
+<pre>
+  ...
+  &lt;devices&gt;
+    &lt;sound model='ich6'&gt;
+      &lt;codec type='micro'/&gt;
+    &lt;sound/&gt;
+  &lt;/devices&gt;
+  ...</pre>
+
+    <p>
       Each <code>sound</code> element has an optional
       sub-element <code>&lt;address&gt;</code> which can tie the
       device to a particular PCI
@@ -3463,16 +3811,18 @@ qemu-kvm -net nic,model=? /dev/null
 
     <p>
       The <code>seclabel</code> element allows control over the
-      operation of the security drivers. There are two basic
-      modes of operation, dynamic where libvirt automatically
-      generates a unique security label, or static where the
-      application/administrator chooses the labels. With dynamic
+      operation of the security drivers. There are three basic
+      modes of operation, 'dynamic' where libvirt automatically
+      generates a unique security label, 'static' where the
+      application/administrator chooses the labels, or 'none'
+      where confinement is disabled. With dynamic
       label generation, libvirt will always automatically
       relabel any resources associated with the virtual machine.
       With static label assignment, by default, the administrator
       or application must ensure labels are set correctly on any
       resources, however, automatic relabeling can be enabled
-      if desired.
+      if desired.  <span class="since">'dynamic' since 0.6.1, 'static'
+      since 0.6.2, and 'none' since 0.9.10.</span>
     </p>
 
     <p>
@@ -3494,7 +3844,16 @@ qemu-kvm -net nic,model=? /dev/null
   &lt;seclabel type='static' model='selinux' relabel='yes'&gt;
     &lt;label&gt;system_u:system_r:svirt_t:s0:c392,c662&lt;/label&gt;
   &lt;/seclabel&gt;
+
+  &lt;seclabel type='none'/&gt;
     </pre>
+
+    <p>
+      If no 'type' attribute is provided in the input XML, then
+      the security driver default setting will be used, which
+      may be either 'none' or 'dynamic'. If a 'baselabel' is set
+      but no 'type' is set, then the type is presumed to be 'dynamic'
+    </p>
 
     <p>
       When viewing the XML for a running guest with automatic
@@ -3505,9 +3864,9 @@ qemu-kvm -net nic,model=? /dev/null
     </p>
     <dl>
       <dt><code>type</code></dt>
-      <dd>Either <code>static</code> or <code>dynamic</code> to determine
-        whether libvirt automatically generates a unique security label
-        or not.
+      <dd>Either <code>static</code>, <code>dynamic</code> or <code>none</code>
+        to determine whether libvirt automatically generates a unique security
+        label or not.
       </dd>
       <dt><code>model</code></dt>
       <dd>A valid security model name, matching the currently

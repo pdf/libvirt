@@ -15,8 +15,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
@@ -833,7 +833,7 @@ virStorageFileGetMetadataFromFD(const char *path,
     int ret = -1;
     struct stat sb;
 
-    memset(meta, 0, sizeof (*meta));
+    memset(meta, 0, sizeof(*meta));
 
     if (fstat(fd, &sb) < 0) {
         virReportSystemError(errno,
@@ -929,6 +929,39 @@ virStorageFileFreeMetadata(virStorageFileMetadata *meta)
 
     VIR_FREE(meta->backingStore);
     VIR_FREE(meta);
+}
+
+/**
+ * virStorageFileResize:
+ *
+ * Change the capacity of the raw storage file at 'path'.
+ */
+int
+virStorageFileResize(const char *path, unsigned long long capacity)
+{
+    int fd = -1;
+    int ret = -1;
+
+    if ((fd = open(path, O_RDWR)) < 0) {
+        virReportSystemError(errno, _("Unable to open '%s'"), path);
+        goto cleanup;
+    }
+
+    if (ftruncate(fd, capacity) < 0) {
+        virReportSystemError(errno, _("Failed to truncate file '%s'"), path);
+        goto cleanup;
+    }
+
+    if (VIR_CLOSE(fd) < 0) {
+        virReportSystemError(errno, _("Unable to save '%s'"), path);
+        goto cleanup;
+    }
+
+    ret = 0;
+
+cleanup:
+    VIR_FORCE_CLOSE(fd);
+    return ret;
 }
 
 #ifdef __linux__
@@ -1029,4 +1062,14 @@ int virStorageFileIsSharedFS(const char *path)
                                         VIR_STORAGE_FILE_SHFS_GFS2 |
                                         VIR_STORAGE_FILE_SHFS_OCFS |
                                         VIR_STORAGE_FILE_SHFS_AFS);
+}
+
+int virStorageFileIsClusterFS(const char *path)
+{
+    /* These are coherent cluster filesystems known to be safe for
+     * migration with cache != none
+     */
+    return virStorageFileIsSharedFSType(path,
+                                        VIR_STORAGE_FILE_SHFS_GFS2 |
+                                        VIR_STORAGE_FILE_SHFS_OCFS);
 }

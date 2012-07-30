@@ -1,10 +1,22 @@
 /*
  * cgroup.c: Tools for managing cgroups
  *
- * Copyright (C) 2010-2011 Red Hat, Inc.
+ * Copyright (C) 2010-2012 Red Hat, Inc.
  * Copyright IBM Corp. 2008
  *
- * See COPYING.LIB for the License of this software
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Authors:
  *  Dan Smith <danms@us.ibm.com>
@@ -32,7 +44,8 @@
 #include "cgroup.h"
 #include "logging.h"
 #include "virfile.h"
-#include "hash.h"
+#include "virhash.h"
+#include "virhashcode.h"
 
 #define CGROUP_MAX_VAL 512
 
@@ -354,8 +367,8 @@ static int virCgroupGetValueStr(virCgroupPtr group,
         VIR_DEBUG("Failed to read %s: %m\n", keypath);
     } else {
         /* Terminated with '\n' has sometimes harmful effects to the caller */
-        char *p = strchr(*value, '\n');
-        if (p) *p = '\0';
+        if ((*value)[rc - 1] == '\n')
+            (*value)[rc - 1] = '\0';
 
         rc = 0;
     }
@@ -529,7 +542,9 @@ static int virCgroupMakeGroup(virCgroupPtr parent, virCgroupPtr group,
             continue;
 
         /* We need to control cpu bandwidth for each vcpu now */
-        if ((flags & VIR_CGROUP_VCPU) && (i != VIR_CGROUP_CONTROLLER_CPU)) {
+        if ((flags & VIR_CGROUP_VCPU) &&
+            (i != VIR_CGROUP_CONTROLLER_CPU &&
+             i != VIR_CGROUP_CONTROLLER_CPUACCT)) {
             /* treat it as unmounted and we can use virCgroupAddTask */
             VIR_FREE(group->controllers[i].mountPoint);
             continue;
@@ -1554,6 +1569,59 @@ int virCgroupGetCpuacctUsage(virCgroupPtr group, unsigned long long *usage)
                                 "cpuacct.usage", usage);
 }
 
+int virCgroupGetCpuacctPercpuUsage(virCgroupPtr group, char **usage)
+{
+    return virCgroupGetValueStr(group, VIR_CGROUP_CONTROLLER_CPUACCT,
+                                "cpuacct.usage_percpu", usage);
+}
+
+#ifdef _SC_CLK_TCK
+int virCgroupGetCpuacctStat(virCgroupPtr group, unsigned long long *user,
+                            unsigned long long *sys)
+{
+    char *str;
+    char *p;
+    int ret;
+    static double scale = -1.0;
+
+    if ((ret = virCgroupGetValueStr(group, VIR_CGROUP_CONTROLLER_CPUACCT,
+                                    "cpuacct.stat", &str)) < 0)
+        return ret;
+    if (!(p = STRSKIP(str, "user ")) ||
+        virStrToLong_ull(p, &p, 10, user) < 0 ||
+        !(p = STRSKIP(p, "\nsystem ")) ||
+        virStrToLong_ull(p, NULL, 10, sys) < 0) {
+        ret = -EINVAL;
+        goto cleanup;
+    }
+    /* times reported are in system ticks (generally 100 Hz), but that
+     * rate can theoretically vary between machines.  Scale things
+     * into approximate nanoseconds.  */
+    if (scale < 0) {
+        long ticks_per_sec = sysconf(_SC_CLK_TCK);
+        if (ticks_per_sec == -1) {
+            ret = -errno;
+            goto cleanup;
+        }
+        scale = 1000000000.0 / ticks_per_sec;
+    }
+    *user *= scale;
+    *sys *= scale;
+
+    ret = 0;
+cleanup:
+    VIR_FREE(str);
+    return ret;
+}
+#else
+int virCgroupGetCpuacctStat(virCgroupPtr group ATTRIBUTE_UNUSED,
+                            unsigned long long *user ATTRIBUTE_UNUSED,
+                            unsigned long long *sys ATTRIBUTE_UNUSED)
+{
+    return -ENOSYS;
+}
+#endif
+
 int virCgroupSetFreezerState(virCgroupPtr group, const char *state)
 {
     return virCgroupSetValueStr(group,
@@ -1597,19 +1665,20 @@ static int virCgroupKillInternal(virCgroupPtr group, int signum, virHashTablePtr
             goto cleanup;
         } else {
             while (!feof(fp)) {
-                unsigned long pid;
-                if (fscanf(fp, "%lu", &pid) != 1) {
+                unsigned long pid_value;
+                if (fscanf(fp, "%lu", &pid_value) != 1) {
                     if (feof(fp))
                         break;
                     rc = -errno;
                     VIR_DEBUG("Failed to read %s: %m\n", keypath);
                     goto cleanup;
                 }
-                if (virHashLookup(pids, (void*)pid))
+                if (virHashLookup(pids, (void*)pid_value))
                     continue;
 
-                VIR_DEBUG("pid=%lu", pid);
-                if (kill((pid_t)pid, signum) < 0) {
+                VIR_DEBUG("pid=%lu", pid_value);
+                /* Cgroups is a Linux concept, so this cast is safe.  */
+                if (kill((pid_t)pid_value, signum) < 0) {
                     if (errno != ESRCH) {
                         rc = -errno;
                         goto cleanup;
@@ -1620,7 +1689,7 @@ static int virCgroupKillInternal(virCgroupPtr group, int signum, virHashTablePtr
                     done = false;
                 }
 
-                ignore_value(virHashAddEntry(pids, (void*)pid, (void*)1));
+                ignore_value(virHashAddEntry(pids, (void*)pid_value, (void*)1));
             }
             VIR_FORCE_FCLOSE(fp);
         }
@@ -1636,9 +1705,10 @@ cleanup:
 }
 
 
-static unsigned long virCgroupPidCode(const void *name)
+static uint32_t virCgroupPidCode(const void *name, uint32_t seed)
 {
-    return (unsigned long)name;
+    unsigned long pid_value = (unsigned long)(intptr_t)name;
+    return virHashCodeGen(&pid_value, sizeof(pid_value), seed);
 }
 static bool virCgroupPidEqual(const void *namea, const void *nameb)
 {

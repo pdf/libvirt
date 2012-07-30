@@ -1,7 +1,7 @@
 /*
  * logging.h: internal logging and debugging
  *
- * Copyright (C) 2006-2008, 2011 Red Hat, Inc.
+ * Copyright (C) 2006-2008, 2011-2012 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -14,8 +14,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ * License along with this library;  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -34,8 +34,18 @@
 #  define VIR_DEBUG_INT(category, f, l, ...)                            \
     virLogMessage(category, VIR_LOG_DEBUG, f, l, 0, __VA_ARGS__)
 # else
+/**
+ * virLogEatParams:
+ *
+ * Do nothing but eat parameters.
+ */
+static inline void virLogEatParams(const char *unused, ...)
+{
+    /* Silence gcc */
+    unused = unused;
+}
 #  define VIR_DEBUG_INT(category, f, l, ...)    \
-    do { } while (0)
+    virLogEatParams(category, f, l, __VA_ARGS__)
 # endif /* !ENABLE_DEBUG */
 
 # define VIR_INFO_INT(category, f, l, ...)                              \
@@ -79,6 +89,7 @@ typedef enum {
  * @funcname: the function emitting the message
  * @linenr: line where the message was emitted
  * @timestamp: zero terminated string with timestamp of the message
+ * @flags: flags associated with the message
  * @str: the message to log, preformatted and zero terminated
  * @data: extra output logging data
  *
@@ -88,7 +99,9 @@ typedef enum {
  */
 typedef int (*virLogOutputFunc) (const char *category, int priority,
                                  const char *funcname, long long linenr,
-                                 const char *timestamp, const char *str,
+                                 const char *timestamp,
+                                 unsigned int flags,
+                                 const char *str,
                                  void *data);
 
 /**
@@ -98,6 +111,10 @@ typedef int (*virLogOutputFunc) (const char *category, int priority,
  * Callback function used to close a log output
  */
 typedef void (*virLogCloseFunc) (void *data);
+
+typedef enum {
+    VIR_LOG_STACK_TRACE = (1 << 0),
+} virLogFlags;
 
 extern int virLogGetNbFilters(void);
 extern int virLogGetNbOutputs(void);
@@ -128,6 +145,11 @@ extern void virLogMessage(const char *category, int priority,
                           const char *funcname, long long linenr,
                           unsigned int flags,
                           const char *fmt, ...) ATTRIBUTE_FMT_PRINTF(6, 7);
+extern void virLogVMessage(const char *category, int priority,
+                           const char *funcname, long long linenr,
+                           unsigned int flags,
+                           const char *fmt,
+                           va_list vargs) ATTRIBUTE_FMT_PRINTF(6, 0);
 extern int virLogSetBufferSize(int size);
 extern void virLogEmergencyDumpAll(int signum);
 #endif
